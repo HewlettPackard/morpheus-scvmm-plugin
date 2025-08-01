@@ -1,8 +1,10 @@
 package com.morpheusdata.scvmm
 
+import com.morpheusdata.core.AbstractOptionSourceProvider
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.OptionSourceProvider
 import com.morpheusdata.core.Plugin
+import com.morpheusdata.core.data.DataAndFilter
 import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataOrFilter
 import com.morpheusdata.core.data.DataQuery
@@ -13,7 +15,7 @@ import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
 import groovy.util.logging.Slf4j
 
-class ScvmmOptionSourceProvider implements OptionSourceProvider {
+class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 
 	ScvmmPlugin plugin
 	MorpheusContext morpheusContext
@@ -49,7 +51,8 @@ class ScvmmOptionSourceProvider implements OptionSourceProvider {
 	@Override
 	List<String> getMethodNames() {
 		return new ArrayList<String>([
-				'scvmmCloud', 'scvmmHostGroup', 'scvmmCluster', 'scvmmLibraryShares', 'scvmmSharedControllers'])
+				'scvmmCloud', 'scvmmHostGroup', 'scvmmCluster', 'scvmmLibraryShares', 'scvmmSharedControllers', 'scvmmCapabilityProfile', 'scvmmHost', 'scvmmVirtualImages'
+		])
 	}
 
 	def getApiConfig(cloud) {
@@ -218,6 +221,105 @@ class ScvmmOptionSourceProvider implements OptionSourceProvider {
 			profiles << [name:'Not required', value: -1]
 		}
 		return profiles
+	}
+
+	def scvmmHost(params) {
+		params = params instanceof Object[] ? params.getAt(0) : params
+		log.debug("scvmmHost: ${params}")
+
+		def tmpZone = params.zoneId ? morpheusContext.services.cloud.get(params.zoneId?.toLong()) : null
+
+		if(tmpZone?.getConfigProperty('hideHostSelection') == 'on') {
+			return [[name:'Auto', value: '']]
+		}
+
+		def resourcePoolId = params.resourcePoolId?.toString()?.isNumber() ? params.resourcePoolId.toLong() :
+				(params.config?.resourcePool != 'null' ?
+						(params.config?.resourcePool?.toString()?.isNumber() ?
+								params.config.resourcePool?.toLong() : null) : null)
+
+		def query = new DataQuery()
+
+		// Join account
+		query.withJoin('account')
+				.withFilter('account.id', tmpZone.account.id)
+				.withFilter('enabled', true)
+				.withFilter('powerState', 'on')
+				.withFilter('category', "scvmm.host.${tmpZone.id}")
+
+		if(resourcePoolId) {
+			query.withJoin('resourcePool')
+					.withFilter('resourcePool.id', resourcePoolId)
+		}
+
+		def results = morpheusContext.services.computeServer.listIdentityProjections(query.withSort('name', DataQuery.SortOrder.asc))
+
+		return results.collect { host -> [name: host.name, value: host.id] }
+	}
+
+	def scvmmVirtualImages(Object params) {
+		params = params instanceof Object[] ? params.getAt(0) : params
+		log.debug("scvmmVirtualImages: ${params}")
+
+		def account = params.currentUser?.account
+		def tmpZone = params.zoneId ? morpheusContext.services.cloud.get(params.zoneId?.toLong()) : null
+		def regionCode = tmpZone?.regionCode
+
+		// Construct the query with all the necessary filters
+		def query = new DataQuery()
+
+		// Left joins
+		query.withJoin("accounts")
+				.withJoin("owner")
+				.withJoin("locations")
+
+		// OR filters for visibility/ownership
+		def orFilters = []
+		orFilters << new DataFilter("visibility", "public")
+		orFilters << new DataFilter("accounts.id", params.accountId?.toLong())
+		orFilters << new DataFilter("owner.id", params.accountId?.toLong())
+		orFilters << new DataFilter("owner.id", null)
+		query.withFilter(new DataOrFilter(orFilters))
+
+		// Basic filters
+		query.withFilter("deleted", false)
+		query.withFilter("imageType", 'in', ['vhd', 'vhdx', 'vmdk'])
+
+		// Zone and region filters
+		def zoneRegionOrFilters = []
+
+		if (tmpZone) {
+			// Category filter
+			zoneRegionOrFilters << new DataFilter("category", "scvmm.image.${tmpZone?.id}")
+
+			// Reference filters
+			def refAndFilters = []
+			refAndFilters << new DataFilter("refType", "ComputeZone")
+			refAndFilters << new DataFilter("refId", tmpZone.id.toString())
+			zoneRegionOrFilters << new DataAndFilter(refAndFilters)
+
+			// Location filters
+			def locAndFilters = []
+			locAndFilters << new DataFilter("locations.refType", "ComputeZone")
+			locAndFilters << new DataFilter("locations.refId", tmpZone.id)
+			zoneRegionOrFilters << new DataAndFilter(locAndFilters)
+		}
+
+		if (regionCode) {
+			zoneRegionOrFilters << new DataFilter("imageRegion", regionCode)
+			zoneRegionOrFilters << new DataFilter("locations.imageRegion", regionCode)
+			zoneRegionOrFilters << new DataFilter("userUploaded", true)
+		}
+
+		query.withFilter(new DataOrFilter(zoneRegionOrFilters))
+
+		try {
+			def results = morpheusContext.services.virtualImage.listIdentityProjections(query.withSort("name", DataQuery.SortOrder.asc))
+			return results.collect { vimage -> [name: vimage.name, value: vimage.id] }
+		} catch (e) {
+			log.error("scvmmVirtualImages error: ${e}", e)
+			return []
+		}
 	}
 
 }

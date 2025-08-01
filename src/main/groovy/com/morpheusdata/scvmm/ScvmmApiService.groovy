@@ -1449,74 +1449,114 @@ foreach (\$network in \$networks) {
         }
     }
 
-    static createAndAttachDisk(Map opts, Map diskSpec, Boolean returnDiskDrives=true) {
+    def createAndAttachDisk(Map opts, Map diskSpec, Boolean returnDiskDrives=true) {
         LogWrapper.instance.info("createAndAttachDisk - Adding new Virtual SCSI Disk VHDType:${diskSpec}")
         String templateCmd = '''
-		#Morpheus will replace items in <%   %>
-		$vmId = "<%vmid%>"
-		$vhdName = "<%vhdname%>"
-		$sizeMB = <%sizemb%>
-		$vhdType = "<%vhdtype%>"
-		$vhdFormat = "<%vhdformat%>"
-		$vhdPath = "<%vhdpath%>"
-		#No replacement code after here
-		$report = [PSCustomObject]@{success=$false;BUS=0;LUN=0;vhdId=$null;jobStatus=$null;errOut=$null}
-		try {
-			$VM = Get-SCVirtualMachine -VMMServer localhost -ID $vmId -ErrorAction Stop
-		}
-		catch {
-		    $report.success = $false
-		    $report.errOut = $_.Exception.Message
-		}
-		if ($VM) {
-			# Default to FixedSize if not specified
-			if ($vhdType -eq "") {$vhdType = "FixedSize"}
-			if ($vhdFormat -eq "") {$vhdFormat = if ($VM.Generation -eq 2) {"VHDX"} else {"VHD"}}
-			$disks = Get-SCVirtualDiskDrive -VM $VM
-			$SCSIDisks = $disks | Where-Object {$_.BusType -eq "SCSI"}
-			if ($SCSIDisks) {
-				#Get the next free LUN the SCSI Controller 
-				$bus = $SCSIDisks.Bus | Sort-Object -Descending | Select-Object -First 1
-				$Lun = ($SCSIDisks.Lun | Sort-Object -Descending | Select-Object -First 1) + 1
-				if ($Lun -gt 63) {$Bus++; $Lun=0}
-			} else {
-				#No SCSI Disks yet Start SCSI Bus 0 Lun 0
-				$Bus=0; $Lun=0
-			}
-			$addDiskParams = @{
-				VMMServer="localhost";
-				VM=$VM;
-				FileName=$vhdName;
-				SCSI=$true;
-				Bus=$Bus;
-				Lun=$Lun;
-				JobVariable="AddDiskJob";
-				VirtualHardDiskSizeMB=$sizeMB;
-				VirtualHardDiskFormatType=$vhdFormat;
-				VolumeType="None";
-				ErrorAction="Stop"
-			}
-			if ($vhdPath -ne "") {$addDiskParams.Add("Path",$vhdPath)}
-			if ($vhdType -eq "FixedSize") {$addDiskParams.Add("Fixed",$true)}
-			if ($vhdType -eq "DynamicallyExpanding") {$addDiskParams.Add("Dynamic",$true)}
-			try {
-				$VHD=New-SCVirtualDiskDrive @addDiskParams
-				$report.success = $true
-				$report.BUS = $Bus
-				$report.LUN = $Lun
-				$report.jobStatus = $AddDiskJob.Status.ToString()
-				$Report.vhdId = $VHD.Id
-			}
-			Catch {
-				#Dismis any failed jobs
-				$dismiss = Repair-SCVirtualMachine -VM $VM -Dismiss -Force
-				$report.success=$false
-				$report.errOut = $_.Exception.Message
-				$report.jobStatus = $AddDiskJob.Status.ToString()
-			}
-		}
-		$Report
-		'''
+        #Morpheus will replace items in <%   %>
+        $vmId = "<%vmid%>"
+        $vhdName = "<%vhdname%>"
+        $sizeMB = <%sizemb%>
+        $vhdType = "<%vhdtype%>"
+        $vhdFormat = "<%vhdformat%>"
+        $vhdPath = "<%vhdpath%>"
+        #No replacement code after here
+        $report = [PSCustomObject]@{success=$false;BUS=0;LUN=0;vhdId=$null;jobStatus=$null;errOut=$null}
+        try {
+            $VM = Get-SCVirtualMachine -VMMServer localhost -ID $vmId -ErrorAction Stop
+        }
+        catch {
+            $report.success = $false
+            $report.errOut = $_.Exception.Message
+            return $report
+        }
+        
+        if ($VM) {
+            # Default to FixedSize if not specified
+            if ($vhdType -eq "") {$vhdType = "FixedSize"}
+            if ($vhdFormat -eq "") {$vhdFormat = if ($VM.Generation -eq 2) {"VHDX"} else {"VHD"}}
+            
+            # Get both disk drives and DVD drives to check all occupied slots
+            $diskDrives = Get-SCVirtualDiskDrive -VM $VM
+            $dvdDrives = Get-SCVirtualDVDDrive -VM $VM
+            
+            # Track occupied slots in a hashtable for efficient lookup
+            $occupiedSlots = @{}
+            
+            # Mark disk drive slots as occupied
+            foreach ($drive in $diskDrives) {
+                if ($drive.BusType -eq "SCSI") {
+                    $slotKey = "$($drive.Bus),$($drive.Lun)"
+                    $occupiedSlots[$slotKey] = $true
+                }
+            }
+            
+            # Mark DVD drive slots as occupied
+            foreach ($drive in $dvdDrives) {
+                if ($drive.BusType -eq "SCSI") {
+                    $slotKey = "$($drive.Bus),$($drive.Lun)"
+                    $occupiedSlots[$slotKey] = $true
+                }
+            }
+    
+            # Find first available SCSI slot
+            $Bus = 0
+            $Lun = 0
+            $foundSlot = $false
+    
+            # Try up to 4 buses with 64 slots each
+            for ($b = 0; $b -lt 4 -and -not $foundSlot; $b++) {
+                for ($l = 0; $l -lt 64 -and -not $foundSlot; $l++) {
+                    $slotKey = "$b,$l"
+                    if (-not $occupiedSlots.ContainsKey($slotKey)) {
+                        $Bus = $b
+                        $Lun = $l
+                        $foundSlot = $true
+                        break
+                    }
+                }
+            }
+    
+            # If no slots found, report error
+            if (-not $foundSlot) {
+                $report.success = $false
+                $report.errOut = "No available SCSI slots found on any controller"
+                return $report
+            }
+    
+            $addDiskParams = @{
+                VMMServer="localhost";
+                VM=$VM;
+                FileName=$vhdName;
+                SCSI=$true;
+                Bus=$Bus;
+                Lun=$Lun;
+                JobVariable="AddDiskJob";
+                VirtualHardDiskSizeMB=$sizeMB;
+                VirtualHardDiskFormatType=$vhdFormat;
+                VolumeType="None";
+                ErrorAction="Stop"
+            }
+            if ($vhdPath -ne "") {$addDiskParams.Add("Path",$vhdPath)}
+            if ($vhdType -eq "FixedSize") {$addDiskParams.Add("Fixed",$true)}
+            if ($vhdType -eq "DynamicallyExpanding") {$addDiskParams.Add("Dynamic",$true)}
+            try {
+                $VHD=New-SCVirtualDiskDrive @addDiskParams
+                $report.success = $true
+                $report.BUS = $Bus
+                $report.LUN = $Lun
+                $report.jobStatus = $AddDiskJob.Status.ToString()
+                $report.vhdId = $VHD.Id
+            }
+            Catch {
+                #Dismiss any failed jobs
+                $dismiss = Repair-SCVirtualMachine -VM $VM -Dismiss -Force
+                $report.success=$false
+                $report.errOut = $_.Exception.Message
+                $report.jobStatus = if ($AddDiskJob) { $AddDiskJob.Status.ToString() } else { "Failed" }
+            }
+        }
+        $report
+        '''
         def addDiskCmd = templateCmd.stripIndent().trim()
                 .replace("<%vmid%>",opts.externalId ?: "")
                 .replace("<%vhdname%>",diskSpec.vhdName ?: "data-${UUID.randomUUID().toString()}")

@@ -803,7 +803,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                             if (cloneContainer && cloneContainer.status != Workload.Status.running.toString()) {
                                 log.debug "stopping/starting original VM: ${scvmmOpts.cloneVMId}"
                                 apiService.startServer([async: true] + scvmmOpts.cloneBaseOpts.clonedScvmmOpts, scvmmOpts.cloneVMId)
-                                Workload savedContainer = context.services.workload.find(new DataQuery().withFilter(cloneContainer.server?.id))
+                                Workload savedContainer = context.services.workload.find(new DataQuery().withFilter("id", cloneContainer.server?.id))
                                 if (savedContainer) {
                                     savedContainer.userStatus = Workload.Status.running.toString()
                                     context.services.workload.save(savedContainer)
