@@ -53,7 +53,7 @@ class IpPoolsSync {
             def listResults = apiService.listNetworkIPPools(scvmmOpts)
 
             if (listResults.success == true) {
-                def poolType = new NetworkPoolType(code: 'scvmm')
+                def poolType = new NetworkPoolType(code: 'scvmm-plugin-ipam')
                 def objList = listResults.ipPools
                 def networkMapping = listResults.networkMapping
 
@@ -304,6 +304,11 @@ class IpPoolsSync {
 
                     if(existingItem.subnetAddress != info.networkAddress) {
                         existingItem.subnetAddress = info.networkAddress
+                        doSave = true
+                    }
+
+                    if(existingItem.type == null) {
+                        existingItem.type = new NetworkPoolType(code: 'scvmm-plugin')
                         doSave = true
                     }
 

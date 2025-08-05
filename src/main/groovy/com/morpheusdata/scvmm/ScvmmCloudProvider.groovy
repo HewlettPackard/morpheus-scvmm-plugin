@@ -597,7 +597,7 @@ class ScvmmCloudProvider implements CloudProvider {
 		try {
 			def syncDate = new Date()
 			//why would we ever have more than 1? i don't think we would
-			def scvmmController = getScvmmController(cloudInfo)
+			def scvmmController = apiService.getScvmmController(cloudInfo)
 			if (scvmmController) {
 				def scvmmOpts = apiService.getScvmmZoneAndHypervisorOpts(context, cloudInfo, scvmmController)
 				def hostOnline = ConnectionUtils.testHostConnectivity(scvmmOpts.sshHost, 5985, false, true, null)
@@ -685,37 +685,6 @@ class ScvmmCloudProvider implements CloudProvider {
 		return rtn
 	}
 
-	def getScvmmController(Cloud cloud) {
-		def sharedControllerId = cloud.getConfigProperty('sharedController')
-		def sharedController = sharedControllerId ? context.services.computeServer.get(sharedControllerId.toLong()) : null
-		if (sharedController) {
-			return sharedController
-		}
-		def rtn = context.services.computeServer.find(new DataQuery()
-				.withFilter('zone.id', cloud.id)
-				.withFilter('computeServerType.code', 'scvmmController')
-				.withJoin('computeServerType'))
-		if (rtn == null) {
-			//old zone with wrong type
-			rtn = context.services.computeServer.find(new DataQuery()
-					.withFilter('zone.id', cloud.id)
-					.withFilter('computeServerType.code', 'scvmmController')
-					.withJoin('computeServerType'))
-			if (rtn == null) {
-				rtn = context.services.computeServer.find(new DataQuery()
-						.withFilter('zone.id', cloud.id)
-						.withFilter('serverType', 'hypervisor'))
-			}
-			//if we have tye type
-			if (rtn) {
-				def serverType = context.async.cloud.findComputeServerTypeByCode("scvmmController").blockingGet()
-				rtn.computeServerType = serverType
-				context.async.computeServer.save(rtn).blockingGet()
-			}
-		}
-		return rtn
-	}
-
 	/**
 	 * Zones/Clouds are refreshed periodically by the Morpheus Environment. This includes things like caching of brownfield
 	 * environments and resources such as Networks, Datastores, Resource Pools, etc. This represents the long term sync method that happens
@@ -726,7 +695,7 @@ class ScvmmCloudProvider implements CloudProvider {
 	void refreshDaily(Cloud cloudInfo) {
 		log.debug("refreshDaily: {}", cloudInfo)
 		try {
-			def scvmmController = getScvmmController(cloudInfo)
+			def scvmmController = apiService.getScvmmController(cloudInfo)
 			if (scvmmController) {
 				def scvmmOpts = apiService.getScvmmZoneAndHypervisorOpts(context, cloudInfo, scvmmController)
 				def hostOnline = ConnectionUtils.testHostConnectivity(scvmmOpts.sshHost, 5985, false, true, null)
