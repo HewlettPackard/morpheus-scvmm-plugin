@@ -1,5 +1,6 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.model.NetworkPoolServer
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
@@ -25,11 +26,13 @@ class IpPoolsSync {
     private Cloud cloud
     private ScvmmApiService apiService
     private LogInterface log = LogWrapper.instance
+    private NetworkPoolServer networkPoolServer
 
-    IpPoolsSync(MorpheusContext morpheusContext, Cloud cloud) {
+    IpPoolsSync(MorpheusContext morpheusContext, Cloud cloud, NetworkPoolServer server) {
         this.cloud = cloud
         this.morpheusContext = morpheusContext
         this.apiService = new ScvmmApiService(morpheusContext)
+        this.networkPoolServer = server
     }
 
     def execute() {
@@ -53,7 +56,7 @@ class IpPoolsSync {
             def listResults = apiService.listNetworkIPPools(scvmmOpts)
 
             if (listResults.success == true) {
-                def poolType = new NetworkPoolType(code: 'scvmm')
+                def poolType = new NetworkPoolType(code: 'scvmm-plugin-ipam')
                 def objList = listResults.ipPools
                 def networkMapping = listResults.networkMapping
 
@@ -124,6 +127,8 @@ class IpPoolsSync {
                     poolRangeAdds << newRange
                     add.addToIpRanges(newRange)
                 }
+
+                morpheusContext.async.network.pool.create(this.networkPoolServer.id, [add]).blockingGet()
             }
 
             if(networkPoolAdds.size() > 0){
@@ -304,6 +309,13 @@ class IpPoolsSync {
 
                     if(existingItem.subnetAddress != info.networkAddress) {
                         existingItem.subnetAddress = info.networkAddress
+                        doSave = true
+                    }
+
+                    if (existingItem?.poolServer?.id != this.networkPoolServer.id || existingItem.parentId != this.networkPoolServer.id) {
+                        existingItem.poolServer = this.networkPoolServer
+                        existingItem.parentId = this.networkPoolServer.id
+                        existingItem.parentType = "NetworkPoolServer"
                         doSave = true
                     }
 
