@@ -355,17 +355,20 @@ class VirtualMachineSync {
 
     def addMissingStorageVolumes(itemsToAdd, server, int diskNumber, maxStorage, changes) {
         def provisionProvider = cloudProvider.getProvisionProvider('morpheus-scvmm-plugin.provision')
-        itemsToAdd?.each { diskData ->
+        def serverVolumeNames = server.volumes.collect{ it.name }
+        itemsToAdd?.eachWithIndex { diskData, index ->
             log.debug("adding new volume: ${diskData}")
+            def originalVolumeName = serverVolumeNames?.getAt(index)
             def datastore = diskData.datastore ?: loadDatastoreForVolume(diskData.HostVolumeId, diskData.FileShareId, diskData.PartitionUniqueId) ?: null
             def volumeConfig = [
-                    name      : diskData.Name,
+                    name      : originalVolumeName,
                     size      : diskData.TotalSize?.toLong() ?: 0,
                     rootVolume: diskData.VolumeType == 'BootAndSystem' || !server.volumes?.size(),
                     //deviceName: (diskData.deviceName ?: provisionProvider.getDiskName(diskNumber)),
                     deviceName: diskData.deviceName,
                     externalId: diskData.ID,
-                    internalId: diskData.Name
+                    internalId: diskData.Name,
+                    storageType: getStorageVolumeType("scvmm-${diskData?.VHDType}-${diskData?.VHDFormat}".toLowerCase()),
             ]
             if (datastore)
                 volumeConfig.datastoreId = "${datastore.id}"
@@ -426,13 +429,23 @@ class VirtualMachineSync {
         storageVolume.name = volume.name
         storageVolume.account = account
 
-        def storageType = context.services.storageVolume.storageVolumeType.find(new DataQuery()
-                .withFilter('code', 'standard'))
+        storageVolume.maxStorage = volume?.maxStorage?.toLong() ?: volume?.size?.toLong()
+        def storageType
+        if(volume?.storageType) {
+            storageType = context.async.storageVolume.storageVolumeType.get(volume.storageType?.toLong()).blockingGet()
+        }
+        else {
+            storageType = context.async.storageVolume.storageVolumeType.find(new DataQuery().withFilter('code', 'standard')).blockingGet()
+        }
         storageVolume.type = storageType
 
         storageVolume.rootVolume = volume.rootVolume == true
         if (volume.datastoreId) {
             storageVolume.datastoreOption = volume.datastoreId
+            storageVolume.datastore = context.services.cloud.datastore.get(storageVolume.datastoreOption.toLong())
+            if(storageVolume.datastore) {
+                storageVolume.storageServer = storageVolume.datastore.storageServer
+            }
             storageVolume.refType = 'Datastore'
             storageVolume.refId = volume.datastoreId?.toLong()
         }
@@ -477,5 +490,11 @@ class VirtualMachineSync {
             return datastore
         }
         null
+    }
+
+    def getStorageVolumeType(String storageVolumeTypeCode) {
+        log.debug("getStorageVolumeTypeId - Looking up volumeTypeCode ${storageVolumeTypeCode}")
+        def storageVolumeType = context.async.storageVolume.storageVolumeType.find(new DataQuery().withFilter('code', storageVolumeTypeCode ?: 'standard')).blockingGet()
+        return storageVolumeType.id
     }
 }
