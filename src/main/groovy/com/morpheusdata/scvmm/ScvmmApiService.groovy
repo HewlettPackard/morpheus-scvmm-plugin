@@ -2814,4 +2814,35 @@ For (\$i=0; \$i -le 10; \$i++) {
     private getPassword(Cloud cloud) {
 		(cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.password : cloud.getConfigProperty('password')
     }
+
+    def getScvmmController(Cloud cloud) {
+        def sharedControllerId = cloud.getConfigProperty('sharedController')
+        def sharedController = sharedControllerId ? context.services.computeServer.get(sharedControllerId.toLong()) : null
+        if (sharedController) {
+            return sharedController
+        }
+        def rtn = morpheusContext.services.computeServer.find(new DataQuery()
+                .withFilter('zone.id', cloud.id)
+                .withFilter('computeServerType.code', 'scvmmController')
+                .withJoin('computeServerType'))
+        if (rtn == null) {
+            //old zone with wrong type
+            rtn = morpheusContext.services.computeServer.find(new DataQuery()
+                    .withFilter('zone.id', cloud.id)
+                    .withFilter('computeServerType.code', 'scvmmController')
+                    .withJoin('computeServerType'))
+            if (rtn == null) {
+                rtn = morpheusContext.services.computeServer.find(new DataQuery()
+                        .withFilter('zone.id', cloud.id)
+                        .withFilter('serverType', 'hypervisor'))
+            }
+            //if we have tye type
+            if (rtn) {
+                def serverType = morpheusContext.async.cloud.findComputeServerTypeByCode("scvmmController").blockingGet()
+                rtn.computeServerType = serverType
+                morpheusContext.async.computeServer.save(rtn).blockingGet()
+            }
+        }
+        return rtn
+    }
 }
