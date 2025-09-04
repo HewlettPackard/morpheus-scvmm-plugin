@@ -2,18 +2,14 @@
 
 import pytest
 import logging
-
+import os
 from hpe_morpheus_automation_libs.api.external_api.morpheus_session import MorpheusExternalAPISession
 
-from functional_tests.common.configs.config_reader import ConfigHandler
-
 log = logging.getLogger(__name__)
-config_data = ConfigHandler().read_testcase_variable_config()
-
 
 @pytest.fixture
 def morpheus_session():
-    host = config_data["host"]
-    username = list(config_data["role"]["admin"].keys())[0]
-    password = list(config_data["role"]["admin"].values())[0]
-    return MorpheusExternalAPISession(host=host, username=username, password=password)
+    host = os.getenv("BASE_URL")
+    username = os.getenv("USERNAME")
+    password = os.getenv("PASSWORD")
+    return MorpheusExternalAPISession(host=host, username=username, password=password, version="v8_0_6")
