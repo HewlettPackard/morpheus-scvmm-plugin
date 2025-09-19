@@ -31,7 +31,8 @@ class ScvmmPlugin extends Plugin {
                 new ScvmmCloudProvider(this,this.morpheus),
                 new ScvmmProvisionProvider(this,this.morpheus),
                 new ScvmmBackupProvider(this,this.morpheus),
-                new ScvmmOptionSourceProvider(this, this.morpheus)
+                new ScvmmOptionSourceProvider(this, this.morpheus),
+                new ScvmmNetworkPoolProvider(this, this.morpheus),
         )
     }
 
