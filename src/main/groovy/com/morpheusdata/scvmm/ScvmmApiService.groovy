@@ -6,6 +6,7 @@ import com.morpheusdata.core.util.ComputeUtility
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.KeyPair
+import com.morpheusdata.scvmm.logging.ExecutionTracker
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
 import groovy.json.JsonOutput
@@ -480,7 +481,9 @@ if(\$cloud) {
     def listClouds(opts) {
         def rtn = [success: false, clouds: []]
         def command = generateCommandString('Get-SCCloud -VMMServer localhost | Select ID, Name')
-        def out = wrapExecuteCommand(command, opts)
+        def out = ExecutionTracker.execute("listClouds", {
+            wrapExecuteCommand(command, opts)
+        }, -1)
         if (out.success) {
             rtn.clouds = out.data
             rtn.success = true
@@ -709,7 +712,9 @@ foreach (\$VHDconf in \$Disks) {
 		}
 		\$report """
         def command = generateCommandString(commandStr)
-        def out = wrapExecuteCommand(command, opts)
+        def out = ExecutionTracker.execute("listClusters", {
+            wrapExecuteCommand(command, opts)
+        }, -1)
         if (out.success) {
             rtn.clusters = out.data
 
@@ -732,7 +737,9 @@ foreach (\$VHDconf in \$Disks) {
         def commandStr = """Get-SCVMHostGroup -VMMServer localhost | Select-Object @{Name="id";Expression={\$_.ID.Guid}}, @{Name="name";Expression={\$_.Name}}, @{Name="path";Expression={\$_.Path}}, @{Name="parent";Expression={\$_.ParentHostGroup.Name}}, @{Name="root";Expression={\$_.IsRoot}}"""
 
         def command = generateCommandString(commandStr)
-        def out = wrapExecuteCommand(command, opts)
+        def out = ExecutionTracker.execute("internalListHostGroups", {
+            wrapExecuteCommand(command, opts)
+        }, -1)
         if (out.success) {
             rtn.hostGroups = out.data
             rtn.success = true
@@ -754,7 +761,9 @@ foreach(\$share in \$shares) {
 }
 \$report"""
 
-        def out = wrapExecuteCommand(generateCommandString(command), opts)
+        def out = ExecutionTracker.execute("listLibraryShares", {
+            wrapExecuteCommand(generateCommandString(command), opts)
+        }, -1)
         if (out.success) {
             rtn.libraryShares = out.data
             rtn.success = true
@@ -776,7 +785,9 @@ foreach (\$cloud in \$clouds) {
 }
 \$report"""
             def command = generateCommandString(commandStr)
-            def out = wrapExecuteCommand(command, opts)
+            def out = ExecutionTracker.execute("listHostGroups", {
+                wrapExecuteCommand(command, opts)
+            }, -1)
             log.debug("out: ${out.data}")
             if (out.success) {
                 def clouds = out.data
@@ -2746,8 +2757,10 @@ For (\$i=0; \$i -le 10; \$i++) {
         getScvmmCloudOpts(morpheusContext, cloud, hypervisor) + getScvmmControllerOpts(cloud, hypervisor)
     }
 
-    def wrapExecuteCommand(String command, Map opts = [:]) {
-        def out = executeCommand(command, opts)
+    def wrapExecuteCommand(String command, Map opts = [:], Integer slowLoggerTimeout = 0) {
+        def out = ExecutionTracker.execute(command, {
+            executeCommand(command, opts)
+        }, slowLoggerTimeout)
 
         if (out.data) {
             def payload = out.data
