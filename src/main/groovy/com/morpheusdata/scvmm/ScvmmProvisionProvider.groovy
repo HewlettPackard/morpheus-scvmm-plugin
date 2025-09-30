@@ -12,7 +12,6 @@ import com.morpheusdata.core.providers.HostProvisionProvider
 import com.morpheusdata.core.providers.ProvisionProvider
 import com.morpheusdata.core.providers.WorkloadProvisionProvider
 import com.morpheusdata.core.util.ComputeUtility
-import com.morpheusdata.core.util.NetworkUtility
 import com.morpheusdata.model.*
 import com.morpheusdata.model.provisioning.HostRequest
 import com.morpheusdata.model.provisioning.WorkloadRequest
@@ -21,10 +20,9 @@ import com.morpheusdata.response.InitializeHypervisorResponse
 import com.morpheusdata.response.PrepareWorkloadResponse
 import com.morpheusdata.response.ProvisionResponse
 import com.morpheusdata.response.ServiceResponse
-import com.morpheusdata.scvmm.helper.morpheus.types.StorageVolumeTypeHelper
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
-import groovy.util.logging.Slf4j
+import groovy.json.JsonSlurper
 
 class ScvmmProvisionProvider extends AbstractProvisionProvider implements WorkloadProvisionProvider, HostProvisionProvider, ProvisionProvider.HypervisorProvisionFacet, HostProvisionProvider.ResizeFacet, WorkloadProvisionProvider.ResizeFacet, ProvisionProvider.BlockDeviceNameFacet {
     public static final String PROVIDER_CODE = 'scvmm.provision'
@@ -894,18 +892,51 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		}
 	}
 
+	def getUserAddedVolumes(workload) {
+		def configs = workload.configs
+		if (configs instanceof String) {
+			configs = new JsonSlurper().parseText(configs)
+		}
+		def volumesList = configs?.volumes ?: []
+		def storageVolumeProps = StorageVolume.metaClass.properties*.name as Set
+		def nonRootVolumes = volumesList.findAll { !it.rootVolume }
+		def nonRootCount = nonRootVolumes.size()
+		def storageVolumes = volumesList.findAll { !it.rootVolume }.collect { volMap ->
+			def filteredVolMap = volMap.findAll { k, v -> storageVolumeProps.contains(k) }
+			if (filteredVolMap.id == -1) {
+				new StorageVolume(filteredVolMap)
+			}
+		}.findAll {it != null }
+		return [count: nonRootCount, volumes: storageVolumes]
+	}
+
     def additionalTemplateDisksConfig(Workload workload, scvmmOpts) {
         // Determine what additional disks need to be added after provisioning
         def additionalTemplateDisks = []
+		def totalDataVolsAndNewVols = getUserAddedVolumes(workload)
+		def totalDataVols = totalDataVolsAndNewVols.count
+		def userAddedVolumes = totalDataVolsAndNewVols.volumes
         def dataDisks = getContainerDataDiskList(workload)
         log.debug "dataDisks: ${dataDisks} ${dataDisks?.size()}"
+
+		// if totalDataVols == getUserAddedVolumes its a new vm creation
+		// else its a clone and we only want to add the new volumes
+		def nonRootAdditionalVolumes = []
+		if (totalDataVols == userAddedVolumes.size()) {
+			log.debug "New VM creation - adding all user added volumes"
+			nonRootAdditionalVolumes = dataDisks
+		} else {
+			log.debug "Clone Scenario - adding all user added volumes"
+			nonRootAdditionalVolumes = userAddedVolumes
+		}
+
 		// scvmmOpts.diskExternalIdMappings will usually contain the virtualImage disk externalId
         def diskExternalIdMappings = scvmmOpts.diskExternalIdMappings
         def additionalDisksRequired = dataDisks?.size() + 1 > diskExternalIdMappings?.size()
         def busNumber = '0'
         if (additionalDisksRequired) {
             def diskCounter = diskExternalIdMappings.size()
-            dataDisks?.eachWithIndex { StorageVolume sv, index ->
+			nonRootAdditionalVolumes?.eachWithIndex { StorageVolume sv, index ->
                 if (index + 2 > diskExternalIdMappings.size()) {  // add 1 for the root disk and then 1 for 0 based
                     additionalTemplateDisks << [idx: index + 1, diskCounter: diskCounter, diskSize: sv.maxStorage, busNumber: busNumber]
                     diskCounter++

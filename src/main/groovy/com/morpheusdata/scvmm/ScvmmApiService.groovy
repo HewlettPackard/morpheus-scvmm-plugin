@@ -1610,8 +1610,8 @@ foreach (\$network in \$networks) {
                     // the expected count.. we are good
                     log.debug "serverStatus: ${serverDetail.server?.Status}, opts.dataDisks: ${opts.dataDisks?.size()}, additionalTemplateDisks: ${opts.additionalTemplateDisks?.size()}"
 
-                    if (serverDetail.server?.Status != 'UnderCreation' &&
-                            serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
+                     if (serverDetail.server?.Status != 'UnderCreation' &&
+                             serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
                         // additionalTemplateDisks are created after VM creation
                         // data disks are created and attached after vm creation
 
