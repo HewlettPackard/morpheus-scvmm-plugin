@@ -1,39 +1,41 @@
 import org.gradle.api.publish.maven.MavenPublication
 
 // (C) Copyright 2025 Hewlett Packard Enterprise Development LP
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
 buildscript {
     repositories {
         mavenLocal()
         mavenCentral()
         maven { url "https://plugins.gradle.org/m2/" }
-		maven { url "https://nexus.bertramlabs.com/content/repositories/snapshots" }
-		maven { url "https://nexus.bertramlabs.com/content/repositories/releases" }
-		maven { url "https://nexus.bertramlabs.com/content/repositories/publicReleases" }
+        maven { url "https://nexus.bertramlabs.com/content/repositories/snapshots" }
+        maven { url "https://nexus.bertramlabs.com/content/repositories/releases" }
+        maven { url "https://nexus.bertramlabs.com/content/repositories/publicReleases" }
     }
     dependencies {
         classpath "com.github.johnrengelman:shadow:8.1.1"
 //        classpath "com.morpheusdata:morpheus-plugin-gradle:$morpheusApiVersion"
-		classpath "com.morpheusdata:morpheus-plugin-gradle:$morpheusGradleVersion"
+        classpath "com.morpheusdata:morpheus-plugin-gradle:$morpheusGradleVersion"
         classpath "com.bertramlabs.plugins:asset-pipeline-gradle:$assetPipelineVersion"
     }
 }
 
 plugins {
-	id 'java'
-	id 'groovy'
-	id 'idea'
-	id 'com.github.johnrengelman.shadow' version '8.1.1'
-	id 'com.bertramlabs.asset-pipeline' version "$assetPipelineVersion"
-	id 'com.jfrog.artifactory' version "5.+"
-	id 'maven-publish'
+    id 'java'
+    id 'groovy'
+    id 'idea'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+    id 'com.bertramlabs.asset-pipeline' version "$assetPipelineVersion"
+    id 'com.jfrog.artifactory' version "5.+"
+    id 'maven-publish'
+    id 'jacoco'
 }
 
 // Include required files in the JAR
 processResources {
-	from('NOTICE') {
-		into('META-INF')
-	}
+    from('NOTICE') {
+        into('META-INF')
+    }
 }
 
 apply plugin: 'com.morpheusdata.morpheus-plugin-gradle'
@@ -41,151 +43,270 @@ group = 'com.hpe.scvmm'
 ext.isReleaseVersion = !version.endsWith("SNAPSHOT")
 
 java {
-	sourceCompatibility = JavaVersion.toVersion('1.11')
+    sourceCompatibility = JavaVersion.toVersion('1.11')
     targetCompatibility = JavaVersion.toVersion('1.11')
 }
 
 repositories {
-	mavenLocal()
-	mavenCentral()
-	maven { url "https://nexus.bertramlabs.com/content/repositories/snapshots" }
-	maven { url "https://nexus.bertramlabs.com/content/repositories/releases" }
-	maven { url "https://nexus.bertramlabs.com/content/repositories/publicReleases" }
+    mavenLocal()
+    mavenCentral()
+    maven { url "https://nexus.bertramlabs.com/content/repositories/snapshots" }
+    maven { url "https://nexus.bertramlabs.com/content/repositories/releases" }
+    maven { url "https://nexus.bertramlabs.com/content/repositories/publicReleases" }
 }
 
 configurations {
-	provided
+    provided
+    jacocoRuntime {
+        canBeResolved = true
+        extendsFrom implementation
+    }
 }
 
 dependencies {
-	provided "com.morpheusdata:morpheus-plugin-api:$morpheusApiVersion"
-	
-	provided "org.codehaus.groovy:groovy-all:$groovyVersion"
-	implementation 'commons-beanutils:commons-beanutils:1.11.0'
-	implementation "org.slf4j:slf4j-api:$slf4jVersion"
-	implementation "org.slf4j:slf4j-parent:$slf4jVersion"
-	implementation 'commons-net:commons-net:3.9.0'
-	implementation("com.bertramlabs.plugins:karman-core:${karmanVersion}") {
-		exclude module: 'groovy-all'
-	}
+    provided "com.morpheusdata:morpheus-plugin-api:$morpheusApiVersion"
 
-	// Include morpheus-core and it's dependencies
-	testImplementation 'io.reactivex.rxjava3:rxjava:3.1.7'
-	testImplementation 'org.apache.httpcomponents:httpclient:4.5.13'
-	testImplementation 'org.apache.httpcomponents:httpcore:4.4.5'
-	testImplementation "org.slf4j:slf4j-parent:$slf4jVersion"
+    provided "org.codehaus.groovy:groovy-all:$groovyVersion"
+    implementation 'commons-beanutils:commons-beanutils:1.11.0'
+    implementation "org.slf4j:slf4j-api:$slf4jVersion"
+    implementation "org.slf4j:slf4j-parent:$slf4jVersion"
+    implementation 'commons-net:commons-net:3.9.0'
+    implementation("com.bertramlabs.plugins:karman-core:${karmanVersion}") {
+        exclude module: 'groovy-all'
+    }
+    implementation 'org.jacoco:org.jacoco.agent:0.8.8'
+    implementation 'org.jacoco:org.jacoco.cli:0.8.8'
 
-	testImplementation "org.codehaus.groovy:groovy-all:$groovyVersion"
-	testImplementation 'net.bytebuddy:byte-buddy:1.9.3'
-	testImplementation 'org.objenesis:objenesis:2.6'
-	testImplementation platform("org.spockframework:spock-bom:$spockVersion")
-	testImplementation "org.spockframework:spock-core"
-	testImplementation "org.spockframework:spock-junit4"  // you can remove this if your code does not rely on old JUnit 4 rules
-	testImplementation 'cglib:cglib-nodep:3.2.12'
+    // Include morpheus-core and it's dependencies
+    testImplementation 'io.reactivex.rxjava3:rxjava:3.1.7'
+    testImplementation 'org.apache.httpcomponents:httpclient:4.5.13'
+    testImplementation 'org.apache.httpcomponents:httpcore:4.4.5'
+    testImplementation "org.slf4j:slf4j-parent:$slf4jVersion"
+
+    testImplementation "org.codehaus.groovy:groovy-all:$groovyVersion"
+    testImplementation 'net.bytebuddy:byte-buddy:1.9.3'
+    testImplementation 'org.objenesis:objenesis:2.6'
+    testImplementation platform("org.spockframework:spock-bom:$spockVersion")
+    testImplementation "org.spockframework:spock-core"
+    testImplementation "org.spockframework:spock-junit4"
+    // you can remove this if your code does not rely on old JUnit 4 rules
+    testImplementation 'cglib:cglib-nodep:3.2.12'
 }
 
 
 sourceSets {
-	main {
-		compileClasspath += configurations.provided
-	}
+    main {
+        compileClasspath += configurations.provided
+    }
 }
 
 final gitCommitId = providers.exec {
-	commandLine('git', 'rev-parse', 'HEAD')
+    commandLine('git', 'rev-parse', 'HEAD')
 }.standardOutput.asText.get()
 
 final gitBranchName = providers.exec {
-	commandLine('git', 'rev-parse', '--abbrev-ref', 'HEAD')
+    commandLine('git', 'rev-parse', '--abbrev-ref', 'HEAD')
 }.standardOutput.asText.get()
 
 def getEnvOrProperty(final String envVar, final String propertyKey) {
-	return System.getenv(envVar) ?: project.findProperty(propertyKey)
+    return System.getenv(envVar) ?: project.findProperty(propertyKey)
+}
+
+def instrumentedClassesDir = file("$buildDir/instrumented-classes")
+
+task instrumentClasses(type: JavaExec) {
+    dependsOn classes
+    inputs.files sourceSets.main.output.classesDirs
+    outputs.dir instrumentedClassesDir
+    main = 'org.jacoco.cli.internal.Main'
+    classpath = configurations.jacocoRuntime
+
+    doFirst {
+        def existingClassDirs = []
+        sourceSets.main.output.classesDirs.each { dir ->
+            if (dir.exists() && dir.isDirectory()) {
+                def files = dir.listFiles()
+                if (files && files.length > 0) {
+                    existingClassDirs.add(dir.absolutePath)
+                }
+            }
+        }
+
+        if (existingClassDirs.isEmpty()) {
+            args = []
+        } else {
+            def fullArgs = ['instrument']
+            existingClassDirs.each { dir ->
+                fullArgs.add(dir)
+            }
+            fullArgs.addAll(['--dest', instrumentedClassesDir.absolutePath])
+            args = fullArgs
+        }
+    }
+}
+
+task extractJacocoAgentClasses {
+    dependsOn instrumentClasses
+    def jacocoAgent = configurations.jacocoRuntime.resolve().find { it.name.contains('org.jacoco.agent') }
+    def tmpDir = file("$buildDir/tmp/jacocoagent")
+
+    doLast {
+        // Create temp dir
+        tmpDir.mkdirs()
+        // Copy jacocoagent.jar to temp dir
+        copy {
+            from jacocoAgent
+            into tmpDir
+        }
+        // Unzip jacocoagent.jar in temp dir
+        copy {
+            from zipTree(new File(tmpDir, jacocoAgent.name))
+            into tmpDir
+        }
+        // Find the inner jacocoagent.jar and unzip it
+        def innerAgentJar = fileTree(tmpDir).find { it.name == 'jacocoagent.jar' && it.isFile() }
+        if (innerAgentJar) {
+            copy {
+                from zipTree(innerAgentJar)
+                into tmpDir
+            }
+        }
+        // Copy all classes from temp dir to classes dir
+        copy {
+            from fileTree(tmpDir) {
+                include '**/*.class'
+            }
+            into instrumentedClassesDir
+        }
+        // Clean up temp dir
+        tmpDir.deleteDir()
+    }
 }
 
 //Set plugin metadata information here that gets written into the jar
 jar {
-	manifest {
-		attributes(
-				'Plugin-Class': 'com.morpheusdata.scvmm.ScvmmPlugin',
-				'Plugin-Version': version,
-				'Morpheus-Name': 'SCVMM',
-				'Morpheus-Organization': 'morpheus',
-				'Morpheus-Code': 'morpheus-scvmm-plugin',
-				'Morpheus-Description': 'Plugin for System Center Virtual Machine Manager',
-				'Morpheus-Logo': 'assets/scvmm.svg',
-				'Morpheus-Logo-Dark': 'assets/scvmm-dark.svg',
-				'Morpheus-Labels': 'Plugin, Cloud',
-				'Morpheus-Repo': 'https://github.com/gomorpheus/morpheus-scvmm-plugin',
-				'Morpheus-Min-Appliance-Version': "8.0.3"
-		)
-	}
+    manifest {
+        attributes(
+                'Plugin-Class': 'com.morpheusdata.scvmm.ScvmmPlugin',
+                'Plugin-Version': version,
+                'Morpheus-Name': 'SCVMM',
+                'Morpheus-Organization': 'morpheus',
+                'Morpheus-Code': 'morpheus-scvmm-plugin',
+                'Morpheus-Description': 'Plugin for System Center Virtual Machine Manager',
+                'Morpheus-Logo': 'assets/scvmm.svg',
+                'Morpheus-Logo-Dark': 'assets/scvmm-dark.svg',
+                'Morpheus-Labels': 'Plugin, Cloud',
+                'Morpheus-Repo': 'https://github.com/gomorpheus/morpheus-scvmm-plugin',
+                'Morpheus-Min-Appliance-Version': "8.0.3"
+        )
+    }
 }
 
 assets {
-	packagePlugin = false //leave this false for plugins
+    packagePlugin = false //leave this false for plugins
 }
 
 
 task(console, dependsOn: 'classes', type: JavaExec) {
-	main = 'groovy.ui.Console'
-	classpath = sourceSets.main.compileClasspath + sourceSets.main.runtimeClasspath
+    main = 'groovy.ui.Console'
+    classpath = sourceSets.main.compileClasspath + sourceSets.main.runtimeClasspath
 }
 
 test {
-	testLogging {
-		exceptionFormat = 'full'
-		showStandardStreams = true
-	}
+    testLogging {
+        exceptionFormat = 'full'
+        showStandardStreams = true
+    }
 }
 tasks.assemble.dependsOn tasks.shadowJar
 
 
+// Also update the shadowJar task to use instrumented classes
 shadowJar {
-	archiveClassifier.set('all')
+    archiveClassifier.set('all')
 }
 
+task instrumentedJar(type: ShadowJar) {
+    dependsOn extractJacocoAgentClasses, assetCompile
+    archiveClassifier.set('instrumented-all')
+    configurations = [project.configurations.runtimeClasspath, project.configurations.jacocoRuntime]
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from(instrumentedClassesDir)
+    from('src/main/resources') {
+        include 'META-INF/**'
+    }
+    from("$buildDir/assets")
+    manifest {
+        attributes(
+                'Plugin-Class': 'com.morpheusdata.scvmm.ScvmmPlugin',
+                'Plugin-Version': version,
+                'Morpheus-Name': 'SCVMM',
+                'Morpheus-Organization': 'morpheus',
+                'Morpheus-Code': 'morpheus-scvmm-plugin',
+                'Morpheus-Description': 'Plugin for System Center Virtual Machine Manager',
+                'Morpheus-Logo': 'assets/scvmm.svg',
+                'Morpheus-Logo-Dark': 'assets/scvmm-dark.svg',
+                'Morpheus-Labels': 'Plugin, Cloud',
+                'Morpheus-Repo': 'https://github.com/gomorpheus/morpheus-scvmm-plugin',
+                'Morpheus-Min-Appliance-Version': "8.0.3"
+        )
+    }
+}
+
+task jacocoCustomReport(type: JacocoReport) {
+    executionData file("$buildDir/jacoco/jacoco.exec")
+    sourceDirectories.setFrom files(sourceSets.main.allSource.srcDirs)
+    classDirectories.setFrom files(sourceSets.main.output)
+    reports {
+        html.required.set(true)
+        xml.required.set(true)
+        csv.required.set(false)
+        html.outputLocation.set(file("$buildDir/reports/jacoco/custom"))
+    }
+}
+
+
 artifactory {
-	publish {
-		// Define the Artifactory URL for publishing artifacts
-		contextUrl = 'https://hpeartifacts.jfrog.io/artifactory'
-		// Define the project repository to which the artifacts will be published
-		repository {
-			// Set the Artifactory repository key
-			repoKey = 'morpheus-plugins'
-			// Specify the publisher username
-			username = getEnvOrProperty('ARTIFACTORY_USER', 'artifactory_user')
-			// Provide the publisher password
-			password = getEnvOrProperty('ARTIFACTORY_PASSWORD', 'artifactory_password')
-		}
+    publish {
+        // Define the Artifactory URL for publishing artifacts
+        contextUrl = 'https://hpeartifacts.jfrog.io/artifactory'
+        // Define the project repository to which the artifacts will be published
+        repository {
+            // Set the Artifactory repository key
+            repoKey = 'morpheus-plugins'
+            // Specify the publisher username
+            username = getEnvOrProperty('ARTIFACTORY_USER', 'artifactory_user')
+            // Provide the publisher password
+            password = getEnvOrProperty('ARTIFACTORY_PASSWORD', 'artifactory_password')
+        }
 
-		// Include all configured publications for all the modules
-		defaults {
-			publications('mavenJava')
-			publishArtifacts = true
-			properties = [
-					'commit_id': gitCommitId,
-					'branch'   : gitBranchName,
-			]
-			publishPom = true
-			//
-			// TODO - Enable once permissions to deploy to
-			//        artifactory-build-info is granted by DevOps.
-			publishBuildInfo = false
-		}
+        // Include all configured publications for all the modules
+        defaults {
+            publications('mavenJava')
+            publishArtifacts = true
+            properties = [
+                    'commit_id': gitCommitId,
+                    'branch'   : gitBranchName,
+            ]
+            publishPom = true
+            //
+            // TODO - Enable once permissions to deploy to
+            //        artifactory-build-info is granted by DevOps.
+            publishBuildInfo = false
+        }
 
-		artifacts {
-			archives shadowJar
-		}
-	}
+        artifacts {
+            archives shadowJar
+        }
+    }
 }
 
 publishing {
-	publications {
-		mavenJava(MavenPublication) {
-			artifact(shadowJar.archiveFile) {
-				classifier = 'all'
-			}
-		}
-	}
+    publications {
+        mavenJava(MavenPublication) {
+            artifact(shadowJar.archiveFile) {
+                classifier = 'all'
+            }
+        }
+    }
 }
