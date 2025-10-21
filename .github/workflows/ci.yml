@@ -81,7 +81,20 @@ jobs:
 
 #      - name: Verify minimum test coverage
 #        run: ./gradlew jacocoTestCoverageVerification
+#      - name: Set up Python
+#        uses: actions/setup-python@v5
+#        with:
+#          python-version: '3.x'
 
+#      - name: Create and activate venv, install dependencies
+#        run: |
+#          python3 -m venv venv
+#          . venv/bin/activate
+#          ./install_dependencies.sh
+#        env:
+#          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
+#          # Secret defined at https://github.com/gomorpheus/morpheus-scvmm-plugin/settings/secrets/actions
+#          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
 
   publish-to-artifactory:
     if: github.ref == 'refs/heads/main'
