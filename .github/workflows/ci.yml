@@ -15,21 +15,21 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  #  copyright-check:
-  #    if: github.ref != 'refs/heads/main'
-  #    uses: hpe-actions/copyright/.github/workflows/copyright.yml@v2
+#  copyright-check:
+#    if: github.ref != 'refs/heads/main'
+#    uses: hpe-actions/copyright/.github/workflows/copyright.yml@v2
 
-  #  secrets-scanner:
-  #    uses: hpe-actions/secrets-scanner/.github/workflows/secrets-scanner.yml@v2.0.2
-  #    with:
-  #      config_override: ".gitleaks.toml"
+#  secrets-scanner:
+#    uses: hpe-actions/secrets-scanner/.github/workflows/secrets-scanner.yml@v2.0.2
+#    with:
+#      config_override: ".gitleaks.toml"
 
   build:
     runs-on: ubuntu-latest
     if: github.ref != 'refs/heads/main'
-    #    environment:
-    #      name: github-pages
-    #      url: ${{ steps.deployment.outputs.page_url }}
+#    environment:
+#      name: github-pages
+#      url: ${{ steps.deployment.outputs.page_url }}
     permissions:
       contents: write
       packages: read
@@ -46,55 +46,55 @@ jobs:
           distribution: 'temurin'
       - uses: gradle/actions/setup-gradle@v4
 
-      #      - name: Run tests and generate coverage report
-      #        run: ./gradlew test
+#      - name: Run tests and generate coverage report
+#        run: ./gradlew test
 
-      #      - name: Run quality checks
-      #        run: ./gradlew check
+#      - name: Run quality checks
+#        run: ./gradlew check
 
       - name: Build and assemble the project artifacts
         run: ./gradlew build
 
-  #      - name: Run functional tests on simulated environment
-  #        run: ./gradlew functionalTest --tests runners.CucumberTestSuite
+#      - name: Run functional tests on simulated environment
+#        run: ./gradlew functionalTest --tests runners.CucumberTestSuite
 
-  #      - name: Create test reports index page
-  #        run: |
-  #          echo '<html><body>
-  #            <h1>Reports</h1>
-  #            <ul>
-  #              <li><a href="tests/test">Test Results</a></li>
-  #              <li><a href="tests/cucumberFunctionalTest">Functional Test Results</a></li>
-  #              <li><a href="jacoco/test/html">Coverage Report</a></li>
-  #              <li><a href="codenarc/main.html">Main CodeNarc Report</a></li>
-  #            </ul>
-  #          </body></html>' > build/reports/index.html
+#      - name: Create test reports index page
+#        run: |
+#          echo '<html><body>
+#            <h1>Reports</h1>
+#            <ul>
+#              <li><a href="tests/test">Test Results</a></li>
+#              <li><a href="tests/cucumberFunctionalTest">Functional Test Results</a></li>
+#              <li><a href="jacoco/test/html">Coverage Report</a></li>
+#              <li><a href="codenarc/main.html">Main CodeNarc Report</a></li>
+#            </ul>
+#          </body></html>' > build/reports/index.html
 
-  #      - name: Upload test reports as artifact
-  #        uses: actions/upload-pages-artifact@v3
-  #        with:
-  #          path: build/reports
+#      - name: Upload test reports as artifact
+#        uses: actions/upload-pages-artifact@v3
+#        with:
+#          path: build/reports
 
-  #      - name: Deploy test reports to GitHub Pages
-  #        id: deployment
-  #        uses: actions/deploy-pages@v4
+#      - name: Deploy test reports to GitHub Pages
+#        id: deployment
+#        uses: actions/deploy-pages@v4
 
-  #      - name: Verify minimum test coverage
-  #        run: ./gradlew jacocoTestCoverageVerification
-  #      - name: Set up Python
-  #        uses: actions/setup-python@v5
-  #        with:
-  #          python-version: '3.x'
+#      - name: Verify minimum test coverage
+#        run: ./gradlew jacocoTestCoverageVerification
+#      - name: Set up Python
+#        uses: actions/setup-python@v5
+#        with:
+#          python-version: '3.x'
 
-  #      - name: Create and activate venv, install dependencies
-  #        run: |
-  #          python3 -m venv venv
-  #          . venv/bin/activate
-  #          ./install_dependencies.sh
-  #        env:
-  #          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
-  #          # Secret defined at https://github.com/gomorpheus/morpheus-scvmm-plugin/settings/secrets/actions
-  #          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+#      - name: Create and activate venv, install dependencies
+#        run: |
+#          python3 -m venv venv
+#          . venv/bin/activate
+#          ./install_dependencies.sh
+#        env:
+#          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
+#          # Secret defined at https://github.com/gomorpheus/morpheus-scvmm-plugin/settings/secrets/actions
+#          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
 
   publish-to-artifactory:
     if: github.ref == 'refs/heads/main'
