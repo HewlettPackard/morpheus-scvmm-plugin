@@ -53,7 +53,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     @Override
     ServiceResponse<InitializeHypervisorResponse> initializeHypervisor(Cloud cloud, ComputeServer server) {
         log.debug("initializeHypervisor: cloud: {}, server: {}", cloud, server)
-        ServiceResponse<InitializeHypervisorResponse> rtn = new ServiceResponse<>(new InitializeHypervisorResponse())
+		InitializeHypervisorResponse initializeHypervisorResponse = new InitializeHypervisorResponse()
+        //ServiceResponse<InitializeHypervisorResponse> rtn = new ServiceResponse<>(new InitializeHypervisorResponse())
+		ServiceResponse<InitializeHypervisorResponse> rtn = ServiceResponse.prepare(initializeHypervisorResponse)
         try {
             def sharedController = cloud.getConfigProperty('sharedController')
             if (sharedController) {
@@ -104,12 +106,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     @Override
     ServiceResponse<PrepareWorkloadResponse> prepareWorkload(Workload workload, WorkloadRequest workloadRequest, Map opts) {
         log.debug("prepare workload scvmm")
-        ServiceResponse<PrepareWorkloadResponse> resp = new ServiceResponse<PrepareWorkloadResponse>(
-                true, // successful
-                '', // no message
-                null, // no errors
-                new PrepareWorkloadResponse(workload: workload) // adding the workload to the response for convenience
-        )
+		PrepareWorkloadResponse prepareResponse = new PrepareWorkloadResponse(workload: workload)
+		ServiceResponse<PrepareWorkloadResponse> resp = ServiceResponse.prepare(prepareResponse)
+		resp.success = true
+		resp.msg = ''
+		resp.errors = null
         return resp
     }
 
@@ -861,7 +862,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		return rtn
     }
 
-	private cloneParentCleanup(Map<String, Object> scvmmOpts, ServiceResponse rtn) {
+
+	public MorpheusContext getContext() {
+		return this.context
+	}
+	protected cloneParentCleanup(Map<String, Object> scvmmOpts, ServiceResponse rtn) {
 		if (scvmmOpts.cloneVMId && scvmmOpts.cloneContainerId) {
 			try {
 				// Start the parent VM if needed
@@ -963,7 +968,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         additionalTemplateDisks
     }
 
-    private constructCloudInitOptions(Workload container, WorkloadRequest workloadRequest, installAgent, platform, VirtualImage virtualImage, networkConfig, licenses, scvmmOpts) {
+    protected constructCloudInitOptions(Workload container, WorkloadRequest workloadRequest, installAgent, platform, VirtualImage virtualImage, networkConfig, licenses, scvmmOpts) {
         log.debug("constructCloudInitOptions: ${container}, ${installAgent}, ${platform}")
         def rtn = [:]
         ComputeServer server = container.server
@@ -1008,7 +1013,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         rtn
     }
 
-    private setDynamicMemory(Map targetMap, ServicePlan plan) {
+    protected setDynamicMemory(Map targetMap, ServicePlan plan) {
         log.debug "setDynamicMemory: ${plan}"
         if (plan) {
             def ranges = plan.getConfigProperty('ranges') ?: [:]
@@ -1017,7 +1022,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
     }
 
-    private getVirtualImageLocation(VirtualImage virtualImage, Cloud cloud) {
+    protected getVirtualImageLocation(VirtualImage virtualImage, Cloud cloud) {
         def location = context.services.virtualImage.location.find(new DataQuery().withFilters(
                 new DataFilter('virtualImage.id', virtualImage.id),
                 new DataOrFilter(
@@ -1569,7 +1574,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             Long computeTypeSetId = server.typeSet?.id
             if (computeTypeSetId) {
                 ComputeTypeSet computeTypeSet = morpheus.async.computeTypeSet.get(computeTypeSetId).blockingGet()
-                if (computeTypeSet.workloadType) {
+                if (computeTypeSet?.workloadType) {
                     WorkloadType workloadType = morpheus.async.workloadType.get(computeTypeSet.workloadType.id).blockingGet()
                     virtualImage = workloadType.virtualImage
                 }
@@ -1957,7 +1962,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
     }
 
-    private applyComputeServerNetworkIp(ComputeServer server, privateIp, publicIp, index, macAddress) {
+    protected applyComputeServerNetworkIp(ComputeServer server, privateIp, publicIp, index, macAddress) {
         log.debug("applyComputeServerNetworkIp: ${privateIp}")
         ComputeServerInterface netInterface
         if (privateIp) {
@@ -2087,7 +2092,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         return resizeWorkloadAndServer(null, server, resizeRequest, opts, false)
     }
 
-    private ServiceResponse resizeWorkloadAndServer(Workload workload, ComputeServer server, ResizeRequest resizeRequest, Map opts, Boolean isWorkload) {
+    protected ServiceResponse resizeWorkloadAndServer(Workload workload, ComputeServer server, ResizeRequest resizeRequest, Map opts, Boolean isWorkload) {
         log.debug("resizeWorkloadAndServer workload.id: ${workload?.id} - opts: ${opts}")
 
         ServiceResponse rtn = ServiceResponse.success()

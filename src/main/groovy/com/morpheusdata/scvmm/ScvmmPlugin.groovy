@@ -35,6 +35,7 @@ class ScvmmPlugin extends Plugin {
         )
     }
 
+
 	/**
 	 * Called when a plugin is being removed from the plugin manager (aka Uninstalled)
 	 */

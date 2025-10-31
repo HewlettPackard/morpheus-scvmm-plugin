@@ -346,7 +346,7 @@ class ScvmmCloudProvider implements CloudProvider {
 	 *
 	 * @return The SSH options.
 	 */
-	private static Collection<OptionType> createSshOptions() {
+	protected static Collection<OptionType> createSshOptions() {
 		Collection<OptionType> sshOptions = []
 		sshOptions << new OptionType(code: 'computeServerType.global.sshHost')
 		sshOptions << new OptionType(code: 'computeServerType.global.sshPort')
@@ -865,7 +865,7 @@ class ScvmmCloudProvider implements CloudProvider {
 		return provisionProvider.stopServer(computeServer)
 	}
 
-	private long getMaxMemory(serverInfo) {
+	protected long getMaxMemory(serverInfo) {
 		def maxMemory = 0L
 		if (serverInfo?.memory && serverInfo?.memory?.toString()?.trim()) {
 			try {
@@ -877,7 +877,7 @@ class ScvmmCloudProvider implements CloudProvider {
 		return maxMemory
 	}
 
-	private long getMaxStorage(serverInfo) {
+	protected long getMaxStorage(serverInfo) {
 		def maxStorage = 0L
 		if (serverInfo?.disks && serverInfo?.disks?.toString()?.trim()) {
 			try {
@@ -1035,7 +1035,7 @@ class ScvmmCloudProvider implements CloudProvider {
 		return rtn
 	}
 
-	private updateHypervisorStatus(server, status, powerState, msg) {
+	protected updateHypervisorStatus(server, status, powerState, msg) {
 		log.debug("server: {}, status: {}, powerState: {}, msg: {}", server, status, powerState, msg)
 		if (server.status != status || server.powerState != powerState) {
 			server.status = status
