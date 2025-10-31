@@ -8,7 +8,6 @@ import json
 
 import pytest
 from dotenv import load_dotenv
-from hpe_glcp_automation_lib.libs.commons.utils.random_gens import RandomGenUtils
 from functional_tests.common.cloud_helper import ResourcePoller
 from functional_tests.common.create_payloads import SCVMMpayloads
 from functional_tests.common.scvmm_utils import SCVMMUtils
