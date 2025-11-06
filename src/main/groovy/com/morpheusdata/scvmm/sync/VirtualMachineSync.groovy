@@ -708,20 +708,20 @@ class VirtualMachineSync {
         volumeConfig
     }
 
-    private def resolveDatastore(diskData) {
+    private def resolveDatastore(Map diskData) {
         return diskData.datastore ?:
                 loadDatastoreForVolume(diskData.HostVolumeId, diskData.FileShareId, diskData.PartitionUniqueId)
     }
 
-    private String resolveDeviceName(diskData, int diskNumber) {
+    private String resolveDeviceName(Map diskData, int diskNumber) {
         return diskData.deviceName ?: apiService.getDiskName(diskNumber)
     }
 
-    private String resolveVolumeName(List serverVolumeNames, diskData, ComputeServer server, int index) {
+    private String resolveVolumeName(List serverVolumeNames, Map diskData, ComputeServer server, int index) {
         return serverVolumeNames?.getAt(index) ?: getVolumeName(diskData, server, index)
     }
 
-    private boolean isRootVolume(diskData, ComputeServer server) {
+    private boolean isRootVolume(Map diskData, ComputeServer server) {
         return diskData.VolumeType == BOOT_AND_SYSTEM || !server.volumes?.size()
     }
 
@@ -734,7 +734,6 @@ class VirtualMachineSync {
 
     def updateMatchedStorageVolumes(List updateItems, ComputeServer server, Long maxStorage, Boolean changes) {
         def savedVolumes = []
-        def hasChanges = changes
 
         updateItems?.eachWithIndex { updateMap, index ->
             log.debug("updating volume: ${updateMap.masterItem}")
@@ -743,7 +742,7 @@ class VirtualMachineSync {
 
             if (updateResult.shouldSave) {
                 savedVolumes << updateResult.volume
-                hasChanges = true
+                changes = true
             }
 
             maxStorage += updateResult.diskSize
@@ -821,10 +820,9 @@ class VirtualMachineSync {
 
 
     def removeMissingStorageVolumes(List removeItems, ComputeServer server, Boolean changes) {
-        def hasChanges = changes
         removeItems?.each { currentVolume ->
             log.debug "removing volume: ${currentVolume}"
-            hasChanges = true
+            changes = true
             currentVolume.controller = null
             currentVolume.datastore = null
             server.volumes.remove(currentVolume)
