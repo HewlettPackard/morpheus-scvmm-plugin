@@ -4,7 +4,6 @@ on:
   # schedule:
   #   - cron: "0 0 * * *"  # Runs daily at midnight UTC
   workflow_dispatch:  # Allows manual triggering of the workflow
-
 jobs:
   oidc_debug_test:
     permissions:
@@ -12,20 +11,8 @@ jobs:
       id-token: write
     runs-on: ubuntu-latest
     name: A test of the oidc debugger
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Checkout actions-oidc-debugger
-        uses: actions/checkout@v4
-        with:
-          repository: github/actions-oidc-debugger
-          ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
-          path: ./.github/actions/actions-oidc-debugger
-
       - name: Debug OIDC Claims
-        uses: ./.github/actions/actions-oidc-debugger
+        uses: github/actions-oidc-debugger@2e9ba5d3f4bebaad1f91a2cede055115738b7ae8
         with:
           audience: '${{ github.server_url }}/${{ github.repository_owner }}'
