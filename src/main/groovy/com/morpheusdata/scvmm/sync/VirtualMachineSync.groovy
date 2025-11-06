@@ -15,12 +15,49 @@ import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
 import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Observable
+import java.time.Instant
 
 /**
  * @author rahul.ray
  */
 
 class VirtualMachineSync {
+
+    // Constants for duplicate string literals
+    private static final String ZONE_ID = 'zone.id'
+    private static final String COMPUTE_SERVER_TYPE_CODE = 'computeServerType.code'
+    private static final String NOT_EQUALS = '!='
+    private static final String SCVMM_HYPERVISOR = 'scvmmHypervisor'
+    private static final String SCVMM_CONTROLLER = 'scvmmController'
+    private static final String SCVMM_UNMANAGED = 'scvmmUnmanaged'
+    private static final String CODE = 'code'
+    private static final String BACKSLASH = '\\'
+    private static final String PASSWORD = 'password'
+    private static final String USERNAME = 'username'
+    private static final String VMRDP = 'vmrdp'
+    private static final String DUNNO = 'dunno'
+    private static final String TRUE_STRING = 'true'
+    private static final String OTHER = 'other'
+    private static final String PROVISIONING = 'provisioning'
+    private static final String RESIZING = 'resizing'
+    private static final String STATUS = 'status'
+    private static final String SERVER_ID = 'server.id'
+    private static final String ID = 'id'
+    private static final String IN = 'in'
+    private static final String RUNNING = 'Running'
+    private static final String BOOT_AND_SYSTEM = 'BootAndSystem'
+    private static final String STANDARD = 'standard'
+    private static final String EXTERNAL_ID = 'externalId'
+    private static final String COMPUTE_ZONE = 'ComputeZone'
+    private static final String DATASTORE_REF_TYPE = 'datastore.refType'
+    private static final String DATASTORE_REF_ID = 'datastore.refId'
+    private static final String REF_TYPE = 'refType'
+
+    // Constants for duplicate numbers
+    private static final long KILOBYTE = 1024L
+    private static final long BYTES_PER_MB = KILOBYTE * KILOBYTE
+    private static final int DEFAULT_CONSOLE_PORT = 2179
+    private static final long ZERO_LONG = 0L
 
     ComputeServer node
     private Cloud cloud
@@ -43,7 +80,7 @@ class VirtualMachineSync {
         try {
             def executionContext = initializeExecutionContext()
             def listResults = apiService.listVirtualMachines(executionContext.scvmmOpts)
-            log.debug("VM List acquired in ${new Date().time - executionContext.startTime.time}ms")
+            log.debug("VM List acquired in ${Instant.now().toEpochMilli() - executionContext.startTime.toEpochMilli()}ms")
 
             if (listResults.success == true) {
                 performVirtualMachineSync(listResults, executionContext, createNew)
@@ -54,14 +91,14 @@ class VirtualMachineSync {
     }
 
     private Map initializeExecutionContext() {
-        def now = new Date()
+        def now = Instant.now()
         def consoleEnabled = cloud.getConfigProperty('enableVnc') ? true : false
         def scvmmOpts = apiService.getScvmmZoneAndHypervisorOpts(context, cloud, node)
 
         return [
-            startTime: now,
-            consoleEnabled: consoleEnabled,
-            scvmmOpts: scvmmOpts
+                startTime: now,
+                consoleEnabled: consoleEnabled,
+                scvmmOpts: scvmmOpts
         ]
     }
 
@@ -74,41 +111,41 @@ class VirtualMachineSync {
 
     private Map prepareSyncData() {
         def hosts = context.services.computeServer.list(new DataQuery()
-                .withFilter('zone.id', cloud.id)
-                .withFilter('computeServerType.code', 'scvmmHypervisor'))
+                .withFilter(ZONE_ID, cloud.id)
+                .withFilter(COMPUTE_SERVER_TYPE_CODE, SCVMM_HYPERVISOR))
 
         Collection<ServicePlan> availablePlans = context.services.servicePlan.list(new DataQuery().withFilters(
                 new DataFilter('active', true),
-                new DataFilter('deleted', '!=', true),
+                new DataFilter('deleted', NOT_EQUALS, true),
                 new DataFilter('provisionType.code', 'scvmm')
         ))
 
-        ServicePlan fallbackPlan = context.services.servicePlan.find(new DataQuery().withFilter('code', 'internal-custom-scvmm'))
+        ServicePlan fallbackPlan = context.services.servicePlan.find(new DataQuery().withFilter(CODE, 'internal-custom-scvmm'))
 
         Collection<ResourcePermission> availablePlanPermissions = []
         if (availablePlans) {
             availablePlanPermissions = context.services.resourcePermission.list(new DataQuery().withFilters(
                     new DataFilter('morpheusResourceType', 'ServicePlan'),
-                    new DataFilter('morpheusResourceId', 'in', availablePlans.collect { pl -> pl.id })
+                    new DataFilter('morpheusResourceId', IN, availablePlans.collect { pl -> pl.id })
             ))
         }
 
-        def serverType = context.async.cloud.findComputeServerTypeByCode("scvmmUnmanaged").blockingGet()
+        def serverType = context.async.cloud.findComputeServerTypeByCode(SCVMM_UNMANAGED).blockingGet()
 
         return [
-            hosts: hosts,
-            availablePlans: availablePlans,
-            fallbackPlan: fallbackPlan,
-            availablePlanPermissions: availablePlanPermissions,
-            serverType: serverType
+                hosts: hosts,
+                availablePlans: availablePlans,
+                fallbackPlan: fallbackPlan,
+                availablePlanPermissions: availablePlanPermissions,
+                serverType: serverType
         ]
     }
 
     private def getExistingVirtualMachines() {
         return context.async.computeServer.listIdentityProjections(new DataQuery()
-                .withFilter('zone.id', cloud.id)
-                .withFilter("computeServerType.code", "!=", 'scvmmHypervisor')
-                .withFilter("computeServerType.code", "!=", 'scvmmController'))
+                .withFilter(ZONE_ID, cloud.id)
+                .withFilter(COMPUTE_SERVER_TYPE_CODE, NOT_EQUALS, SCVMM_HYPERVISOR)
+                .withFilter(COMPUTE_SERVER_TYPE_CODE, NOT_EQUALS, SCVMM_CONTROLLER))
     }
 
     private void executeSyncTask(existingVms, listResults, syncData, executionContext, createNew) {
@@ -124,11 +161,11 @@ class VirtualMachineSync {
         }.onAdd { itemsToAdd ->
             if (createNew) {
                 addMissingVirtualMachines(itemsToAdd, syncData.availablePlans, syncData.fallbackPlan,
-                    syncData.availablePlanPermissions, syncData.hosts, executionContext.consoleEnabled, syncData.serverType)
+                        syncData.availablePlanPermissions, syncData.hosts, executionContext.consoleEnabled, syncData.serverType)
             }
         }.onUpdate { List<SyncTask.UpdateItem<ComputeServer, Map>> updateItems ->
             updateMatchedVirtualMachines(updateItems, syncData.availablePlans, syncData.fallbackPlan,
-                syncData.hosts, executionContext.consoleEnabled, syncData.serverType)
+                    syncData.hosts, executionContext.consoleEnabled, syncData.serverType)
         }.onDelete { List<ComputeServerIdentityProjection> removeItems ->
             removeMissingVirtualMachines(removeItems)
         }.observe().blockingSubscribe()
@@ -153,7 +190,7 @@ class VirtualMachineSync {
     }
 
     private ComputeServer createNewVirtualMachine(cloudItem, Collection<ServicePlan> availablePlans, ServicePlan fallbackPlan,
-                                                Collection<ResourcePermission> availablePlanPermissions, List hosts, Boolean consoleEnabled, ComputeServerType defaultServerType) {
+                                                  Collection<ResourcePermission> availablePlanPermissions, List hosts, Boolean consoleEnabled, ComputeServerType defaultServerType) {
         def vmConfig = buildVmConfig(cloudItem, defaultServerType)
         ComputeServer add = new ComputeServer(vmConfig)
 
@@ -171,7 +208,7 @@ class VirtualMachineSync {
     private void configureServerResources(ComputeServer server, cloudItem) {
         server.maxStorage = (cloudItem.TotalSize?.toDouble() ?: 0)
         server.usedStorage = (cloudItem.UsedSize?.toDouble() ?: 0)
-        server.maxMemory = (cloudItem.Memory?.toLong() ?: 0) * 1024l * 1024l
+        server.maxMemory = (cloudItem.Memory?.toLong() ?: 0) * BYTES_PER_MB
         server.maxCores = cloudItem.CPUCount.toLong() ?: 1
     }
 
@@ -195,8 +232,8 @@ class VirtualMachineSync {
 
     private void configureServerOperatingSystem(ComputeServer server, cloudItem) {
         def osTypeCode = apiService.getMapScvmmOsType(cloudItem.OperatingSystem, true, "Other Linux (64 bit)")
-        def osTypeCodeStr = osTypeCode ?: 'other'
-        def osType = context.services.osType.find(new DataQuery().withFilter('code', osTypeCodeStr))
+        def osTypeCodeStr = osTypeCode ?: OTHER
+        def osType = context.services.osType.find(new DataQuery().withFilter(CODE, osTypeCodeStr))
         if (osType) {
             server.serverOs = osType
             server.osType = server.serverOs?.platform?.toString()?.toLowerCase()
@@ -206,14 +243,14 @@ class VirtualMachineSync {
 
     private void configureServerConsole(ComputeServer server, Boolean consoleEnabled) {
         if (consoleEnabled) {
-            server.consoleType = 'vmrdp'
+            server.consoleType = VMRDP
             server.consoleHost = server.parentServer?.name
-            server.consolePort = 2179
-            server.sshUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username') ?: 'dunno'
-            if (server.sshUsername.contains('\\')) {
-                server.sshUsername = server.sshUsername.tokenize('\\')[1]
+            server.consolePort = DEFAULT_CONSOLE_PORT
+            server.sshUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty(USERNAME) ?: DUNNO
+            if (server.sshUsername.contains(BACKSLASH)) {
+                server.sshUsername = server.sshUsername.tokenize(BACKSLASH)[1]
             }
-            server.consolePassword = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
+            server.consolePassword = cloud.accountCredentialData?.password ?: cloud.getConfigProperty(PASSWORD)
         }
     }
 
@@ -237,14 +274,14 @@ class VirtualMachineSync {
     }
 
     private Map loadMatchedServers(List<SyncTask.UpdateItem<ComputeServer, Map>> updateList) {
-        return context.services.computeServer.list(new DataQuery().withFilter('id', 'in', updateList.collect { up -> up.existingItem.id })
+        return context.services.computeServer.list(new DataQuery().withFilter(ID, IN, updateList.collect { up -> up.existingItem.id })
                 .withJoins(['account', 'zone', 'computeServerType', 'plan', 'chassis', 'serverOs', 'sourceImage', 'folder', 'createdBy', 'userGroup',
                             'networkDomain', 'interfaces', 'interfaces.addresses', 'controllers', 'snapshots', 'metadata', 'volumes',
                             'volumes.datastore', 'resourcePool', 'parentServer', 'capacityInfo'])).collectEntries { [(it.id): it] }
     }
 
     private List<ComputeServer> processServerUpdates(List<SyncTask.UpdateItem<ComputeServer, Map>> updateList, Map matchedServers,
-                                                   availablePlans, fallbackPlan, List<ComputeServer> hosts, consoleEnabled, ComputeServerType defaultServerType) {
+                                                     availablePlans, fallbackPlan, List<ComputeServer> hosts, consoleEnabled, ComputeServerType defaultServerType) {
         List<ComputeServer> saves = []
 
         for (updateMap in updateList) {
@@ -253,7 +290,7 @@ class VirtualMachineSync {
 
             try {
                 log.debug("Checking state of matched SCVMM Server ${masterItem.ID} - ${currentServer}")
-                if (currentServer.status != 'provisioning') {
+                if (currentServer.status != PROVISIONING) {
                     Boolean save = updateSingleServer(currentServer, masterItem, hosts, consoleEnabled, defaultServerType, availablePlans, fallbackPlan)
 
                     log.debug ("updateMatchedVirtualMachines: save: ${save}")
@@ -261,7 +298,7 @@ class VirtualMachineSync {
                         saves << currentServer
                     }
                 }
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 log.error "Error in updating server ${currentServer?.name}: ${e.message}", e
             }
         }
@@ -270,7 +307,7 @@ class VirtualMachineSync {
     }
 
     private Boolean updateSingleServer(ComputeServer currentServer, masterItem, List<ComputeServer> hosts,
-                                     consoleEnabled, ComputeServerType defaultServerType, availablePlans, fallbackPlan) {
+                                       consoleEnabled, ComputeServerType defaultServerType, availablePlans, fallbackPlan) {
         try {
             Boolean save = false
 
@@ -356,7 +393,7 @@ class VirtualMachineSync {
             save = true
         }
 
-        def maxMemory = (masterItem.Memory?.toLong() ?: 0) * 1024l * 1024l
+        def maxMemory = (masterItem.Memory?.toLong() ?: 0) * BYTES_PER_MB
         if (currentServer.maxMemory != maxMemory) {
             currentServer.maxMemory = maxMemory
             save = true
@@ -396,11 +433,11 @@ class VirtualMachineSync {
         }
 
         def username = extractConsoleUsername()
-        def password = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
+        def password = cloud.accountCredentialData?.password ?: cloud.getConfigProperty(PASSWORD)
 
         return [
-                type: 'vmrdp',
-                port: 2179,
+                type: VMRDP,
+                port: DEFAULT_CONSOLE_PORT,
                 host: currentServer.parentServer?.name,
                 username: username,
                 password: password
@@ -408,8 +445,8 @@ class VirtualMachineSync {
     }
 
     private String extractConsoleUsername() {
-        def username = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username') ?: 'dunno'
-        return username.contains('\\') ? username.tokenize('\\')[1] : username
+        def username = cloud.accountCredentialData?.username ?: cloud.getConfigProperty(USERNAME) ?: DUNNO
+        return username.contains(BACKSLASH) ? username.tokenize(BACKSLASH)[1] : username
     }
 
     private Boolean updateConsoleType(ComputeServer server, String consoleType) {
@@ -453,9 +490,9 @@ class VirtualMachineSync {
     }
 
     private Boolean updateOperatingSystem(ComputeServer currentServer, masterItem) {
-        def osTypeCode = apiService.getMapScvmmOsType(masterItem.OperatingSystem, true, masterItem.OperatingSystemWindows?.toString() == 'true' ? 'windows' : null)
-        def osTypeCodeStr = osTypeCode ?: 'other'
-        def osType = context.services.osType.find(new DataQuery().withFilter('code', osTypeCodeStr))
+        def osTypeCode = apiService.getMapScvmmOsType(masterItem.OperatingSystem, true, masterItem.OperatingSystemWindows?.toString() == TRUE_STRING ? 'windows' : null)
+        def osTypeCodeStr = osTypeCode ?: OTHER
+        def osType = context.services.osType.find(new DataQuery().withFilter(CODE, osTypeCodeStr))
 
         if (osType && currentServer.serverOs != osType) {
             currentServer.serverOs = osType
@@ -467,7 +504,7 @@ class VirtualMachineSync {
     }
 
     private Boolean updatePowerState(ComputeServer currentServer, masterItem) {
-        def powerState = masterItem.VirtualMachineState == 'Running' ? ComputeServer.PowerState.on : ComputeServer.PowerState.off
+        def powerState = masterItem.VirtualMachineState == RUNNING ? ComputeServer.PowerState.on : ComputeServer.PowerState.off
         if(powerState != currentServer.powerState) {
             currentServer.powerState = powerState
             if(currentServer.computeServerType?.guestVm) {
@@ -496,7 +533,7 @@ class VirtualMachineSync {
 
     private void updateVolumes(ComputeServer currentServer, masterItem) {
         if (masterItem.Disks) {
-            if (currentServer.status != 'resizing' && currentServer.status != 'provisioning') {
+            if (currentServer.status != RESIZING && currentServer.status != PROVISIONING) {
                 syncVolumes(currentServer, masterItem.Disks)
             }
         }
@@ -505,8 +542,8 @@ class VirtualMachineSync {
     private void updateWorkloadAndInstanceStatuses(ComputeServer server, Workload.Status workloadStatus,
                                                    String instanceStatus, List<String> additionalExcludedStatuses = []) {
         // Update workloads
-        context.services.workload.list(new DataQuery().withFilter('server.id', server.id)
-                .withFilter('status', '!=', Workload.Status.deploying))?.each { workload ->
+        context.services.workload.list(new DataQuery().withFilter(SERVER_ID, server.id)
+                .withFilter(STATUS, NOT_EQUALS, Workload.Status.deploying))?.each { workload ->
             workload.status = workloadStatus
             if (workloadStatus == Workload.Status.running) {
                 workload.userStatus = workloadStatus.toString()
@@ -521,7 +558,7 @@ class VirtualMachineSync {
                 'removing',
                 'restarting',
                 'finishing',
-                'resizing'
+                RESIZING
         ]
         if (additionalExcludedStatuses) {
             excludedStatuses.addAll(additionalExcludedStatuses)
@@ -530,14 +567,14 @@ class VirtualMachineSync {
         // Update instances
         def instanceIds = context.services.workload.list(new DataQuery()
                 .withFilters(
-                        new DataFilter('status', '!=', Workload.Status.failed),
-                        new DataFilter('status', '!=', Workload.Status.deploying),
+                        new DataFilter(STATUS, NOT_EQUALS, Workload.Status.failed),
+                        new DataFilter(STATUS, NOT_EQUALS, Workload.Status.deploying),
                         new DataFilter('instance.status', 'notIn', excludedStatuses),
-                        new DataFilter('server.id', server.id)
+                        new DataFilter(SERVER_ID, server.id)
                 ))?.collect { it.instance.id }?.unique()
 
         if(instanceIds) {
-            context.services.instance.list(new DataQuery().withFilter('id', 'in', instanceIds))?.each { instance ->
+            context.services.instance.list(new DataQuery().withFilter(ID, IN, instanceIds))?.each { instance ->
                 instance.status = instanceStatus
                 context.services.instance.save(instance)
             }
@@ -547,8 +584,8 @@ class VirtualMachineSync {
     def removeMissingVirtualMachines(List<ComputeServerIdentityProjection> removeList) {
         log.debug("removeMissingVirtualMachines: ${cloud} ${removeList.size()}")
         def removeItems = context.services.computeServer.listIdentityProjections(
-                new DataQuery().withFilter("id", "in", removeList.collect { it.id })
-                        .withFilter("computeServerType.code", 'scvmmUnmanaged')
+                new DataQuery().withFilter(ID, IN, removeList.collect { it.id })
+                        .withFilter(COMPUTE_SERVER_TYPE_CODE, SCVMM_UNMANAGED)
         )
         context.async.computeServer.remove(removeItems).blockingGet()
     }
@@ -558,7 +595,7 @@ class VirtualMachineSync {
                 name             : cloudItem.Name,
                 cloud            : cloud,
                 status           : 'provisioned',
-                apiKey           : java.util.UUID.randomUUID(),
+                apiKey           : UUID.randomUUID(),
                 account          : cloud.account,
                 managed          : false,
                 uniqueId         : cloudItem.ID,
@@ -572,13 +609,13 @@ class VirtualMachineSync {
                 displayName      : cloudItem.Name,
                 singleTenant     : true,
                 computeServerType: defaultServerType,
-                powerState       : cloudItem.VirtualMachineState == 'Running' ? ComputeServer.PowerState.on : ComputeServer.PowerState.off
+                powerState       : cloudItem.VirtualMachineState == RUNNING ? ComputeServer.PowerState.on : ComputeServer.PowerState.off
         ]
         return vmConfig
     }
 
     def syncVolumes(server, externalVolumes) {
-        log.debug "syncVolumes: ${server}, ${groovy.json.JsonOutput.prettyPrint(externalVolumes?.encodeAsJSON()?.toString())}"
+        log.debug "syncVolumes: ${server}, ${externalVolumes}"
         def changes = false
         try {
             def maxStorage = 0
@@ -596,14 +633,14 @@ class VirtualMachineSync {
             }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<StorageVolumeIdentityProjection, StorageVolume>> updateItems ->
                 context.async.storageVolume.listById(updateItems.collect { it.existingItem.id } as List<Long>)
             }.onAdd { itemsToAdd ->
-                addMissingStorageVolumes(itemsToAdd, server, diskNumber, maxStorage, changes)
+                addMissingStorageVolumes(itemsToAdd, server, diskNumber, maxStorage)
             }.onUpdate { List<SyncTask.UpdateItem<StorageVolume, Map>> updateItems ->
                 updateMatchedStorageVolumes(updateItems, server, maxStorage, changes)
             }.onDelete { removeItems ->
                 removeMissingStorageVolumes(removeItems, server, changes)
             }.start()
 
-            if (server instanceof ComputeServer && server.maxStorage != maxStorage) {
+            if (server.maxStorage != maxStorage) {
                 log.debug "max storage changed for ${server} from ${server.maxStorage} to ${maxStorage}"
                 server.maxStorage = maxStorage
                 context.async.computeServer.save(server).blockingGet()
@@ -615,7 +652,7 @@ class VirtualMachineSync {
         return changes
     }
 
-    def addMissingStorageVolumes(itemsToAdd, ComputeServer server, int diskNumber, maxStorage, changes) {
+    def addMissingStorageVolumes(itemsToAdd, ComputeServer server, int diskNumber, maxStorage) {
         def serverVolumeNames = server.volumes.collect{ it.name }
         def currentDiskNumber = diskNumber
 
@@ -625,7 +662,7 @@ class VirtualMachineSync {
             def volumeConfig = createVolumeConfig(diskData, server, serverVolumeNames, index, currentDiskNumber)
             def storageVolume = createAndPersistStorageVolume(server, volumeConfig)
 
-            maxStorage += storageVolume.maxStorage ?: 0l
+            maxStorage += storageVolume.maxStorage ?: ZERO_LONG
             currentDiskNumber++
 
             log.debug("added volume: ${storageVolume?.dump()}")
@@ -637,7 +674,7 @@ class VirtualMachineSync {
     private Map createVolumeConfig(diskData, ComputeServer server, List serverVolumeNames, int index, int diskNumber) {
         def datastore = resolveDatastore(diskData)
         def deviceName = resolveDeviceName(diskData, diskNumber)
-        def volumeName = resolveVolumeName(serverVolumeNames, diskData, deviceName, server, index)
+        def volumeName = resolveVolumeName(serverVolumeNames, diskData, server, index)
 
         def volumeConfig = [
                 name      : volumeName,
@@ -650,7 +687,7 @@ class VirtualMachineSync {
         ]
 
         if (datastore) {
-            volumeConfig.datastoreId = "${datastore.id}"
+            volumeConfig.datastoreId = datastore.id.toString()
         }
 
         return volumeConfig
@@ -665,12 +702,12 @@ class VirtualMachineSync {
         return diskData.deviceName ?: apiService.getDiskName(diskNumber)
     }
 
-    private String resolveVolumeName(List serverVolumeNames, diskData, String deviceName, ComputeServer server, int index) {
-        return serverVolumeNames?.getAt(index) ?: getVolumeName(diskData, deviceName, server, index)
+    private String resolveVolumeName(List serverVolumeNames, diskData, ComputeServer server, int index) {
+        return serverVolumeNames?.getAt(index) ?: getVolumeName(diskData, server, index)
     }
 
     private boolean isRootVolume(diskData, ComputeServer server) {
-        return diskData.VolumeType == 'BootAndSystem' || !server.volumes?.size()
+        return diskData.VolumeType == BOOT_AND_SYSTEM || !server.volumes?.size()
     }
 
     private StorageVolume createAndPersistStorageVolume(ComputeServer server, Map volumeConfig) {
@@ -747,7 +784,7 @@ class VirtualMachineSync {
     }
 
     private boolean updateVolumeRootFlag(StorageVolume volume, masterItem, server) {
-        def isRootVolume = (masterItem?.VolumeType == 'BootAndSystem') || (server.volumes.size() == 1)
+        def isRootVolume = (masterItem?.VolumeType == BOOT_AND_SYSTEM) || (server.volumes.size() == 1)
         if (volume.rootVolume != isRootVolume) {
             volume.rootVolume = isRootVolume
             return true
@@ -757,7 +794,7 @@ class VirtualMachineSync {
 
     private boolean updateVolumeName(StorageVolume volume, masterItem, server, int index) {
         if (volume.name == null) {
-            volume.name = getVolumeName(masterItem, volume.deviceName, server, index)
+            volume.name = getVolumeName(masterItem, server, index)
             return true
         }
         return false
@@ -800,11 +837,13 @@ class VirtualMachineSync {
         if (volume?.storageType) {
             return context.async.storageVolume.storageVolumeType.get(volume.storageType?.toLong()).blockingGet()
         }
-        return context.async.storageVolume.storageVolumeType.find(new DataQuery().withFilter('code', 'standard')).blockingGet()
+        return context.async.storageVolume.storageVolumeType.find(new DataQuery().withFilter(CODE, STANDARD)).blockingGet()
     }
 
     private void configureDatastore(StorageVolume storageVolume, volume) {
-        if (!volume.datastoreId) return
+        if (!volume.datastoreId) {
+            return
+        }
 
         storageVolume.datastoreOption = volume.datastoreId
         storageVolume.datastore = context.services.cloud.datastore.get(storageVolume.datastoreOption.toLong())
@@ -831,10 +870,10 @@ class VirtualMachineSync {
     }
 
     private Long determineCloudId(server) {
-        if (server instanceof ComputeServer) {
-            return server.cloud?.id
+        if (server.hasProperty('cloud') && server.cloud) {
+            return server.cloud.id
         }
-        if ((server instanceof VirtualImage || server instanceof VirtualImageLocation) && server.refType == 'ComputeZone') {
+        if (server.hasProperty(REF_TYPE) && server.refType == COMPUTE_ZONE) {
             return server.refId?.toLong()
         }
         return null
@@ -850,18 +889,18 @@ class VirtualMachineSync {
         log.debug "loadDatastoreForVolume: ${hostVolumeId}, ${fileShareId}"
         if (hostVolumeId) {
             StorageVolume storageVolume = context.services.storageVolume.find(new DataQuery().withFilter('internalId', hostVolumeId)
-                    .withFilter('datastore.refType', 'ComputeZone').withFilter('datastore.refId', cloud.id))
+                    .withFilter(DATASTORE_REF_TYPE, COMPUTE_ZONE).withFilter(DATASTORE_REF_ID, cloud.id))
             def ds = storageVolume?.datastore
             if (!ds && partitionUniqueId) {
-                storageVolume = context.services.storageVolume.find(new DataQuery().withFilter('externalId', partitionUniqueId)
-                        .withFilter('datastore.refType', 'ComputeZone').withFilter('datastore.refId', cloud.id))
+                storageVolume = context.services.storageVolume.find(new DataQuery().withFilter(EXTERNAL_ID, partitionUniqueId)
+                        .withFilter(DATASTORE_REF_TYPE, COMPUTE_ZONE).withFilter(DATASTORE_REF_ID, cloud.id))
                 ds = storageVolume?.datastore
             }
             return ds
         } else if (fileShareId) {
             Datastore datastore = context.services.cloud.datastore.find(new DataQuery()
-                    .withFilter('externalId', fileShareId)
-                    .withFilter('refType', 'ComputeZone')
+                    .withFilter(EXTERNAL_ID, fileShareId)
+                    .withFilter(REF_TYPE, COMPUTE_ZONE)
                     .withFilter('refId', cloud.id))
             return datastore
         }
@@ -870,27 +909,13 @@ class VirtualMachineSync {
 
     def getStorageVolumeType(String storageVolumeTypeCode) {
         log.debug("getStorageVolumeTypeId - Looking up volumeTypeCode ${storageVolumeTypeCode}")
-        def storageVolumeType = context.async.storageVolume.storageVolumeType.find(new DataQuery().withFilter('code', storageVolumeTypeCode ?: 'standard')).blockingGet()
+        def storageVolumeType = context.async.storageVolume.storageVolumeType.find(new DataQuery().withFilter(CODE, storageVolumeTypeCode ?: STANDARD)).blockingGet()
         return storageVolumeType.id
     }
 
-    def getVolumeName(diskData, String deviceName, ComputeServer server, int index) {
+    def getVolumeName(diskData, ComputeServer server, int index) {
         // Check if root volume
-        boolean isRootVolume = diskData.VolumeType == 'BootAndSystem' || !server.volumes?.size()
-        if (isRootVolume) {
-            return 'root'
-        } else {
-            // Extract disk letter from device name (e.g., 'sdb' -> 'b')
-            /*if (deviceName && deviceName.length() > 0) {
-                def diskLetter = deviceName[-1]
-                if (diskLetter.matches(/[a-z]/)) {
-                    // Convert letter to number (a=0, b=1, etc.) and add 1 to start from 1
-                    def diskIndex = diskLetter as char
-                    def diskNum = (diskIndex - ('a' as char)) + 1
-                    return "data-${diskNum}"
-                }
-            }*/
-            return "data-${index}"
-        }
+        boolean isRootVolume = diskData.VolumeType == BOOT_AND_SYSTEM || !server.volumes?.size()
+        return isRootVolume ? 'root' : "data-${index}"
     }
 }
