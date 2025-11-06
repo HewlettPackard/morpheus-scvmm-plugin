@@ -99,6 +99,5 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew artifactoryPublish
         env:
-          ARTIFACTORY_USER: 'ci-token-morpheus'
-          # Secret defined at https://github.com/gomorpheus/morpheus-scvmm-plugin/settings/secrets/actions
-          ARTIFACTORY_PASSWORD: ${{ secrets.CI_TOKEN_MORPHEUS }}
+          ARTIFACTORY_USER: ${{ steps.setup-jfrog-cli.outputs.oidc-user }}
+          ARTIFACTORY_PASSWORD: ${{ steps.setup-jfrog-cli.outputs.oidc-token }}

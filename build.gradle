@@ -152,7 +152,7 @@ artifactory {
 		// Define the project repository to which the artifacts will be published
 		repository {
 			// Set the Artifactory repository key
-			repoKey = 'morpheus-plugins'
+			repoKey = 'morpheus-open-source-plugins'
 			// Specify the publisher username
 			username = getEnvOrProperty('ARTIFACTORY_USER', 'artifactory_user')
 			// Provide the publisher password
