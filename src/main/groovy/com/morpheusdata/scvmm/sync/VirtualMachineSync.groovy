@@ -377,35 +377,76 @@ class VirtualMachineSync {
     private Boolean updateConsoleProperties(ComputeServer currentServer, consoleEnabled) {
         Boolean save = false
 
-        def consoleType = consoleEnabled ? 'vmrdp' : null
-        def consolePort = consoleEnabled ? 2179 : null
-        def consoleHost = consoleEnabled ? currentServer.parentServer?.name : null
-        def consoleUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username') ?: 'dunno'
-        if (consoleUsername.contains('\\')) {
-            consoleUsername = consoleUsername.tokenize('\\')[1]
-        }
-        def consolePassword = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
+        def consoleConfig = buildConsoleConfiguration(consoleEnabled, currentServer)
 
-        if (currentServer.consoleType != consoleType) {
-            currentServer.consoleType = consoleType
-            save = true
-        }
-        if (currentServer.consoleHost != consoleHost) {
-            currentServer.consoleHost = consoleHost
-        }
-        if (currentServer.consolePort != consolePort) {
-            currentServer.consolePort = consolePort
-            save = true
-        }
+        save |= updateConsoleType(currentServer, consoleConfig.type)
+        save |= updateConsoleHost(currentServer, consoleConfig.host)
+        save |= updateConsolePort(currentServer, consoleConfig.port)
+
         if (consoleEnabled) {
-            if (consoleUsername != currentServer.sshUsername) {
-                currentServer.sshUsername = consoleUsername
-                save = true
-            }
-            if (consolePassword != currentServer.consolePassword) {
-                currentServer.consolePassword = consolePassword
-                save = true
-            }
+            save |= updateConsoleCredentials(currentServer, consoleConfig.username, consoleConfig.password)
+        }
+
+        return save
+    }
+
+    private Map buildConsoleConfiguration(boolean consoleEnabled, ComputeServer currentServer) {
+        if (!consoleEnabled) {
+            return [type: null, port: null, host: null, username: null, password: null]
+        }
+
+        def username = extractConsoleUsername()
+        def password = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
+
+        return [
+                type: 'vmrdp',
+                port: 2179,
+                host: currentServer.parentServer?.name,
+                username: username,
+                password: password
+        ]
+    }
+
+    private String extractConsoleUsername() {
+        def username = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username') ?: 'dunno'
+        return username.contains('\\') ? username.tokenize('\\')[1] : username
+    }
+
+    private Boolean updateConsoleType(ComputeServer server, String consoleType) {
+        if (server.consoleType != consoleType) {
+            server.consoleType = consoleType
+            return true
+        }
+        return false
+    }
+
+    private Boolean updateConsoleHost(ComputeServer server, String consoleHost) {
+        if (server.consoleHost != consoleHost) {
+            server.consoleHost = consoleHost
+            return true
+        }
+        return false
+    }
+
+    private Boolean updateConsolePort(ComputeServer server, Integer consolePort) {
+        if (server.consolePort != consolePort) {
+            server.consolePort = consolePort
+            return true
+        }
+        return false
+    }
+
+    private Boolean updateConsoleCredentials(ComputeServer server, String username, String password) {
+        Boolean save = false
+
+        if (username != server.sshUsername) {
+            server.sshUsername = username
+            save = true
+        }
+
+        if (password != server.consolePassword) {
+            server.consolePassword = password
+            save = true
         }
 
         return save
@@ -575,72 +616,153 @@ class VirtualMachineSync {
     }
 
     def addMissingStorageVolumes(itemsToAdd, ComputeServer server, int diskNumber, maxStorage, changes) {
-        def provisionProvider = cloudProvider.getProvisionProvider('morpheus-scvmm-plugin.provision')
         def serverVolumeNames = server.volumes.collect{ it.name }
+        def currentDiskNumber = diskNumber
+
         itemsToAdd?.eachWithIndex { diskData, index ->
             log.debug("adding new volume: ${diskData}")
-            def datastore = diskData.datastore ?: loadDatastoreForVolume(diskData.HostVolumeId, diskData.FileShareId, diskData.PartitionUniqueId) ?: null
-            def deviceName = diskData.deviceName ?: apiService.getDiskName(diskNumber)
-            def volumeName = serverVolumeNames?.getAt(index) ?: getVolumeName(diskData, deviceName, server, index)
-            def volumeConfig = [
-                    name      : volumeName,
-                    size      : diskData.TotalSize?.toLong() ?: 0,
-                    rootVolume: diskData.VolumeType == 'BootAndSystem' || !server.volumes?.size(),
-                    //deviceName: (diskData.deviceName ?: provisionProvider.getDiskName(diskNumber)),
-                    deviceName: deviceName,
-                    externalId: diskData.ID,
-                    internalId: diskData.Name,
-                    storageType: getStorageVolumeType("scvmm-${diskData?.VHDType}-${diskData?.VHDFormat}".toLowerCase()),
-            ]
-            if (datastore)
-                volumeConfig.datastoreId = "${datastore.id}"
-            def storageVolume = buildStorageVolume(server.account ?: cloud.account, server, volumeConfig)
-            context.services.storageVolume.create(storageVolume)
-            server.volumes.add(storageVolume)
+
+            def volumeConfig = createVolumeConfig(diskData, server, serverVolumeNames, index, currentDiskNumber)
+            def storageVolume = createAndPersistStorageVolume(server, volumeConfig)
+
             maxStorage += storageVolume.maxStorage ?: 0l
-            diskNumber++
+            currentDiskNumber++
+
             log.debug("added volume: ${storageVolume?.dump()}")
         }
+
         context.async.computeServer.bulkSave([server]).blockingGet()
+    }
+
+    private Map createVolumeConfig(diskData, ComputeServer server, List serverVolumeNames, int index, int diskNumber) {
+        def datastore = resolveDatastore(diskData)
+        def deviceName = resolveDeviceName(diskData, diskNumber)
+        def volumeName = resolveVolumeName(serverVolumeNames, diskData, deviceName, server, index)
+
+        def volumeConfig = [
+                name      : volumeName,
+                size      : diskData.TotalSize?.toLong() ?: 0,
+                rootVolume: isRootVolume(diskData, server),
+                deviceName: deviceName,
+                externalId: diskData.ID,
+                internalId: diskData.Name,
+                storageType: getStorageVolumeType("scvmm-${diskData?.VHDType}-${diskData?.VHDFormat}".toLowerCase()),
+        ]
+
+        if (datastore) {
+            volumeConfig.datastoreId = "${datastore.id}"
+        }
+
+        return volumeConfig
+    }
+
+    private def resolveDatastore(diskData) {
+        return diskData.datastore ?:
+                loadDatastoreForVolume(diskData.HostVolumeId, diskData.FileShareId, diskData.PartitionUniqueId)
+    }
+
+    private String resolveDeviceName(diskData, int diskNumber) {
+        return diskData.deviceName ?: apiService.getDiskName(diskNumber)
+    }
+
+    private String resolveVolumeName(List serverVolumeNames, diskData, String deviceName, ComputeServer server, int index) {
+        return serverVolumeNames?.getAt(index) ?: getVolumeName(diskData, deviceName, server, index)
+    }
+
+    private boolean isRootVolume(diskData, ComputeServer server) {
+        return diskData.VolumeType == 'BootAndSystem' || !server.volumes?.size()
+    }
+
+    private StorageVolume createAndPersistStorageVolume(ComputeServer server, Map volumeConfig) {
+        def storageVolume = buildStorageVolume(server.account ?: cloud.account, server, volumeConfig)
+        context.services.storageVolume.create(storageVolume)
+        server.volumes.add(storageVolume)
+        return storageVolume
     }
 
     def updateMatchedStorageVolumes(updateItems, server, maxStorage, changes) {
         def savedVolumes = []
+
         updateItems?.eachWithIndex { updateMap, index ->
             log.debug("updating volume: ${updateMap.masterItem}")
-            StorageVolume volume = updateMap.existingItem
-            def masterItem = updateMap.masterItem
 
-            def masterDiskSize = masterItem?.TotalSize?.toLong() ?: 0
-            def sizeRange = [min: (volume.maxStorage - ComputeUtility.ONE_GIGABYTE), max: (volume.maxStorage + ComputeUtility.ONE_GIGABYTE)]
-            def save = false
-            if (masterDiskSize && volume.maxStorage != masterDiskSize && (masterDiskSize <= sizeRange.min || masterDiskSize >= sizeRange.max)) {
-                volume.maxStorage = masterDiskSize
-                save = true
-            }
-            if (volume.internalId != masterItem.Name) {
-                volume.internalId = masterItem.Name
-                save = true
-            }
-            def isRootVolume = (masterItem?.VolumeType == 'BootAndSystem') || (server.volumes.size() == 1)
-            if (volume.rootVolume != isRootVolume) {
-                volume.rootVolume = isRootVolume
-                save = true
-            }
-            if (volume.name == null) {
-                volume.name = getVolumeName(masterItem, volume.deviceName, server, index)
-                save = true
-            }
-            if (save) {
-                savedVolumes << volume
+            def updateResult = processVolumeUpdate(updateMap, server, index)
+
+            if (updateResult.shouldSave) {
+                savedVolumes << updateResult.volume
                 changes = true
             }
-            maxStorage += masterDiskSize
+
+            maxStorage += updateResult.diskSize
         }
+
         if (savedVolumes.size() > 0) {
             context.async.storageVolume.bulkSave(savedVolumes).blockingGet()
         }
     }
+
+    private Map processVolumeUpdate(updateMap, server, int index) {
+        StorageVolume volume = updateMap.existingItem
+        def masterItem = updateMap.masterItem
+        def masterDiskSize = masterItem?.TotalSize?.toLong() ?: 0
+
+        boolean shouldSave = false
+
+        shouldSave |= updateVolumeSize(volume, masterDiskSize)
+        shouldSave |= updateVolumeInternalId(volume, masterItem)
+        shouldSave |= updateVolumeRootFlag(volume, masterItem, server)
+        shouldSave |= updateVolumeName(volume, masterItem, server, index)
+
+        return [
+                volume: volume,
+                shouldSave: shouldSave,
+                diskSize: masterDiskSize
+        ]
+    }
+
+    private boolean updateVolumeSize(StorageVolume volume, long masterDiskSize) {
+        if (!masterDiskSize || volume.maxStorage == masterDiskSize) {
+            return false
+        }
+
+        def sizeRange = [
+                min: (volume.maxStorage - ComputeUtility.ONE_GIGABYTE),
+                max: (volume.maxStorage + ComputeUtility.ONE_GIGABYTE)
+        ]
+
+        if (masterDiskSize <= sizeRange.min || masterDiskSize >= sizeRange.max) {
+            volume.maxStorage = masterDiskSize
+            return true
+        }
+
+        return false
+    }
+
+    private boolean updateVolumeInternalId(StorageVolume volume, masterItem) {
+        if (volume.internalId != masterItem.Name) {
+            volume.internalId = masterItem.Name
+            return true
+        }
+        return false
+    }
+
+    private boolean updateVolumeRootFlag(StorageVolume volume, masterItem, server) {
+        def isRootVolume = (masterItem?.VolumeType == 'BootAndSystem') || (server.volumes.size() == 1)
+        if (volume.rootVolume != isRootVolume) {
+            volume.rootVolume = isRootVolume
+            return true
+        }
+        return false
+    }
+
+    private boolean updateVolumeName(StorageVolume volume, masterItem, server, int index) {
+        if (volume.name == null) {
+            volume.name = getVolumeName(masterItem, volume.deviceName, server, index)
+            return true
+        }
+        return false
+    }
+
 
     def removeMissingStorageVolumes(removeItems, ComputeServer server, Boolean changes) {
         removeItems?.each { currentVolume ->
@@ -659,45 +781,69 @@ class VirtualMachineSync {
         storageVolume.name = volume.name
         storageVolume.account = account
 
+        configureStorageVolumeBasics(storageVolume, volume)
+        configureDatastore(storageVolume, volume)
+        configureIdentifiers(storageVolume, volume)
+        configureCloudId(storageVolume, server)
+        configureVolumeProperties(storageVolume, volume, server)
+
+        return storageVolume
+    }
+
+    private void configureStorageVolumeBasics(StorageVolume storageVolume, volume) {
         storageVolume.maxStorage = volume?.maxStorage?.toLong() ?: volume?.size?.toLong()
-        def storageType
-        if(volume?.storageType) {
-            storageType = context.async.storageVolume.storageVolumeType.get(volume.storageType?.toLong()).blockingGet()
-        }
-        else {
-            storageType = context.async.storageVolume.storageVolumeType.find(new DataQuery().withFilter('code', 'standard')).blockingGet()
-        }
-        storageVolume.type = storageType
-
+        storageVolume.type = resolveStorageType(volume)
         storageVolume.rootVolume = volume.rootVolume == true
-        if (volume.datastoreId) {
-            storageVolume.datastoreOption = volume.datastoreId
-            storageVolume.datastore = context.services.cloud.datastore.get(storageVolume.datastoreOption.toLong())
-            if(storageVolume.datastore) {
-                storageVolume.storageServer = storageVolume.datastore.storageServer
-            }
-            storageVolume.refType = 'Datastore'
-            storageVolume.refId = volume.datastoreId?.toLong()
+    }
+
+    private def resolveStorageType(volume) {
+        if (volume?.storageType) {
+            return context.async.storageVolume.storageVolumeType.get(volume.storageType?.toLong()).blockingGet()
+        }
+        return context.async.storageVolume.storageVolumeType.find(new DataQuery().withFilter('code', 'standard')).blockingGet()
+    }
+
+    private void configureDatastore(StorageVolume storageVolume, volume) {
+        if (!volume.datastoreId) return
+
+        storageVolume.datastoreOption = volume.datastoreId
+        storageVolume.datastore = context.services.cloud.datastore.get(storageVolume.datastoreOption.toLong())
+
+        if (storageVolume.datastore) {
+            storageVolume.storageServer = storageVolume.datastore.storageServer
         }
 
-        if (volume.externalId)
+        storageVolume.refType = 'Datastore'
+        storageVolume.refId = volume.datastoreId?.toLong()
+    }
+
+    private void configureIdentifiers(StorageVolume storageVolume, volume) {
+        if (volume.externalId) {
             storageVolume.externalId = volume.externalId
-        if (volume.internalId)
-            storageVolume.internalId = volume.internalId
-
-        if (server instanceof ComputeServer) {
-            storageVolume.cloudId = server.cloud?.id
-        } else if (server instanceof VirtualImage && server.refType == 'ComputeZone') {
-            storageVolume.cloudId = server.refId?.toLong()
-        } else if (server instanceof VirtualImageLocation && server.refType == 'ComputeZone') {
-            storageVolume.cloudId = server.refId?.toLong()
         }
+        if (volume.internalId) {
+            storageVolume.internalId = volume.internalId
+        }
+    }
 
+    private void configureCloudId(StorageVolume storageVolume, server) {
+        storageVolume.cloudId = determineCloudId(server)
+    }
+
+    private Long determineCloudId(server) {
+        if (server instanceof ComputeServer) {
+            return server.cloud?.id
+        }
+        if ((server instanceof VirtualImage || server instanceof VirtualImageLocation) && server.refType == 'ComputeZone') {
+            return server.refId?.toLong()
+        }
+        return null
+    }
+
+    private void configureVolumeProperties(StorageVolume storageVolume, volume, server) {
         storageVolume.deviceName = volume.deviceName
-
         storageVolume.removable = storageVolume.rootVolume != true
         storageVolume.displayOrder = volume.displayOrder ?: server?.volumes?.size() ?: 0
-        return storageVolume
     }
 
     def loadDatastoreForVolume(hostVolumeId = null, fileShareId = null, partitionUniqueId = null) {
