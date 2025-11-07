@@ -14,9 +14,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-permissions:
-  id-token: write
-  contents: read
 jobs:
 #  copyright-check:
 #    if: github.ref != 'refs/heads/main'
@@ -89,6 +86,8 @@ jobs:
   publish-to-artifactory:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -97,17 +96,8 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
 
-      - name: Authenticate JFrog
-        id: setup-jfrog-cli
-        uses: jfrog/setup-jfrog-cli@v4
-        env:
-          JF_URL: https://hpeartifacts.jfrog.io
-        with:
-          oidc-provider-name: hewlettpackard
-          oidc-audience: hewlettpackard-jfrog
-
       - name: Build with Gradle
         run: ./gradlew artifactoryPublish
         env:
-          ARTIFACTORY_USER: ${{ steps.setup-jfrog-cli.outputs.oidc-user }}
-          ARTIFACTORY_PASSWORD: ${{ steps.setup-jfrog-cli.outputs.oidc-token }}
+          ARTIFACTORY_USER: 'ci-token-forecasters'
+          ARTIFACTORY_PASSWORD: ${{ secrets.CI_TOKEN_MORPHEUS }}
