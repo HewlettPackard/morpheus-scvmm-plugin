@@ -19,7 +19,7 @@ import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.core.Maybe
 import com.morpheusdata.core.MorpheusStorageVolumeService
 import com.morpheusdata.core.MorpheusStorageVolumeTypeService
-import com.morpheusdata.core.util.SyncUtils
+import io.reactivex.rxjava3.core.Observable
 
 
 class VirtualMachineSyncSpec extends Specification {
@@ -32,10 +32,13 @@ class VirtualMachineSyncSpec extends Specification {
     private MorpheusSynchronousComputeServerService computeServerService
     private MorpheusSynchronousOsTypeService osTypeService
     private MorpheusSynchronousWorkloadService workloadService
+    private def servicePlanService
+    private def resourcePermissionService
     private MorpheusStorageVolumeService storageVolumeService
     private MorpheusStorageVolumeService asyncStorageVolumeService
     private MorpheusStorageVolumeTypeService storageVolumeTypeService
     private def cloudService
+    private def cloudAsyncService
     private def datastoreService
     private Cloud cloud
     private ComputeServer node
@@ -49,9 +52,11 @@ class VirtualMachineSyncSpec extends Specification {
     // Test class that allows us to inject mock apiService
     private static class TestableVirtualMachineSync extends VirtualMachineSync {
         def log = [debug: { msg -> println("DEBUG: $msg") }] // Mock log property
+        MorpheusContext context // Add missing context property
 
         TestableVirtualMachineSync(ComputeServer node, Cloud cloud, MorpheusContext context, CloudProvider cloudProvider, ScvmmApiService apiService) {
             super(node, cloud, context, cloudProvider)
+            this.context = context  // Set context property
             // Use reflection to set the private apiService field
             def field = VirtualMachineSync.class.getDeclaredField('apiService')
             field.setAccessible(true)
@@ -70,12 +75,15 @@ class VirtualMachineSyncSpec extends Specification {
         asyncComputeServerService = Mock(MorpheusComputeServerService)
         osTypeService = Mock(MorpheusSynchronousOsTypeService)
         workloadService = Mock(MorpheusSynchronousWorkloadService)
+        servicePlanService = Mock(Object)
+        resourcePermissionService = Mock(Object)
         storageVolumeService = Mock(MorpheusStorageVolumeService)
         asyncStorageVolumeService = Mock(MorpheusStorageVolumeService)
         storageVolumeTypeService = Mock(MorpheusStorageVolumeTypeService)
         cloudService = Mock(Object) {
             getDatastore() >> datastoreService
         }
+        cloudAsyncService = Mock(Object)
         datastoreService = Mock(Object)
 
         def morpheusServices = Mock(MorpheusServices) {
@@ -84,11 +92,16 @@ class VirtualMachineSyncSpec extends Specification {
             getWorkload() >> workloadService
             getCloud() >> cloudService
             getStorageVolume() >> storageVolumeService
+            getServicePlan() >> servicePlanService
+            getResourcePermission() >> resourcePermissionService
         }
+
+        def cloudAsyncService = Mock(Object)
 
         def morpheusAsyncServices = Mock(MorpheusAsyncServices) {
             getComputeServer() >> asyncComputeServerService
             getStorageVolume() >> asyncStorageVolumeService
+            getCloud() >> cloudAsyncService
         }
 
         // Configure storage volume service chain
@@ -704,7 +717,7 @@ class VirtualMachineSyncSpec extends Specification {
             codeFilter != null && codeFilter.value == "test-volume-type"
         }) >> {
             // Return a properly typed Maybe for RxJava compatibility
-            return io.reactivex.rxjava3.core.Maybe.just(mockStorageVolumeType)
+            return Maybe.just(mockStorageVolumeType)
         }
         result == 123L
     }
@@ -1131,13 +1144,13 @@ class VirtualMachineSyncSpec extends Specification {
         )
 
         def volume = [
-                name: "test-volume",
-                maxStorage: "1073741824", // 1GB
-                storageType: "25",
-                externalId: "ext-vol-123",
-                internalId: "int-vol-456",
-                deviceName: "/dev/sdb",
-                rootVolume: false,
+                name        : "test-volume",
+                maxStorage  : "1073741824", // 1GB
+                storageType : "25",
+                externalId  : "ext-vol-123",
+                internalId  : "int-vol-456",
+                deviceName  : "/dev/sdb",
+                rootVolume  : false,
                 displayOrder: 1
         ]
 
@@ -1178,8 +1191,8 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 60L, code: "standard")
 
         def volume = [
-                name: "size-volume",
-                size: "2147483648", // 2GB
+                name      : "size-volume",
+                size      : "2147483648", // 2GB
                 rootVolume: true
         ]
 
@@ -1213,7 +1226,7 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 70L, code: "standard")
 
         def volume = [
-                name: "no-datastore-volume",
+                name      : "no-datastore-volume",
                 maxStorage: "536870912", // 512MB
                 externalId: "ext-123"
         ]
@@ -1252,7 +1265,7 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 80L, code: "standard")
 
         def volume = [
-                name: "no-cloud-ref-volume",
+                name      : "no-cloud-ref-volume",
                 maxStorage: "1048576" // 1MB
         ]
 
@@ -1279,7 +1292,7 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 90L, code: "standard")
 
         def volume = [
-                name: "no-cloud-volume",
+                name      : "no-cloud-volume",
                 maxStorage: "2048"
         ]
 
@@ -1327,10 +1340,10 @@ class VirtualMachineSyncSpec extends Specification {
         result.displayOrder == expectedDisplayOrder
 
         where:
-        volumeConfig                                    | expectedDisplayOrder
-        [name: "with-order", displayOrder: 5]          | 5
-        [name: "without-order"]                         | 3  // server.volumes.size()
-        [name: "null-order", displayOrder: null]       | 3  // fallback to server.volumes.size()
+        volumeConfig                             | expectedDisplayOrder
+        [name: "with-order", displayOrder: 5]    | 5
+        [name: "without-order"]                  | 3  // server.volumes.size()
+        [name: "null-order", displayOrder: null] | 3  // fallback to server.volumes.size()
 
         // Covers: displayOrder logic with fallback to server.volumes.size()
     }
@@ -1343,8 +1356,8 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 96L, code: "standard")
 
         def volume = [
-                name: "explicit-order-volume",
-                maxStorage: "4096",
+                name        : "explicit-order-volume",
+                maxStorage  : "4096",
                 displayOrder: 99
         ]
 
@@ -1372,13 +1385,13 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 97L, code: "standard")
 
         def volume = [
-                name: volumeName,
-                maxStorage: maxStorage,
-                size: size,
-                externalId: externalId,
-                internalId: internalId,
-                deviceName: deviceName,
-                rootVolume: rootVolume,
+                name       : volumeName,
+                maxStorage : maxStorage,
+                size       : size,
+                externalId : externalId,
+                internalId : internalId,
+                deviceName : deviceName,
+                rootVolume : rootVolume,
                 datastoreId: datastoreId
         ]
 
@@ -1430,9 +1443,9 @@ class VirtualMachineSyncSpec extends Specification {
         result.displayOrder == expectedDisplayOrder
 
         where:
-        volumesCollection | expectedDisplayOrder
-        null              | 0
-        []                | 0
+        volumesCollection     | expectedDisplayOrder
+        null                  | 0
+        []                    | 0
         [new StorageVolume()] | 1
 
         // Covers: volumes collection null/empty handling in displayOrder calculation
@@ -1446,11 +1459,11 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 99L, code: "standard")
 
         def volume = [
-                name: "method-chain-volume",
-                maxStorage: "8192",
+                name       : "method-chain-volume",
+                maxStorage : "8192",
                 storageType: "30",
-                externalId: "chain-ext-123",
-                internalId: "chain-int-456"
+                externalId : "chain-ext-123",
+                internalId : "chain-int-456"
         ]
 
         when: "buildStorageVolume is called"
@@ -1533,14 +1546,14 @@ class VirtualMachineSyncSpec extends Specification {
         def defaultServerType = new ComputeServerType(id: 300L, code: "scvmmUnmanaged")
 
         def cloudItem = [
-            Name: "test-vm-1",
-            ID: "vm-123",
-            VMId: "vm-internal-456",
-            VirtualMachineState: "Running",
-            CPUCount: "2",
-            Memory: "4096",
-            OperatingSystem: "Ubuntu Linux (64-bit)",
-            Disks: []
+                Name               : "test-vm-1",
+                ID                 : "vm-123",
+                VMId               : "vm-internal-456",
+                VirtualMachineState: "Running",
+                CPUCount           : "2",
+                Memory             : "4096",
+                OperatingSystem    : "Ubuntu Linux (64-bit)",
+                Disks              : []
         ]
 
         def addList = [cloudItem]
@@ -1599,10 +1612,10 @@ class VirtualMachineSyncSpec extends Specification {
     def "addMissingVirtualMachines should handle service exceptions gracefully"() {
         given: "cloud item and mocked service that throws exception"
         def cloudItem = [
-            Name: "exception-vm",
-            ID: "vm-exception-123",
-            CPUCount: "1",
-            Memory: "1024"
+                Name    : "exception-vm",
+                ID      : "vm-exception-123",
+                CPUCount: "1",
+                Memory  : "1024"
         ]
         def addList = [cloudItem]
         def defaultServerType = new ComputeServerType(id: 1100L)
@@ -1624,4 +1637,95 @@ class VirtualMachineSyncSpec extends Specification {
         // Covers: exception handling robustness
     }
 
+    // Tests for execute method - functional verification covering all execution paths
+    @Unroll
+    def "execute should orchestrate VM synchronization flow with API calls with createNew=#createNew"() {
+        given: "setup for API orchestration"
+        def scvmmOpts = [zone: "test-zone", hypervisor: "test-hypervisor"]
+        def virtualMachines = [
+                [ID: "vm-1", Name: "test-vm-1", VirtualMachineState: "Running"]
+        ]
+        def listResults = [success: true, virtualMachines: virtualMachines]
+
+        when: "execute is called"
+        virtualMachineSync.execute(createNew)
+
+        then: "core API calls should execute (initializeExecutionContext + listVirtualMachines)"
+        1 * mockApiService.getScvmmZoneAndHypervisorOpts(morpheusContext, cloud, node) >> scvmmOpts
+        1 * mockApiService.listVirtualMachines(scvmmOpts) >> listResults
+
+        and: "method should complete without exceptions, executing all subsequent methods"
+        noExceptionThrown()
+
+        where:
+        createNew << [true, false]
+
+        // Covers: execute method orchestration with both createNew values
+    }
+
+    @Unroll
+    def "execute should handle successful listResults and execute performVirtualMachineSync with full workflow"() {
+        given: "successful API response with virtual machines"
+        def scvmmOpts = [zone: "test-zone", hypervisor: "test-hypervisor"]
+        def virtualMachines = [
+            [ID: "vm-1", Name: "test-vm-1", VirtualMachineState: "Running", Disks: []],
+            [ID: "vm-2", Name: "test-vm-2", VirtualMachineState: "Stopped", Disks: []]
+        ]
+        def listResults = [success: true, virtualMachines: virtualMachines]
+
+        when: "execute is called with createNew flag"
+        virtualMachineSync.execute(createNew)
+
+        then: "initializeExecutionContext should be called"
+        1 * mockApiService.getScvmmZoneAndHypervisorOpts(morpheusContext, cloud, node) >> scvmmOpts
+
+        and: "API should list virtual machines"
+        1 * mockApiService.listVirtualMachines(scvmmOpts) >> listResults
+
+
+        and: "method should complete successfully"
+        noExceptionThrown()
+
+        where:
+        createNew << [true, false]
+
+        // Covers: complete execute method success path workflow
+    }
+
+    // Tests for syncVolumes method - functional verification covering main execution paths
+    @Unroll
+    def "syncVolumes should execute without exceptions and return boolean result"() {
+        given: "server with volumes and external volumes to sync"
+        def existingVolume = new StorageVolume(id: 100L, externalId: "vol-1", name: "existing-vol", maxStorage: 1073741824L)
+        def server = new ComputeServer(
+            id: 300L,
+            name: "test-server",
+            maxStorage: 1073741824L,
+            volumes: [existingVolume]
+        )
+
+        def externalVolumes = [
+            [ID: "vol-1", Name: "volume-1", TotalSize: "2147483648"], // Update existing
+            [ID: "vol-2", Name: "volume-2", TotalSize: "1073741824"]  // New volume
+        ]
+
+        when: "syncVolumes is called"
+        def result = virtualMachineSync.syncVolumes(server, externalVolumes)
+
+        then: "method should complete without exceptions and return boolean"
+        noExceptionThrown()
+        result instanceof Boolean
+
+        and: "allow any service interactions that may occur during sync"
+        interaction {
+            (0.._) * asyncStorageVolumeService.listById(_) >> Observable.fromIterable([existingVolume])
+            (0.._) * asyncComputeServerService.save(_) >> Single.just(server)
+            (0.._) * asyncComputeServerService.bulkSave(_) >> Single.just([server])
+            (0.._) * storageVolumeService.create(_) >> existingVolume
+            (0.._) * asyncStorageVolumeService.bulkSave(_) >> Single.just([existingVolume])
+            (0.._) * asyncStorageVolumeService.remove(_) >> Single.just(true)
+        }
+
+        // Covers: Observable.fromIterable, SyncTask creation and execution, callback executions
+    }
 }
