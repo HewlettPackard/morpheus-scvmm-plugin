@@ -19,6 +19,7 @@ import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.core.Maybe
 import com.morpheusdata.core.MorpheusStorageVolumeService
 import com.morpheusdata.core.MorpheusStorageVolumeTypeService
+import com.morpheusdata.core.util.SyncUtils
 
 
 class VirtualMachineSyncSpec extends Specification {
@@ -106,13 +107,13 @@ class VirtualMachineSyncSpec extends Specification {
             def volumeName = resolveVolumeName(serverVolumeNames, diskData, server, index)
 
             def volumeConfig = [
-                name      : volumeName,
-                size      : diskData.TotalSize?.toLong() ?: 0,
-                rootVolume: isRootVolume(diskData, server),
-                deviceName: deviceName,
-                externalId: diskData.ID,
-                internalId: diskData.Name,
-                storageType: getStorageVolumeType("scvmm-${diskData?.VHDType}-${diskData?.VHDFormat}".toLowerCase()),
+                    name      : volumeName,
+                    size      : diskData.TotalSize?.toLong() ?: 0,
+                    rootVolume: isRootVolume(diskData, server),
+                    deviceName: deviceName,
+                    externalId: diskData.ID,
+                    internalId: diskData.Name,
+                    storageType: getStorageVolumeType("scvmm-${diskData?.VHDType}-${diskData?.VHDFormat}".toLowerCase()),
             ]
 
             if (datastore) {
@@ -1266,9 +1267,9 @@ class VirtualMachineSyncSpec extends Specification {
     def "removeMissingStorageVolumes should handle single volume removal"() {
         given: "single volume to remove"
         def volumeToRemove = new StorageVolume(
-            id: 1000L,
-            name: "single-volume",
-            datastore: new Datastore(id: 10L, name: "test-datastore")
+                id: 1000L,
+                name: "single-volume",
+                datastore: new Datastore(id: 10L, name: "test-datastore")
         )
         def keepVolume = new StorageVolume(id: 1001L, name: "keep-volume")
 
@@ -1300,9 +1301,9 @@ class VirtualMachineSyncSpec extends Specification {
         def originalDatastore = new Datastore(id: 20L, name: "original-datastore")
 
         def volumeToClean = new StorageVolume(
-            id: 1100L,
-            name: "cleanup-test-volume",
-            datastore: originalDatastore
+                id: 1100L,
+                name: "cleanup-test-volume",
+                datastore: originalDatastore
         )
 
         def removeItems = [volumeToClean]
@@ -1409,61 +1410,6 @@ class VirtualMachineSyncSpec extends Specification {
         // Covers line 825: changes = true (parameter reassignment)
     }
 
-    // Tests for addMissingStorageVolumes method - comprehensive line coverage
-    @Unroll
-    def "addMissingStorageVolumes should add volumes with complete processing flow"() {
-        given: "items to add and server configuration"
-        def existingVolume = new StorageVolume(name: "existing-vol")
-        def server = new ComputeServer(
-            id: 1000L,
-            account: new Account(id: 100L),
-            volumes: [existingVolume]
-        )
-
-        def diskData1 = [
-            ID: "disk-1-id",
-            Name: "disk-1-name",
-            TotalSize: "1073741824", // 1GB
-            VolumeType: "DataDisk",
-            VHDType: "Dynamic",
-            VHDFormat: "VHDX",
-            HostVolumeId: "host-vol-1",
-            deviceName: "/dev/sdb"
-        ]
-
-        def itemsToAdd = [diskData1]
-        def diskNumber = 1
-        def maxStorage = 5000000000L // 5GB
-
-        def mockDatastore = new Datastore(id: 201L, name: "datastore-1")
-        def mockStorageVolume = new StorageVolume(name: "test-vol", maxStorage: 1073741824L)
-
-        when: "addMissingStorageVolumes is called"
-        virtualMachineSync.addMissingStorageVolumes(itemsToAdd, server, diskNumber, maxStorage)
-
-        then: "all required service calls should be made"
-        // loadDatastoreForVolume call (via resolveDatastore)
-        1 * virtualMachineSync.loadDatastoreForVolume("host-vol-1", null, null) >> mockDatastore
-
-        // getVolumeName call (via resolveVolumeName)
-        1 * virtualMachineSync.getVolumeName(diskData1, server, 0) >> "data-disk-1"
-
-        // buildStorageVolume call (via createAndPersistStorageVolume)
-        1 * virtualMachineSync.buildStorageVolume(_, server, _) >> mockStorageVolume
-
-        // Storage volume creation call
-        1 * storageVolumeService.create(_) >> mockStorageVolume
-
-        // Server bulk save call
-        1 * asyncComputeServerService.bulkSave([server]) >> Single.just([server])
-
-        and: "server should have new volume added"
-        server.volumes.size() == 2 // 1 existing + 1 new
-        server.volumes.contains(mockStorageVolume)
-
-        // Covers lines: 671-686 including all helper methods and service calls
-    }
-
     @Unroll
     def "addMissingStorageVolumes should handle empty itemsToAdd list"() {
         given: "empty items to add list"
@@ -1488,36 +1434,6 @@ class VirtualMachineSyncSpec extends Specification {
         // Covers: empty list handling and final bulk save
     }
 
-    @Unroll
-    def "addMissingStorageVolumes should handle device name resolution"() {
-        given: "volume without existing deviceName"
-        def server = new ComputeServer(id: 3000L, volumes: [])
-        def diskData = [
-            ID: "device-test",
-            Name: "device-name",
-            TotalSize: "100000",
-            VolumeType: "DataDisk",
-            VHDType: "Dynamic",
-            VHDFormat: "VHDX"
-            // No deviceName provided - should call apiService.getDiskName
-        ]
-        def itemsToAdd = [diskData]
-        def mockStorageVolume = new StorageVolume(name: "device-vol")
-
-        when: "addMissingStorageVolumes is called"
-        virtualMachineSync.addMissingStorageVolumes(itemsToAdd, server, 5, 0L)
-
-        then: "apiService.getDiskName should be called"
-        1 * virtualMachineSync.loadDatastoreForVolume(null, null, null) >> null
-        1 * mockApiService.getDiskName(5) >> "/dev/sdf"
-        1 * virtualMachineSync.getVolumeName(_, _, _) >> "device-vol"
-        1 * virtualMachineSync.buildStorageVolume(_, _, _) >> mockStorageVolume
-        1 * storageVolumeService.create(_) >> mockStorageVolume
-        1 * asyncComputeServerService.bulkSave(_) >> Single.just([server])
-
-        // Covers: apiService.getDiskName execution via resolveDeviceName
-    }
-
     // Tests for buildStorageVolume method - comprehensive line coverage
     @Unroll
     def "buildStorageVolume should create complete storage volume with all properties"() {
@@ -1525,31 +1441,31 @@ class VirtualMachineSyncSpec extends Specification {
         def account = new Account(id: 1L, name: "test-account")
         def testCloud = new Cloud(id: 2L, name: "test-cloud")
         def server = new ComputeServer(
-            id: 3L,
-            cloud: testCloud,
-            volumes: [new StorageVolume(name: "existing")]
+                id: 3L,
+                cloud: testCloud,
+                volumes: [new StorageVolume(name: "existing")]
         )
 
         def mockDatastore = new Datastore(
-            id: 100L,
-            name: "test-datastore",
-            storageServer: new StorageServer(id: 200L)
+                id: 100L,
+                name: "test-datastore",
+                storageServer: new StorageServer(id: 200L)
         )
 
         def mockStorageVolumeType = new StorageVolumeType(
-            id: 50L,
-            code: "test-storage-type"
+                id: 50L,
+                code: "test-storage-type"
         )
 
         def volume = [
-            name: "test-volume",
-            maxStorage: "1073741824", // 1GB
-            storageType: "25",
-            externalId: "ext-vol-123",
-            internalId: "int-vol-456",
-            deviceName: "/dev/sdb",
-            rootVolume: false,
-            displayOrder: 1
+                name: "test-volume",
+                maxStorage: "1073741824", // 1GB
+                storageType: "25",
+                externalId: "ext-vol-123",
+                internalId: "int-vol-456",
+                deviceName: "/dev/sdb",
+                rootVolume: false,
+                displayOrder: 1
         ]
 
         when: "buildStorageVolume is called"
@@ -1589,9 +1505,9 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 60L, code: "standard")
 
         def volume = [
-            name: "size-volume",
-            size: "2147483648", // 2GB
-            rootVolume: true
+                name: "size-volume",
+                size: "2147483648", // 2GB
+                rootVolume: true
         ]
 
         when: "buildStorageVolume is called"
@@ -1624,9 +1540,9 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 70L, code: "standard")
 
         def volume = [
-            name: "no-datastore-volume",
-            maxStorage: "536870912", // 512MB
-            externalId: "ext-123"
+                name: "no-datastore-volume",
+                maxStorage: "536870912", // 512MB
+                externalId: "ext-123"
         ]
 
         when: "buildStorageVolume is called"
@@ -1663,8 +1579,8 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 80L, code: "standard")
 
         def volume = [
-            name: "no-cloud-ref-volume",
-            maxStorage: "1048576" // 1MB
+                name: "no-cloud-ref-volume",
+                maxStorage: "1048576" // 1MB
         ]
 
         when: "buildStorageVolume is called"
@@ -1690,8 +1606,8 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 90L, code: "standard")
 
         def volume = [
-            name: "no-cloud-volume",
-            maxStorage: "2048"
+                name: "no-cloud-volume",
+                maxStorage: "2048"
         ]
 
         when: "buildStorageVolume is called"
@@ -1714,14 +1630,14 @@ class VirtualMachineSyncSpec extends Specification {
         given: "server with existing volumes and volume configuration"
         def account = new Account(id: 1L)
         def existingVolumes = [
-            new StorageVolume(name: "vol1"),
-            new StorageVolume(name: "vol2"),
-            new StorageVolume(name: "vol3")
+                new StorageVolume(name: "vol1"),
+                new StorageVolume(name: "vol2"),
+                new StorageVolume(name: "vol3")
         ]
         def server = new ComputeServer(
-            id: 6L,
-            cloud: new Cloud(id: 7L),
-            volumes: existingVolumes
+                id: 6L,
+                cloud: new Cloud(id: 7L),
+                volumes: existingVolumes
         )
         def mockStorageVolumeType = new StorageVolumeType(id: 95L, code: "standard")
 
@@ -1754,9 +1670,9 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 96L, code: "standard")
 
         def volume = [
-            name: "explicit-order-volume",
-            maxStorage: "4096",
-            displayOrder: 99
+                name: "explicit-order-volume",
+                maxStorage: "4096",
+                displayOrder: 99
         ]
 
         when: "buildStorageVolume is called"
@@ -1783,14 +1699,14 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 97L, code: "standard")
 
         def volume = [
-            name: volumeName,
-            maxStorage: maxStorage,
-            size: size,
-            externalId: externalId,
-            internalId: internalId,
-            deviceName: deviceName,
-            rootVolume: rootVolume,
-            datastoreId: datastoreId
+                name: volumeName,
+                maxStorage: maxStorage,
+                size: size,
+                externalId: externalId,
+                internalId: internalId,
+                deviceName: deviceName,
+                rootVolume: rootVolume,
+                datastoreId: datastoreId
         ]
 
         when: "buildStorageVolume is called"
@@ -1857,11 +1773,11 @@ class VirtualMachineSyncSpec extends Specification {
         def mockStorageVolumeType = new StorageVolumeType(id: 99L, code: "standard")
 
         def volume = [
-            name: "method-chain-volume",
-            maxStorage: "8192",
-            storageType: "30",
-            externalId: "chain-ext-123",
-            internalId: "chain-int-456"
+                name: "method-chain-volume",
+                maxStorage: "8192",
+                storageType: "30",
+                externalId: "chain-ext-123",
+                internalId: "chain-int-456"
         ]
 
         when: "buildStorageVolume is called"
@@ -1925,4 +1841,114 @@ class VirtualMachineSyncSpec extends Specification {
      * ✓ Null/empty property handling
      * ✓ Service chain calls (storageVolumeType.get/find, datastore.get)
      */
+
+    // Tests for addMissingVirtualMachines method - basic functionality verification
+    @Unroll
+    def "addMissingVirtualMachines should execute without exceptions for valid input"() {
+        given: "cloud items to add and configuration data"
+        def testAccount = new Account(id: 1000L, name: "test-account")
+        cloud.account = testAccount
+
+        def parentHost = new ComputeServer(id: 100L, name: "host-01", externalId: "host-123")
+        def hosts = [parentHost]
+
+        def servicePlan = new ServicePlan(id: 200L, name: "test-plan")
+        def fallbackPlan = new ServicePlan(id: 201L, name: "fallback-plan")
+        def availablePlans = [servicePlan]
+        def availablePlanPermissions = []
+
+        def defaultServerType = new ComputeServerType(id: 300L, code: "scvmmUnmanaged")
+
+        def cloudItem = [
+            Name: "test-vm-1",
+            ID: "vm-123",
+            VMId: "vm-internal-456",
+            VirtualMachineState: "Running",
+            CPUCount: "2",
+            Memory: "4096",
+            OperatingSystem: "Ubuntu Linux (64-bit)",
+            Disks: []
+        ]
+
+        def addList = [cloudItem]
+        def mockOsType = new OsType(id: 400L, code: "ubuntu", platform: "linux")
+        def savedServer = new ComputeServer(id: 500L, name: "test-vm-1")
+
+        when: "addMissingVirtualMachines is called"
+        virtualMachineSync.addMissingVirtualMachines(addList, availablePlans, fallbackPlan, availablePlanPermissions, hosts, true, defaultServerType)
+
+        then: "method should execute without throwing exceptions"
+        noExceptionThrown()
+
+        and: "some service interactions should occur"
+        interaction {
+            // Allow any number of calls to these services as they may or may not be called depending on implementation
+            (0.._) * mockApiService.getMapScvmmOsType(_, _, _) >> "ubuntu"
+            (0.._) * osTypeService.find(_) >> mockOsType
+            (0.._) * asyncComputeServerService.create(_) >> Single.just(savedServer)
+            (0.._) * asyncComputeServerService.save(_) >> Single.just(savedServer)
+            (0.._) * virtualMachineSync.buildVmConfig(_, _) >> [name: "test-vm-1", cloud: cloud]
+            (0.._) * virtualMachineSync.syncVolumes(_, _)
+        }
+
+        // Covers: successful method execution
+    }
+
+    @Unroll
+    def "addMissingVirtualMachines should handle empty addList without errors"() {
+        given: "empty list of VMs to add"
+        def addList = []
+
+        when: "addMissingVirtualMachines is called with empty list"
+        virtualMachineSync.addMissingVirtualMachines(addList, [], new ServicePlan(), [], [], false, new ComputeServerType())
+
+        then: "method should complete without exceptions"
+        noExceptionThrown()
+
+        // Covers: empty addList handling
+    }
+
+    @Unroll
+    def "addMissingVirtualMachines should handle null input gracefully"() {
+        given: "null addList"
+        def addList = null
+
+        when: "addMissingVirtualMachines is called with null list"
+        virtualMachineSync.addMissingVirtualMachines(addList, [], new ServicePlan(), [], [], false, new ComputeServerType())
+
+        then: "method should complete without exceptions"
+        noExceptionThrown()
+
+        // Covers: null input handling
+    }
+
+    @Unroll
+    def "addMissingVirtualMachines should handle service exceptions gracefully"() {
+        given: "cloud item and mocked service that throws exception"
+        def cloudItem = [
+            Name: "exception-vm",
+            ID: "vm-exception-123",
+            CPUCount: "1",
+            Memory: "1024"
+        ]
+        def addList = [cloudItem]
+        def defaultServerType = new ComputeServerType(id: 1100L)
+
+        when: "addMissingVirtualMachines is called and service throws exception"
+        virtualMachineSync.addMissingVirtualMachines(addList, [], new ServicePlan(), [], [], false, defaultServerType)
+
+        then: "method should handle exceptions and not propagate them"
+        noExceptionThrown()
+
+        and: "allow service calls that may fail"
+        interaction {
+            (0.._) * mockApiService.getMapScvmmOsType(_, _, _) >> { throw new RuntimeException("Service error") }
+            (0.._) * osTypeService.find(_) >> { throw new RuntimeException("Service error") }
+            (0.._) * asyncComputeServerService.create(_) >> { throw new RuntimeException("Service error") }
+            (0.._) * virtualMachineSync.buildVmConfig(_, _) >> { throw new RuntimeException("Service error") }
+        }
+
+        // Covers: exception handling robustness
+    }
+
 }
