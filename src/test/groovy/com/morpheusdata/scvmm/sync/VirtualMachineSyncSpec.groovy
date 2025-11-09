@@ -1899,4 +1899,270 @@ class VirtualMachineSyncSpec extends Specification {
         noExceptionThrown()
     }
 
+    def "addMissingStorageVolumes should process disk items and update server volumes"() {
+        given: "disk items to add and server with existing volumes"
+        def diskData1 = [
+                ID: "disk-1",
+                Name: "test-disk-1",
+                TotalSize: "21474836480", // 20GB
+                VHDType: "Dynamic",
+                VHDFormat: "VHDX",
+                VolumeType: "BootAndSystem",
+                HostVolumeId: "host-vol-1"
+        ]
+        def diskData2 = [
+                ID: "disk-2",
+                Name: "test-disk-2",
+                TotalSize: "10737418240", // 10GB
+                VHDType: "Fixed",
+                VHDFormat: "VHD",
+                VolumeType: "Data",
+                HostVolumeId: "host-vol-2"
+        ]
+        def itemsToAdd = [diskData1, diskData2]
+
+        def testServer = new ComputeServer(
+                id: 5L,
+                name: "test-server",
+                volumes: [],
+                account: new Account(id: 1L)
+        )
+
+        def mockStorageVolume1 = new StorageVolume(id: 1L, name: "volume-1", maxStorage: 21474836480L)
+        def mockStorageVolume2 = new StorageVolume(id: 2L, name: "volume-2", maxStorage: 10737418240L)
+
+        def diskNumber = 0
+        def maxStorage = 0L
+
+        and: "mock interactions are set up"
+        // Mock the helper methods via the VirtualMachineSync instance
+        virtualMachineSync.metaClass.createVolumeConfig = { diskData, server, volumeNames, index, currentDiskNum ->
+            return [
+                    name: "volume-${index + 1}",
+                    size: diskData.TotalSize?.toLong() ?: 0,
+                    rootVolume: diskData.VolumeType == "BootAndSystem",
+                    deviceName: "/dev/sd${(char)((int)'a' + currentDiskNum)}",
+                    externalId: diskData.ID,
+                    internalId: diskData.Name,
+                    storageType: null
+            ]
+        }
+
+        virtualMachineSync.metaClass.createAndPersistStorageVolume = { server, volumeConfig ->
+            def volume = volumeConfig.name == "volume-1" ? mockStorageVolume1 : mockStorageVolume2
+            server.volumes.add(volume)
+            return volume
+        }
+
+        // Mock context.async.computeServer.bulkSave
+        asyncComputeServerService.bulkSave(*_) >> Single.just([testServer])
+
+        when: "addMissingStorageVolumes is called"
+        virtualMachineSync.addMissingStorageVolumes(itemsToAdd, testServer, diskNumber, maxStorage)
+
+        then: "volumes are added to server and bulk save is called"
+        testServer.volumes.size() == 2
+        testServer.volumes[0].name == "volume-1"
+        testServer.volumes[1].name == "volume-2"
+        1 * asyncComputeServerService.bulkSave(*_) >> Single.just([testServer])
+    }
+
+    def "addMissingStorageVolumes should handle null itemsToAdd gracefully"() {
+        given: "null items to add"
+        def itemsToAdd = null
+        def testServer = new ComputeServer(
+                id: 6L,
+                name: "test-server-2",
+                volumes: []
+        )
+        def diskNumber = 0
+        def maxStorage = 0L
+
+        and: "mock bulk save"
+        asyncComputeServerService.bulkSave(*_) >> Single.just([testServer])
+
+        when: "addMissingStorageVolumes is called with null items"
+        virtualMachineSync.addMissingStorageVolumes(itemsToAdd, testServer, diskNumber, maxStorage)
+
+        then: "no volumes are added and bulk save is still called"
+        testServer.volumes.size() == 0
+        1 * asyncComputeServerService.bulkSave(*_) >> Single.just([testServer])
+    }
+
+    def "addMissingStorageVolumes should handle empty itemsToAdd list"() {
+        given: "empty items to add"
+        def itemsToAdd = []
+        def testServer = new ComputeServer(
+                id: 7L,
+                name: "test-server-3",
+                volumes: []
+        )
+        def diskNumber = 0
+        def maxStorage = 0L
+
+        and: "mock bulk save"
+        asyncComputeServerService.bulkSave(*_) >> Single.just([testServer])
+
+        when: "addMissingStorageVolumes is called with empty list"
+        virtualMachineSync.addMissingStorageVolumes(itemsToAdd, testServer, diskNumber, maxStorage)
+
+        then: "no volumes are added and bulk save is still called"
+        testServer.volumes.size() == 0
+        1 * asyncComputeServerService.bulkSave(*_) >> Single.just([testServer])
+    }
+
+    def "test removeMissingStorageVolumes with empty list"() {
+        given: "an empty list of volumes to remove"
+        def removeItems = []
+        def volumeCollection = new HashSet()
+        def server = Spy(ComputeServer) {
+            getId() >> 1L
+            getName() >> "test-server"
+        }
+        server.metaClass.volumes = volumeCollection
+        server.metaClass.getVolumes = { -> volumeCollection }
+        Boolean changes = false
+
+        when: "removeMissingStorageVolumes is called with empty list"
+        virtualMachineSync.removeMissingStorageVolumes(removeItems, server, changes)
+
+        then: "no services should be called"
+        0 * asyncComputeServerService.save(_)
+        0 * asyncStorageVolumeService.remove(_)
+        volumeCollection.size() == 0
+    }
+
+    def "test removeMissingStorageVolumes with null list"() {
+        given: "a null list of volumes to remove"
+        def removeItems = null
+        def volumeCollection = new HashSet()
+        def server = Spy(ComputeServer) {
+            getId() >> 1L
+            getName() >> "test-server"
+        }
+        server.metaClass.volumes = volumeCollection
+        server.metaClass.getVolumes = { -> volumeCollection }
+        Boolean changes = false
+
+        when: "removeMissingStorageVolumes is called with null list"
+        virtualMachineSync.removeMissingStorageVolumes(removeItems, server, changes)
+
+        then: "no services should be called and no exceptions thrown"
+        0 * asyncComputeServerService.save(_)
+        0 * asyncStorageVolumeService.remove(_)
+        volumeCollection.size() == 0
+    }
+
+    def "test removeMissingStorageVolumes with single volume"() {
+        given: "a single volume to remove"
+        def volume = new StorageVolume(
+                id: 1L,
+                name: "single-volume",
+                externalId: "vol-789"
+        )
+        volume.controller = new StorageController(id: 1L)
+        volume.datastore = new Datastore(id: 1L)
+
+        def removeItems = [volume]
+
+        def volumeCollection = new HashSet([volume])
+        def server = Spy(ComputeServer) {
+            getId() >> 1L
+            getName() >> "test-server"
+        }
+        server.metaClass.volumes = volumeCollection
+        server.metaClass.getVolumes = { -> volumeCollection }
+
+        Boolean changes = false
+
+        // Mock the async services
+        asyncComputeServerService.save(server) >> Single.just(server)
+        asyncStorageVolumeService.remove(volume) >> Single.just(true)
+
+        when: "removeMissingStorageVolumes is called"
+        virtualMachineSync.removeMissingStorageVolumes(removeItems, server, changes)
+
+        then: "the volume should be processed and removed"
+        volume.controller == null
+        volume.datastore == null
+        !volumeCollection.contains(volume)
+        volumeCollection.size() == 0
+
+        // Verify service calls
+        1 * asyncComputeServerService.save(server) >> Single.just(server)
+        1 * asyncStorageVolumeService.remove(volume) >> Single.just(true)
+    }
+
+    def "test removeMissingStorageVolumes with volume having null controller and datastore"() {
+        given: "a volume with null controller and datastore"
+        def volume = new StorageVolume(
+                id: 1L,
+                name: "null-refs-volume",
+                externalId: "vol-null"
+        )
+        // Note: controller and datastore are already null by default
+
+        def removeItems = [volume]
+
+        def volumeCollection = new HashSet([volume])
+        def server = Spy(ComputeServer) {
+            getId() >> 1L
+            getName() >> "test-server"
+        }
+        server.metaClass.volumes = volumeCollection
+        server.metaClass.getVolumes = { -> volumeCollection }
+
+        Boolean changes = false
+
+        // Mock the async services
+        asyncComputeServerService.save(server) >> Single.just(server)
+        asyncStorageVolumeService.remove(volume) >> Single.just(true)
+
+        when: "removeMissingStorageVolumes is called"
+        virtualMachineSync.removeMissingStorageVolumes(removeItems, server, changes)
+
+        then: "the volume should still be processed and removed"
+        volume.controller == null
+        volume.datastore == null
+        !volumeCollection.contains(volume)
+        volumeCollection.size() == 0
+
+        // Verify service calls still happen
+        1 * asyncComputeServerService.save(server) >> Single.just(server)
+        1 * asyncStorageVolumeService.remove(volume) >> Single.just(true)
+    }
+
+    def "test updateMatchedStorageVolumes with basic update items"() {
+        given: "a compute server and update items"
+        def server = new ComputeServer(id: 1L, name: "test-server")
+        def volume1 = new StorageVolume(id: 1L, name: "volume1")
+        def volume2 = new StorageVolume(id: 2L, name: "volume2")
+
+        def updateItems = [
+                [masterItem: volume1, diskSize: 1024L],
+                [masterItem: volume2, diskSize: 2048L]
+        ]
+
+        Long maxStorage = 0L
+        Boolean changes = false
+
+        // Mock processVolumeUpdate method to return test results
+        virtualMachineSync.metaClass.processVolumeUpdate = { updateMap, srv, index ->
+            return [
+                    shouldSave: true,
+                    volume: updateMap.masterItem,
+                    diskSize: updateMap.diskSize
+            ]
+        }
+
+        // Mock bulk save operation
+        asyncStorageVolumeService.bulkSave(_) >> Single.just([volume1, volume2])
+
+        when: "updateMatchedStorageVolumes is called"
+        virtualMachineSync.updateMatchedStorageVolumes(updateItems, server, maxStorage, changes)
+
+        then: "the method should process all update items and save volumes"
+        1 * asyncStorageVolumeService.bulkSave([volume1, volume2]) >> Single.just([volume1, volume2])
+    }
+
 }
