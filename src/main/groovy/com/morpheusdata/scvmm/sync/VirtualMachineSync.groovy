@@ -110,14 +110,14 @@ class VirtualMachineSync {
         ]
     }
 
-    private void performVirtualMachineSync(Map listResults, Map executionContext, Boolean createNew) {
+    protected void performVirtualMachineSync(Map listResults, Map executionContext, Boolean createNew) {
         def syncData = prepareSyncData()
         def existingVms = getExistingVirtualMachines()
 
         executeSyncTask(existingVms, listResults, syncData, executionContext, createNew)
     }
 
-    private Map prepareSyncData() {
+    protected Map prepareSyncData() {
         def hosts = context.services.computeServer.list(new DataQuery()
                 .withFilter(ZONE_ID, cloud.id)
                 .withFilter(COMPUTE_SERVER_TYPE_CODE, SCVMM_HYPERVISOR))
@@ -149,14 +149,14 @@ class VirtualMachineSync {
         ]
     }
 
-    private getExistingVirtualMachines() {
+    protected getExistingVirtualMachines() {
         context.async.computeServer.listIdentityProjections(new DataQuery()
                 .withFilter(ZONE_ID, cloud.id)
                 .withFilter(COMPUTE_SERVER_TYPE_CODE, NOT_EQUALS, SCVMM_HYPERVISOR)
                 .withFilter(COMPUTE_SERVER_TYPE_CODE, NOT_EQUALS, SCVMM_CONTROLLER))
     }
 
-    private void executeSyncTask(Observable<ComputeServerIdentityProjection> existingVms, Map listResults, Map syncData, Map executionContext, Boolean createNew) {
+    protected void executeSyncTask(Observable<ComputeServerIdentityProjection> existingVms, Map listResults, Map syncData, Map executionContext, Boolean createNew) {
         SyncTask<ComputeServerIdentityProjection, Map, ComputeServer> syncTask = new SyncTask<>(existingVms, listResults.virtualMachines as Collection<Map>)
         syncTask.addMatchFunction { ComputeServerIdentityProjection morpheusItem, Map cloudItem ->
             morpheusItem.externalId == cloudItem.ID
@@ -605,7 +605,7 @@ class VirtualMachineSync {
         context.async.computeServer.remove(removeItems).blockingGet()
     }
 
-    private buildVmConfig(Map cloudItem, ComputeServerType defaultServerType) {
+    def buildVmConfig(Map cloudItem, ComputeServerType defaultServerType) {
         def vmConfig = [
                 name             : cloudItem.Name,
                 cloud            : cloud,
@@ -938,3 +938,4 @@ class VirtualMachineSync {
         isRootVolume ? 'root' : "data-${index}"
     }
 }
+

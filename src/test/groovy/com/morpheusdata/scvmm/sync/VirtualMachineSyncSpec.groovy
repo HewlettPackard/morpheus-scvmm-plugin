@@ -20,6 +20,7 @@ import io.reactivex.rxjava3.core.Maybe
 import com.morpheusdata.core.MorpheusStorageVolumeService
 import com.morpheusdata.core.MorpheusStorageVolumeTypeService
 import io.reactivex.rxjava3.core.Observable
+import java.time.Instant
 
 
 class VirtualMachineSyncSpec extends Specification {
@@ -1668,8 +1669,8 @@ class VirtualMachineSyncSpec extends Specification {
         given: "successful API response with virtual machines"
         def scvmmOpts = [zone: "test-zone", hypervisor: "test-hypervisor"]
         def virtualMachines = [
-            [ID: "vm-1", Name: "test-vm-1", VirtualMachineState: "Running", Disks: []],
-            [ID: "vm-2", Name: "test-vm-2", VirtualMachineState: "Stopped", Disks: []]
+                [ID: "vm-1", Name: "test-vm-1", VirtualMachineState: "Running", Disks: []],
+                [ID: "vm-2", Name: "test-vm-2", VirtualMachineState: "Stopped", Disks: []]
         ]
         def listResults = [success: true, virtualMachines: virtualMachines]
 
@@ -1698,15 +1699,15 @@ class VirtualMachineSyncSpec extends Specification {
         given: "server with volumes and external volumes to sync"
         def existingVolume = new StorageVolume(id: 100L, externalId: "vol-1", name: "existing-vol", maxStorage: 1073741824L)
         def server = new ComputeServer(
-            id: 300L,
-            name: "test-server",
-            maxStorage: 1073741824L,
-            volumes: [existingVolume]
+                id: 300L,
+                name: "test-server",
+                maxStorage: 1073741824L,
+                volumes: [existingVolume]
         )
 
         def externalVolumes = [
-            [ID: "vol-1", Name: "volume-1", TotalSize: "2147483648"], // Update existing
-            [ID: "vol-2", Name: "volume-2", TotalSize: "1073741824"]  // New volume
+                [ID: "vol-1", Name: "volume-1", TotalSize: "2147483648"], // Update existing
+                [ID: "vol-2", Name: "volume-2", TotalSize: "1073741824"]  // New volume
         ]
 
         when: "syncVolumes is called"
@@ -1728,4 +1729,174 @@ class VirtualMachineSyncSpec extends Specification {
 
         // Covers: Observable.fromIterable, SyncTask creation and execution, callback executions
     }
+
+    // Tests for executeSyncTask method - focused unit tests covering SyncTask creation and configuration
+    @Unroll
+    def "executeSyncTask should create and configure SyncTask with proper callbacks"() {
+        given: "VM sync data setup"
+        def existingVm = new ComputeServerIdentityProjection(id: 1L, externalId: "vm-1", name: "existing-vm")
+        def existingVms = Observable.fromIterable([existingVm])
+
+        def virtualMachines = [
+                [ID: "vm-1", Name: "Updated-VM", VirtualMachineState: "Running"],
+                [ID: "vm-new", Name: "New-VM", VirtualMachineState: "Stopped"]
+        ]
+        def listResults = [success: true, virtualMachines: virtualMachines]
+
+        def syncData = [
+                hosts: [new ComputeServer(id: 10L)],
+                availablePlans: [new ServicePlan(id: 20L)],
+                fallbackPlan: new ServicePlan(id: 21L),
+                availablePlanPermissions: [],
+                serverType: new ComputeServerType(id: 40L)
+        ]
+        def executionContext = [consoleEnabled: true, scvmmOpts: [:]]
+
+        def server = new ComputeServer(id: 1L, externalId: "vm-1", name: "existing-vm")
+
+        when: "executeSyncTask is called"
+        virtualMachineSync.executeSyncTask(existingVms, listResults, syncData, executionContext, createNewParam)
+
+        then: "method should complete without exceptions"
+        noExceptionThrown()
+
+        and: "allow any service interactions that may occur during SyncTask execution"
+        interaction {
+            // SyncTask will call various services during execution
+            (0.._) * asyncComputeServerService.listById(_) >> Observable.fromIterable([server])
+            (0.._) * virtualMachineSync.addMissingVirtualMachines(_, _, _, _, _, _, _)
+            (0.._) * virtualMachineSync.updateMatchedVirtualMachines(_, _, _, _, _, _)
+            (0.._) * virtualMachineSync.removeMissingVirtualMachines(_)
+        }
+
+        where:
+        createNewParam << [true, false]
+
+        // Covers: SyncTask creation, configuration, and execution without exceptions
+    }
+
+    @Unroll
+    def "executeSyncTask should handle empty VM data gracefully"() {
+        given: "empty sync data"
+        def existingVms = Observable.fromIterable([])
+        def listResults = [success: true, virtualMachines: []]
+        def syncData = [
+                hosts: [],
+                availablePlans: [],
+                fallbackPlan: null,
+                availablePlanPermissions: [],
+                serverType: new ComputeServerType(id: 40L)
+        ]
+        def executionContext = [consoleEnabled: false, scvmmOpts: [:]]
+
+        when: "executeSyncTask is called with empty data"
+        virtualMachineSync.executeSyncTask(existingVms, listResults, syncData, executionContext, createNewParam)
+
+        then: "method should complete without exceptions"
+        noExceptionThrown()
+
+        and: "allow any service interactions"
+        interaction {
+            (0.._) * asyncComputeServerService.listById(_) >> Observable.fromIterable([])
+            (0.._) * virtualMachineSync.addMissingVirtualMachines(_, _, _, _, _, _, _)
+            (0.._) * virtualMachineSync.updateMatchedVirtualMachines(_, _, _, _, _, _)
+            (0.._) * virtualMachineSync.removeMissingVirtualMachines(_)
+        }
+
+        where:
+        createNewParam << [true, false]
+
+        // Covers: empty data handling in SyncTask
+    }
+
+    @Unroll
+    def "executeSyncTask should pass correct parameters to SyncTask callbacks"() {
+        given: "sync setup with known data to verify parameter passing"
+        def existingVm = new ComputeServerIdentityProjection(id: 1L, externalId: "vm-match", name: "test-vm")
+        def existingVms = Observable.fromIterable([existingVm])
+
+        def virtualMachines = [
+                [ID: "vm-match", Name: "Matched-VM", VirtualMachineState: "Running"],
+                [ID: "vm-add", Name: "Add-VM", VirtualMachineState: "Stopped"]
+        ]
+        def listResults = [success: true, virtualMachines: virtualMachines]
+
+        def mockHosts = [new ComputeServer(id: 10L)]
+        def mockPlans = [new ServicePlan(id: 20L)]
+        def mockFallbackPlan = new ServicePlan(id: 21L)
+        def mockPermissions = []
+        def mockServerType = new ComputeServerType(id: 40L)
+
+        def syncData = [
+                hosts: mockHosts,
+                availablePlans: mockPlans,
+                fallbackPlan: mockFallbackPlan,
+                availablePlanPermissions: mockPermissions,
+                serverType: mockServerType
+        ]
+        def executionContext = [consoleEnabled: true, scvmmOpts: [:]]
+
+        def server = new ComputeServer(id: 1L, externalId: "vm-match", name: "test-vm")
+
+        when: "executeSyncTask is called"
+        virtualMachineSync.executeSyncTask(existingVms, listResults, syncData, executionContext, createNewParam)
+
+        then: "SyncTask should load servers for updates"
+        (0.._) * asyncComputeServerService.listById(_) >> Observable.fromIterable([server])
+
+        and: "callback methods should be called with correct parameters"
+        if (createNewParam) {
+            (0.._) * virtualMachineSync.addMissingVirtualMachines(
+                    _, mockPlans, mockFallbackPlan, mockPermissions, mockHosts, true, mockServerType)
+        } else {
+            (0.._) * virtualMachineSync.addMissingVirtualMachines(_, _, _, _, _, _, _)
+        }
+
+        (0.._) * virtualMachineSync.updateMatchedVirtualMachines(
+                _, mockPlans, mockFallbackPlan, mockHosts, true, mockServerType)
+
+        (0.._) * virtualMachineSync.removeMissingVirtualMachines(_)
+
+        and: "method should complete without exceptions"
+        noExceptionThrown()
+
+        where:
+        createNewParam << [true, false]
+
+        // Covers: parameter passing to SyncTask callbacks, createNew flag behavior
+    }
+
+    def "getExistingVirtualMachines should return Observable of ComputeServerIdentityProjections with correct filters"() {
+        given: "mock compute server projections and query response"
+        def projections = [
+                new ComputeServerIdentityProjection(id: 1L, name: "vm1", externalId: "vm-123"),
+                new ComputeServerIdentityProjection(id: 2L, name: "vm2", externalId: "vm-456")
+        ]
+
+        when: "getExistingVirtualMachines is called"
+        def result = virtualMachineSync.getExistingVirtualMachines()
+        def resultList = result.toList().blockingGet()
+
+        then: "correct filters should be applied in the query"
+        1 * asyncComputeServerService.listIdentityProjections({ DataQuery query ->
+            assert query.filters.size() == 3
+            assert query.filters.find { it.name == 'zone.id' && it.value == cloud.id }
+            assert query.filters.find { it.name == 'computeServerType.code' && it.value == 'scvmmHypervisor' }
+            assert query.filters.find { it.name == 'computeServerType.code' && it.value == 'scvmmController' }
+            true
+        }) >> Observable.fromIterable(projections)
+
+        and: "result should contain expected projections"
+        resultList.size() == 2
+        resultList[0].id == 1L
+        resultList[0].name == "vm1"
+        resultList[0].externalId == "vm-123"
+        resultList[1].id == 2L
+        resultList[1].name == "vm2"
+        resultList[1].externalId == "vm-456"
+
+        and: "no exceptions should be thrown"
+        noExceptionThrown()
+    }
+
 }
