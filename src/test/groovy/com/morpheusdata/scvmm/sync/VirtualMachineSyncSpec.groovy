@@ -1490,7 +1490,7 @@ class VirtualMachineSyncSpec extends Specification {
 
     // Tests for addMissingVirtualMachines method - basic functionality verification
     @Unroll
-    def "addMissingVirtualMachines should execute without exceptions for valid input"() {
+    def "addMissingVirtualMachines should execute without exceptions for a valid input"() {
         given: "cloud items to add and configuration data"
         def testAccount = new Account(id: 1000L, name: "test-account")
         cloud.account = testAccount
