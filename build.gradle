@@ -1,7 +1,6 @@
 import org.gradle.api.publish.maven.MavenPublication
 
 // (C) Copyright 2025 Hewlett Packard Enterprise Development LP
-import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
 buildscript {
     repositories {
@@ -29,6 +28,7 @@ plugins {
     id 'com.jfrog.artifactory' version "5.+"
     id 'maven-publish'
     id 'jacoco'
+    id 'codenarc'
 }
 
 // Include required files in the JAR
@@ -57,10 +57,6 @@ repositories {
 
 configurations {
     provided
-    jacocoRuntime {
-        canBeResolved = true
-        extendsFrom implementation
-    }
 }
 
 dependencies {
@@ -74,10 +70,9 @@ dependencies {
     implementation("com.bertramlabs.plugins:karman-core:${karmanVersion}") {
         exclude module: 'groovy-all'
     }
-    implementation 'org.jacoco:org.jacoco.agent:0.8.8'
-    implementation 'org.jacoco:org.jacoco.cli:0.8.8'
 
     // Include morpheus-core and it's dependencies
+    testImplementation "com.morpheusdata:morpheus-plugin-api:$morpheusApiVersion"
     testImplementation 'io.reactivex.rxjava3:rxjava:3.1.7'
     testImplementation 'org.apache.httpcomponents:httpclient:4.5.13'
     testImplementation 'org.apache.httpcomponents:httpcore:4.4.5'
@@ -88,9 +83,13 @@ dependencies {
     testImplementation 'org.objenesis:objenesis:2.6'
     testImplementation platform("org.spockframework:spock-bom:$spockVersion")
     testImplementation "org.spockframework:spock-core"
-    testImplementation "org.spockframework:spock-junit4"
-    // you can remove this if your code does not rely on old JUnit 4 rules
+    testImplementation "org.spockframework:spock-junit4"  // you can remove this if your code does not rely on old JUnit 4 rules
     testImplementation 'cglib:cglib-nodep:3.2.12'
+
+    // Add Jackson dependencies for Spock framework
+    testImplementation 'com.fasterxml.jackson.core:jackson-core:2.15.2'
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
+    testImplementation 'com.fasterxml.jackson.core:jackson-annotations:2.15.2'
 }
 
 
@@ -110,77 +109,6 @@ final gitBranchName = providers.exec {
 
 def getEnvOrProperty(final String envVar, final String propertyKey) {
     return System.getenv(envVar) ?: project.findProperty(propertyKey)
-}
-
-def instrumentedClassesDir = file("$buildDir/instrumented-classes")
-
-task instrumentClasses(type: JavaExec) {
-    dependsOn classes
-    inputs.files sourceSets.main.output.classesDirs
-    outputs.dir instrumentedClassesDir
-    main = 'org.jacoco.cli.internal.Main'
-    classpath = configurations.jacocoRuntime
-
-    doFirst {
-        def existingClassDirs = []
-        sourceSets.main.output.classesDirs.each { dir ->
-            if (dir.exists() && dir.isDirectory()) {
-                def files = dir.listFiles()
-                if (files && files.length > 0) {
-                    existingClassDirs.add(dir.absolutePath)
-                }
-            }
-        }
-
-        if (existingClassDirs.isEmpty()) {
-            args = []
-        } else {
-            def fullArgs = ['instrument']
-            existingClassDirs.each { dir ->
-                fullArgs.add(dir)
-            }
-            fullArgs.addAll(['--dest', instrumentedClassesDir.absolutePath])
-            args = fullArgs
-        }
-    }
-}
-
-task extractJacocoAgentClasses {
-    dependsOn instrumentClasses
-    def jacocoAgent = configurations.jacocoRuntime.resolve().find { it.name.contains('org.jacoco.agent') }
-    def tmpDir = file("$buildDir/tmp/jacocoagent")
-
-    doLast {
-        // Create temp dir
-        tmpDir.mkdirs()
-        // Copy jacocoagent.jar to temp dir
-        copy {
-            from jacocoAgent
-            into tmpDir
-        }
-        // Unzip jacocoagent.jar in temp dir
-        copy {
-            from zipTree(new File(tmpDir, jacocoAgent.name))
-            into tmpDir
-        }
-        // Find the inner jacocoagent.jar and unzip it
-        def innerAgentJar = fileTree(tmpDir).find { it.name == 'jacocoagent.jar' && it.isFile() }
-        if (innerAgentJar) {
-            copy {
-                from zipTree(innerAgentJar)
-                into tmpDir
-            }
-        }
-        // Copy all classes from temp dir to classes dir
-        copy {
-            from fileTree(tmpDir) {
-                include '**/*.class'
-            }
-            into instrumentedClassesDir
-        }
-        // Clean up temp dir
-        tmpDir.deleteDir()
-    }
 }
 
 //Set plugin metadata information here that gets written into the jar
@@ -213,58 +141,92 @@ task(console, dependsOn: 'classes', type: JavaExec) {
 }
 
 test {
+    useJUnitPlatform()
+    forkEvery = 1
     testLogging {
         exceptionFormat = 'full'
         showStandardStreams = true
     }
 }
+
+// CodeNarc configuration
+codenarc {
+    toolVersion = '3.0.1'
+    configFile = file('config/codenarc/codenarc.groovy')
+    ignoreFailures = true  // Don't fail build on violations
+}
+
+codenarcMain {
+    ignoreFailures = true  // Don't fail build on violations
+    reports {
+        xml.required = true
+        html.required = true
+        text.required = false
+    }
+}
+
+codenarcTest {
+    ignoreFailures = true  // Don't fail build on violations
+    reports {
+        xml.required = true
+        html.required = true
+        text.required = false
+    }
+}
+
+test.finalizedBy jacocoTestReport
+
+jacocoTestReport.dependsOn test
+
+jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                minimum = 0.60
+            }
+        }
+
+        rule {
+            element = 'PACKAGE'
+            limit {
+                minimum = 0.0
+            }
+        }
+
+        rule {
+            limit {
+                counter = 'BRANCH'
+                minimum = 0.0
+            }
+        }
+
+        rule {
+            element = 'METHOD'
+            limit {
+                counter = 'COMPLEXITY'
+                value = 'TOTALCOUNT'
+                maximum = 40
+            }
+        }
+    }
+}
+
+jacocoTestReport {
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.collect {
+            fileTree(dir: it)
+        }))
+    }
+}
+
+jacocoTestCoverageVerification.dependsOn jacocoTestReport
+
 tasks.assemble.dependsOn tasks.shadowJar
 
 
-// Also update the shadowJar task to use instrumented classes
 shadowJar {
     archiveClassifier.set('all')
 }
-
-task instrumentedJar(type: ShadowJar) {
-    dependsOn extractJacocoAgentClasses, assetCompile
-    archiveClassifier.set('instrumented-all')
-    configurations = [project.configurations.runtimeClasspath, project.configurations.jacocoRuntime]
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    from(instrumentedClassesDir)
-    from('src/main/resources') {
-        include 'META-INF/**'
-    }
-    from("$buildDir/assets")
-    manifest {
-        attributes(
-                'Plugin-Class': 'com.morpheusdata.scvmm.ScvmmPlugin',
-                'Plugin-Version': version,
-                'Morpheus-Name': 'SCVMM',
-                'Morpheus-Organization': 'morpheus',
-                'Morpheus-Code': 'morpheus-scvmm-plugin',
-                'Morpheus-Description': 'Plugin for System Center Virtual Machine Manager',
-                'Morpheus-Logo': 'assets/scvmm.svg',
-                'Morpheus-Logo-Dark': 'assets/scvmm-dark.svg',
-                'Morpheus-Labels': 'Plugin, Cloud',
-                'Morpheus-Repo': 'https://github.com/gomorpheus/morpheus-scvmm-plugin',
-                'Morpheus-Min-Appliance-Version': "8.0.3"
-        )
-    }
-}
-
-task jacocoCustomReport(type: JacocoReport) {
-    executionData file("$buildDir/jacoco/jacoco.exec")
-    sourceDirectories.setFrom files(sourceSets.main.allSource.srcDirs)
-    classDirectories.setFrom files(sourceSets.main.output)
-    reports {
-        html.required.set(true)
-        xml.required.set(true)
-        csv.required.set(false)
-        html.outputLocation.set(file("$buildDir/reports/jacoco/custom"))
-    }
-}
-
 
 artifactory {
     publish {

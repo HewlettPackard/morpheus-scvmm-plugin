@@ -1488,47 +1488,6 @@ class VirtualMachineSyncSpec extends Specification {
         // Covers: complete method flow including new StorageVolume(), all helper calls, return
     }
 
-    /*
-     * Line Coverage Documentation for buildStorageVolume method:
-     *
-     * Line 835: def storageVolume = new StorageVolume() - COVERED by all tests
-     * Line 836: storageVolume.name = volume.name - COVERED by all tests
-     * Line 837: storageVolume.account = account - COVERED by all tests
-     * Line 839: configureStorageVolumeBasics(storageVolume, volume) - COVERED
-     *   - maxStorage vs size logic - COVERED
-     *   - resolveStorageType with storageType ID - COVERED
-     *   - resolveStorageType fallback to 'standard' - COVERED
-     *   - rootVolume property assignment - COVERED
-     * Line 840: configureDatastore(storageVolume, volume) - COVERED
-     *   - Early return when no datastoreId - COVERED
-     *   - Datastore lookup and assignment - COVERED
-     *   - StorageServer assignment - COVERED
-     *   - RefType and refId assignment - COVERED
-     * Line 841: configureIdentifiers(storageVolume, volume) - COVERED
-     *   - ExternalId assignment - COVERED
-     *   - InternalId assignment - COVERED
-     * Line 842: configureCloudId(storageVolume, server) - COVERED
-     *   - determineCloudId with server.cloud - COVERED
-     *   - determineCloudId with refType/refId - COVERED
-     *   - determineCloudId null fallback - COVERED
-     * Line 843: configureVolumeProperties(storageVolume, volume, server) - COVERED
-     *   - DeviceName assignment - COVERED
-     *   - Removable calculation - COVERED
-     *   - DisplayOrder with fallback logic - COVERED
-     * Line 845: return storageVolume - COVERED by all tests
-     *
-     * Key execution paths tested:
-     * ✓ Complete storage volume creation flow
-     * ✓ Storage type lookup vs fallback
-     * ✓ Datastore configuration with/without datastoreId
-     * ✓ Cloud ID determination (cloud vs refType vs null)
-     * ✓ MaxStorage vs size precedence
-     * ✓ Root volume handling
-     * ✓ Display order calculation
-     * ✓ Null/empty property handling
-     * ✓ Service chain calls (storageVolumeType.get/find, datastore.get)
-     */
-
     // Tests for addMissingVirtualMachines method - basic functionality verification
     @Unroll
     def "addMissingVirtualMachines should execute without exceptions for valid input"() {
