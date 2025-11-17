@@ -151,14 +151,10 @@ class VirtualMachineSync {
                                            List<ComputeServer> hosts, consoleEnabled, ComputeServerType defaultServerType) {
         log.debug("VirtualMachineSync >> updateMatchedVirtualMachines() called")
         try {
-            def matchedServers = context.services.computeServer.list(new DataQuery().withFilter('id', 'in', updateList.collect { up -> up.existingItem.id })
-                    .withJoins(['account', 'zone', 'computeServerType', 'plan', 'chassis', 'serverOs', 'sourceImage', 'folder', 'createdBy', 'userGroup',
-                                'networkDomain', 'interfaces', 'interfaces.addresses', 'controllers', 'snapshots', 'metadata', 'volumes',
-                                'volumes.datastore', 'resourcePool', 'parentServer', 'capacityInfo'])).collectEntries { [(it.id): it] }
 
             List<ComputeServer> saves = []
             for (updateMap in updateList) {
-                ComputeServer currentServer = matchedServers[updateMap.existingItem.id]
+                ComputeServer currentServer = context.services.computeServer.get(updateMap.existingItem.id)
                 def masterItem = updateMap.masterItem
                 try {
                     log.debug("Checking state of matched SCVMM Server ${masterItem.ID} - ${currentServer}")
@@ -321,6 +317,9 @@ class VirtualMachineSync {
                                 currentServer.plan = plan
                                 save = true
                             }
+                            if (save) {
+                                context.async.computeServer.bulkSave([currentServer]).blockingGet()
+                            }
                             if (masterItem.Disks) {
                                 if (currentServer.status != 'resizing' && currentServer.status != 'provisioning') {
                                     syncVolumes(currentServer, masterItem.Disks)
@@ -337,9 +336,6 @@ class VirtualMachineSync {
                 } catch (Exception e) {
                     log.error "Error in updating stats: ${e.message}", e
                 }
-            }
-            if (saves) {
-                context.async.computeServer.bulkSave(saves).blockingGet()
             }
         } catch (Exception e) {
             log.error "Error in updating virtual machines: ${e.message}", e
@@ -379,9 +375,12 @@ class VirtualMachineSync {
         return vmConfig
     }
 
-    def syncVolumes(server, externalVolumes) {
-        log.debug "syncVolumes: ${server}, ${groovy.json.JsonOutput.prettyPrint(externalVolumes?.encodeAsJSON()?.toString())}"
+    def syncVolumes(serverToSync, externalVolumes) {
+        log.debug "syncVolumes: ${serverToSync}, ${groovy.json.JsonOutput.prettyPrint(externalVolumes?.encodeAsJSON()?.toString())}"
+
+        def server = context.async.computeServer.get(serverToSync.id).blockingGet()
         def changes = false
+
         try {
             def maxStorage = 0
 
@@ -407,8 +406,9 @@ class VirtualMachineSync {
 
             if (server instanceof ComputeServer && server.maxStorage != maxStorage) {
                 log.debug "max storage changed for ${server} from ${server.maxStorage} to ${maxStorage}"
+                server = context.async.computeServer.get(serverToSync.id).blockingGet()
                 server.maxStorage = maxStorage
-                context.async.computeServer.save(server).blockingGet()
+                context.async.computeServer.bulkSave([server]).blockingGet()
                 changes = true
             }
         } catch (e) {
@@ -417,9 +417,11 @@ class VirtualMachineSync {
         return changes
     }
 
-    def addMissingStorageVolumes(itemsToAdd, ComputeServer server, int diskNumber, maxStorage, changes) {
+    def addMissingStorageVolumes(itemsToAdd, ComputeServer serverToSync, int diskNumber, maxStorage, changes) {
         def provisionProvider = cloudProvider.getProvisionProvider('morpheus-scvmm-plugin.provision')
-        def serverVolumeNames = server.volumes.collect{ it.name }
+        def serverVolumeNames = serverToSync.volumes.collect{ it.name }
+        def createVolumeList = []
+        def server = context.async.computeServer.get(serverToSync.id).blockingGet()
         itemsToAdd?.eachWithIndex { diskData, index ->
             log.debug("adding new volume: ${diskData}")
             def datastore = diskData.datastore ?: loadDatastoreForVolume(diskData.HostVolumeId, diskData.FileShareId, diskData.PartitionUniqueId) ?: null
@@ -438,16 +440,16 @@ class VirtualMachineSync {
             if (datastore)
                 volumeConfig.datastoreId = "${datastore.id}"
             def storageVolume = buildStorageVolume(server.account ?: cloud.account, server, volumeConfig)
-            context.services.storageVolume.create(storageVolume)
-            server.volumes.add(storageVolume)
             maxStorage += storageVolume.maxStorage ?: 0l
             diskNumber++
+            createVolumeList<< storageVolume
             log.debug("added volume: ${storageVolume?.dump()}")
         }
-        context.async.computeServer.bulkSave([server]).blockingGet()
+        context.async.storageVolume.create(createVolumeList, server).blockingGet()
     }
 
-    def updateMatchedStorageVolumes(updateItems, server, maxStorage, changes) {
+    def updateMatchedStorageVolumes(updateItems, serverToSync, maxStorage, changes) {
+        def server = context.async.computeServer.get(serverToSync.id).blockingGet()
         def savedVolumes = []
         updateItems?.eachWithIndex { updateMap, index ->
             log.debug("updating volume: ${updateMap.masterItem}")
@@ -485,15 +487,24 @@ class VirtualMachineSync {
         }
     }
 
-    def removeMissingStorageVolumes(removeItems, ComputeServer server, Boolean changes) {
+    def removeMissingStorageVolumes(removeItems, ComputeServer serverToSync, Boolean changes) {
+        def removeList = []
+        def server = context.async.computeServer.get(serverToSync.id).blockingGet()
         removeItems?.each { currentVolume ->
             log.debug "removing volume: ${currentVolume}"
+            if (!currentVolume){
+                log.info "volume skipped due to being null: ${currentVolume}"
+                return
+            }
             changes = true
             currentVolume.controller = null
             currentVolume.datastore = null
-            server.volumes.remove(currentVolume)
-            context.async.computeServer.save(server).blockingGet()
-            context.async.storageVolume.remove(currentVolume).blockingGet()
+            removeList << currentVolume
+        }
+        if (!context.async.storageVolume.remove(removeList,server,false).blockingGet()) {
+            def msg = "Error dissosciating volumes from server ${server.id}, volumes - ${removeList}"
+            log.error(msg)
+            // Do not propagate exception further, because that will prevent other items from being synced
         }
     }
 
