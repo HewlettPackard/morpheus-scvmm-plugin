@@ -5,10 +5,10 @@ SCVMM Plugin related test cases.
 import logging
 import os
 import json
+import time
 
 import pytest
 from dotenv import load_dotenv
-from hpe_glcp_automation_lib.libs.commons.utils.random_gens import RandomGenUtils
 from functional_tests.common.cloud_helper import ResourcePoller
 from functional_tests.common.create_payloads import SCVMMpayloads
 from functional_tests.common.scvmm_utils import SCVMMUtils
@@ -27,6 +27,8 @@ class TestSCVMMPlugin:
     cloud_id = None
     instance_id = None
 
+    start_time = time.time()
+
     def test_validate_windows_instance_creation_and_agent_installation(self, morpheus_session):
         """Validate Windows instance creation, agent installation, and basic operations."""
 
@@ -43,16 +45,21 @@ class TestSCVMMPlugin:
             TestSCVMMPlugin.group_id = group_response.json()["group"]["id"]
 
             # Create cloud
+            log.info("Creating SCVMM cloud...")
             TestSCVMMPlugin.cloud_id = SCVMMUtils.create_scvmm_cloud(morpheus_session, TestSCVMMPlugin.group_id)
 
             # Create cluster
-            cluster_id = SCVMMUtils.create_scvmm_cluster(morpheus_session, TestSCVMMPlugin.cloud_id, TestSCVMMPlugin.group_id, plan_name)
+            log.info("Creating SCVMM cluster...")
+            cluster_name= DateTimeGenUtils.name_with_datetime("scvmm-clus", "%Y%m%d-%H%M%S")
+            cluster_id = SCVMMUtils.create_scvmm_cluster(morpheus_session, TestSCVMMPlugin.cloud_id, TestSCVMMPlugin.group_id, plan_name, cluster_name)
             assert cluster_id, "Cluster creation failed! No cluster ID returned."
 
+            # Fetch template ID
             template_name= os.getenv("SCVMM_TEMPLATE_NAME")
             template_id = CommonUtils.get_template_id(morpheus_session, template_name)
 
             # Create instance
+            log.info("Creating SCVMM instance...")
             instance_id, _ = SCVMMUtils.create_instance(
                 morpheus_session= morpheus_session,
                 template_id=template_id,
@@ -295,8 +302,9 @@ class TestSCVMMPlugin:
         cloud_id = TestSCVMMPlugin.cloud_id
         group_id = TestSCVMMPlugin.group_id
         plan_name = "1 Core, 4GB Memory"
+        cluster_name = DateTimeGenUtils.name_with_datetime("scvmm-clus", "%Y%m%d-%H%M%S")
 
-        cluster_id = SCVMMUtils.create_scvmm_cluster(morpheus_session, cloud_id, group_id, plan_name)
+        cluster_id = SCVMMUtils.create_scvmm_cluster(morpheus_session, cloud_id, group_id, plan_name, cluster_name)
         assert cluster_id, "Cluster creation failed! No cluster ID returned."
 
         cluster_details = morpheus_session.clusters.get_cluster(cluster_id=cluster_id).json().get("cluster", {})
@@ -304,6 +312,11 @@ class TestSCVMMPlugin:
         assert cluster_details.get(
             "status") == "ok", f"Cluster creation failed, current status: {cluster_details.get('status')}"
         assert cluster_details.get("layout", {}).get("id"), "Layout ID missing in cluster details"
+        host_details = morpheus_session.hosts.list_hosts(name= cluster_name).json().get("servers", [])
+        agent_installed= host_details[0].get("agentInstalled") if host_details else False
+        agent_version= host_details[0].get("agentVersion") if host_details else "N/A"
+        log.info(f"Agent version: {agent_version} on cluster host")
+        assert agent_installed, "Agent installation failed on cluster host!"
         log.info(f"Cluster {cluster_id} verified successfully with status ok")
 
         # Delete cluster
@@ -341,3 +354,20 @@ class TestSCVMMPlugin:
             log.info("Cleanup of created resources and plugin uninstall completed successfully.")
         except Exception as e:
             pytest.fail(f"Cleanup test failed: {e}")
+
+    @classmethod
+    def teardown_class(cls):
+        """Print total execution time after all tests in this class finish."""
+        end_time = time.time()
+        total_time = end_time - cls.start_time
+        minutes, seconds = divmod(total_time, 60)
+
+        start_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cls.start_time))
+        end_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time))
+
+        log.info(
+            f"\n✅ TestSCVMMPlugin Execution Summary:\n"
+            f"   ▶ Start Time: {start_time_str}\n"
+            f"   ▶ End Time:   {end_time_str}\n"
+            f"   ▶ Duration:   {int(minutes)}m {int(seconds)}s ({total_time:.2f} seconds)"
+        )

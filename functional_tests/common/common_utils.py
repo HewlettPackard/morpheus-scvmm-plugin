@@ -107,6 +107,18 @@ class CommonUtils:
             return servers[0].get("id")
         raise ValueError(f"Host not found for {host_name}")
 
+    @staticmethod
+    def get_network_proxy(morpheus_session):
+        """ Fetch network proxy"""
+        response= morpheus_session.networks.get_network_proxies()
+        assert response.status_code == 200, "Failed to retrieve network proxies!"
+        proxies= response.json().get("networkProxies", [])
+        if proxies:
+            proxy_id= proxies[0].get("id")
+            log.info(f"Network Proxy ID: {proxy_id}")
+            return proxy_id
+        raise ValueError("No network proxy found!")
+
 class DateTimeGenUtils:
     """ Utility class for generating names with datetime suffixes."""
 

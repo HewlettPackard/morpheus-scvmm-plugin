@@ -8,7 +8,6 @@ import logging
 import time
 
 from hpe_glcp_automation_lib.libs.commons.utils.common_utils.common_utils import CommonUtils
-from hpe_glcp_automation_lib.libs.commons.utils.random_gens import RandomGenUtils
 from hpe_morpheus_automation_libs.api.external_api.cloud.clouds_api import CloudAPI
 from dotenv import load_dotenv
 from hpe_morpheus_automation_libs.api.external_api.cloud.clouds_payload import DeleteCloud
@@ -32,36 +31,64 @@ class SCVMMUtils:
     @staticmethod
     def upload_scvmm_plugin():
         """
-        Builds and uploads the SCVMM plugin JAR file using the provided PluginAPI instance.
-        Automatically detects the generated JAR file without requiring version input.
+        Builds and uploads the SCVMM plugin JAR file using the PluginAPI instance.
+        Automatically builds the plugin, locates the latest JAR, and uploads it to Morpheus.
         """
-        plugin_api = PluginAPI(host=host, username=admin_username, password=admin_password)
-        current_dir = os.getcwd()
-        jar_dir = os.path.join(current_dir, "build", "libs")
-
-        log.info(f"Searching for plugin JAR in {jar_dir}")
-        pattern = os.path.join(jar_dir, "morpheus-scvmm-plugin-*.jar")
-        matching_files = glob.glob(pattern)
-
-        if not matching_files:
-            raise FileNotFoundError("No plugin JAR file found in build/libs")
-        elif len(matching_files) > 1:
-            log.warning(f"Multiple JARs found: {matching_files}, using latest.")
-
-        # Pick the newest JAR by modified time
-        jar_file_path = max(matching_files, key=os.path.getmtime)
-        log.info(f"Found plugin JAR: {jar_file_path}")
-        log.info("Uploading plugin...")
-
         try:
+            # Step 1: Initialize Plugin API with environment variables
+            plugin_api = PluginAPI(
+                host= host,
+                username= admin_username,
+                password= admin_password,
+            )
+
+            current_dir = os.getcwd()
+            jar_dir = os.path.join(current_dir, "build", "libs")
+
+            # Step 2: Build the plugin using Gradle
+            log.info("Running './gradlew shadowJar' to build SCVMM plugin JAR...")
+            cmd = (
+                'curl -s "https://get.sdkman.io" | bash && '
+                'source "$HOME/.sdkman/bin/sdkman-init.sh" && '
+                "SDKMAN_NON_INTERACTIVE=true sdk install java 17.0.11-jbr && "
+                "sdk use java 17.0.11-jbr && "
+                "./gradlew shadowJar"
+            )
+            subprocess.run(["bash", "-lc", cmd], cwd=current_dir, check=True)
+            log.info("Build completed successfully.")
+
+            # Step 3: Locate the built JAR file
+            log.info(f"Searching for plugin JAR in {jar_dir}")
+            pattern = os.path.join(jar_dir, "morpheus-scvmm-plugin-*.jar")
+            matching_files = glob.glob(pattern)
+
+            if not matching_files:
+                raise FileNotFoundError("No plugin JAR file found in build/libs")
+            elif len(matching_files) > 1:
+                matching_files.sort(key=os.path.getmtime, reverse=True)
+                log.warning(
+                    f"Multiple JARs found: {matching_files}. Using the latest one: {matching_files[0]}"
+                )
+
+            jar_file_path = matching_files[0]
+            log.info(f"Found plugin JAR: {jar_file_path}")
+
+            # Step 4: Upload plugin
+            log.info("Uploading plugin to Morpheus...")
             plugin_response = plugin_api.upload_plugin(jar_file_path=jar_file_path)
             log.info(f"Response Status Code: {plugin_response.status_code}")
+
             assert plugin_response.status_code == 200, f"Plugin upload failed: {plugin_response.text}"
             log.info("Plugin uploaded successfully.")
             return plugin_response
+
+        except subprocess.CalledProcessError as e:
+            log.error(f"Plugin build failed: {e}")
+            pytest.fail(f"Plugin build failed: {e}")
+
         except Exception as e:
             log.error(f"Plugin upload failed: {e}")
-            pytest.fail(f"Plugin upload failed: {e}")
+            pytest.fail(f"Plugin upload failed with error: {e}")
 
     @staticmethod
     def create_scvmm_cloud(morpheus_session, group_id):
@@ -83,10 +110,14 @@ class SCVMMUtils:
 
         assert zone_type_id is not None, "SCVMM zone type not found!"
 
+        api_proxy_id= CommonUtils.get_network_proxy(morpheus_session)
+        provisioning_proxy= api_proxy_id
+
         # 2. Build payload
         cloud_payload = SCVMMpayloads.get_create_cloud_payload(
-            cloud_name=cloud_name, group_id=group_id, zone_type_id=zone_type_id
+            cloud_name=cloud_name, group_id=group_id, zone_type_id=zone_type_id, api_proxy_id= api_proxy_id, provisioning_proxy= provisioning_proxy
         )
+        log.info(f"Cloud Payload: {json.dumps(cloud_payload, indent=2)}")
 
         # 3. Create cloud
         cloud_response = morpheus_session.clouds.add_clouds(cloud_payload)
@@ -105,14 +136,16 @@ class SCVMMUtils:
         return cloud_id
 
     @staticmethod
-    def create_scvmm_cluster(morpheus_session, cloud_id, group_id, plan_name):
+    def create_scvmm_cluster(morpheus_session, cloud_id, group_id, plan_name, cluster_name):
         """ function to create scvmm cluster and wait until it's active"""
-        cluster_name = DateTimeGenUtils.name_with_datetime("scvmm-clus", "%Y%m%d-%H%M%S")
 
         # Fetching cluster-type ID for SCVMM
+        log.info("Fetching cluster types...")
         cluster_type_response = morpheus_session.clusters.list_cluster_types()
         assert (cluster_type_response.status_code == 200), "Failed to retrieve cluster types!"
         cluster_types = cluster_type_response.json().get("clusterTypes", [])
+
+        log.info("Searching for SCVMM cluster type...")
         cluster_type_id = None
         for cluster in cluster_types:
             if cluster.get("code") == os.getenv("CLUSTER_TYPE"):
@@ -122,6 +155,7 @@ class SCVMMUtils:
         log.info(f"Cluster type ID: {cluster_type_id}")
 
         # Fetching layout ID for SCVMM
+        log.info("Fetching cluster layouts...")
         layout_response = morpheus_session.cluster_layouts.list_cluster_layouts(phrase= os.getenv("CLUSTER_LAYOUT_NAME"))
         assert (layout_response.status_code == 200), "Failed to retrieve cluster layouts!"
         layouts = layout_response.json().get("layouts", [])
@@ -133,9 +167,11 @@ class SCVMMUtils:
         assert layout_id is not None, "SCVMM cluster layout not found!"
 
         #fetch plan_id
+        log.info("Fetching plan ID...")
         plan_id= CommonUtils.get_plan_id(morpheus_session, plan_name= plan_name, zone_id=cloud_id, group_id=group_id)
 
         cluster_payload= SCVMMpayloads.get_create_cluster_payload(morpheus_session,cluster_name, group_id, cloud_id, layout_id, cluster_type_id, plan_id)
+        log.info(f"Cluster Payload: {json.dumps(cluster_payload, indent=2)}")
 
         cluster_response = morpheus_session.session.post(
             f"{morpheus_session.base_url}/api/clusters",
@@ -391,7 +427,7 @@ class SCVMMUtils:
         return last_result
 
     @staticmethod
-    def verify_delete_resource(morpheus_session, resource_type, list_func, resource_id, key, retries=5, delay=3):
+    def verify_delete_resource(morpheus_session, resource_type, list_func, resource_id, key, retries=20, delay=5):
         """
         Verify that a resource is deleted by polling the list API.
         """

@@ -57,7 +57,7 @@ class SCVMMpayloads:
         }
 
     @staticmethod
-    def get_create_cloud_payload(cloud_name, group_id, zone_type_id):
+    def get_create_cloud_payload(cloud_name, group_id, zone_type_id, api_proxy_id, provisioning_proxy):
         """Helper function to create the payload for cloud creation."""
         return {
             "zone": {
@@ -66,10 +66,19 @@ class SCVMMpayloads:
                 "zoneType": {"id": zone_type_id},
                 "groups": {"id": group_id},
                 "groupId": group_id,
+                "guidanceMode": "manual",
+                "costingMode": "costing",
+                "autoRecoverPowerState": True,
                 "config": {
                     "host": os.getenv("HOST"),
                     "username": os.getenv("HOST_USERNAME"),
                     "password": os.getenv("HOST_PASSWORD"),
+                    "importExisting": "on",
+                    "enableHypervisorConsole": "on",
+                },
+                "apiProxy": {"id": api_proxy_id},
+                "provisioningProxy": {
+                    "id": provisioning_proxy
                 },
             }
         }
@@ -116,9 +125,11 @@ class SCVMMpayloads:
                         ]
                     },
                     "config": {
-                        "noAgent": False
-                    },
-                    "autoRecoverPowerState": False
+                        "templateParameter": {
+                                "notHighAvailability": True,
+                                "provisionType": "scvmm"
+                                              }
+                               }
                 }
             }
 

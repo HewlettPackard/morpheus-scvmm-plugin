@@ -41,7 +41,7 @@ class ResourcePoller:
 
 
     @staticmethod
-    def poll_instance_status(instance_id: int, target_state: str, morpheus_session, timeout: int = 150, sleep_time: int = 10):
+    def poll_instance_status(instance_id: int, target_state: str, morpheus_session, timeout: int = 350, sleep_time: int = 10):
         """
         Polls the status of a Morpheus instance until it matches the target state or the timeout is reached.
 
@@ -103,7 +103,7 @@ class ResourcePoller:
                 - 'failed' if the cluster creation fails.
                 - Final cluster status string if timeout occurs before 'ok' or 'failed'.
         """
-        timeout = 100  # number of attempts
+        timeout = 200  # number of attempts
         sleep_time = 10  # seconds between each poll
 
         for i in range(timeout):
