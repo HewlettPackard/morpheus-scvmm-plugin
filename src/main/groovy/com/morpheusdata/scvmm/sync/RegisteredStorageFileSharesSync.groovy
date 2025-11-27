@@ -12,20 +12,30 @@ import com.morpheusdata.model.projection.DatastoreIdentity
 import com.morpheusdata.model.projection.StorageVolumeIdentityProjection
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
-import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Observable
+import groovy.transform.CompileDynamic
 
 /**
  * @author rahul.ray
  */
 
+@CompileDynamic
 class RegisteredStorageFileSharesSync {
+    private static final String REF_TYPE = 'refType'
+    private static final String COMPUTE_ZONE = 'ComputeZone'
+    private static final String REF_ID = 'refId'
+    private static final String TYPE = 'type'
+    private static final String GENERIC = 'generic'
+    private static final String CATEGORY = 'category'
+    private static final String EQUALS_REGEX = '=~'
+    private static final String SCVMM_HYPERVISOR = 'scvmmHypervisor'
+    private static final String CATEGORY_PATTERN = 'scvmm.registered.file.share.datastore.%'
 
-    private Cloud cloud
-    private ComputeServer node
-    private MorpheusContext context
-    private ScvmmApiService apiService
-    private LogInterface log = LogWrapper.instance
+    private final Cloud cloud
+    private final ComputeServer node
+    private final MorpheusContext context
+    private final ScvmmApiService apiService
+    private final LogInterface log = LogWrapper.instance
 
     RegisteredStorageFileSharesSync(Cloud cloud, ComputeServer node, MorpheusContext context) {
         this.cloud = cloud
@@ -34,73 +44,66 @@ class RegisteredStorageFileSharesSync {
         this.apiService = new ScvmmApiService(context)
     }
 
-    def execute() {
-        log.debug "RegisteredStorageFileSharesSync"
+    void execute() {
+        log.debug 'RegisteredStorageFileSharesSync'
         try {
-            def clusters = context.services.cloud.pool.list(new DataQuery()
-                    .withFilter('refType', 'ComputeZone')
-                    .withFilter('refId', cloud.id)
-                    .withFilter('type', 'Cluster')
-                    .withFilter('internalId', '!=', null))
             def scvmmOpts = apiService.getScvmmZoneAndHypervisorOpts(context, cloud, node)
             def listResults = apiService.listRegisteredFileShares(scvmmOpts)
             log.debug("listResults: ${listResults}")
             if (listResults.success == true && listResults.datastores) {
                 def objList = listResults?.datastores
-                def serverType = context.async.cloud.findComputeServerTypeByCode('scvmmHypervisor').blockingGet()
 
                 def domainRecords = context.async.cloud.datastore.listIdentityProjections(new DataQuery()
-                        .withFilter('category', '=~', 'scvmm.registered.file.share.datastore.%')
-                        .withFilter('refType', 'ComputeZone').withFilter('refId', cloud.id)
-                        .withFilter('type', 'generic'))
+                        .withFilter(CATEGORY, EQUALS_REGEX, CATEGORY_PATTERN)
+                        .withFilter(REF_TYPE, COMPUTE_ZONE).withFilter(REF_ID, cloud.id)
+                        .withFilter(TYPE, GENERIC))
 
-                SyncTask<DatastoreIdentity, Map, Datastore> syncTask = new SyncTask<>(domainRecords, objList as Collection<Map>)
+                SyncTask<DatastoreIdentity, Map, Datastore> syncTask =
+                        new SyncTask<>(domainRecords, objList as Collection<Map>)
 
                 syncTask.addMatchFunction { DatastoreIdentity morpheusItem, Map cloudItem ->
                     morpheusItem?.externalId == cloudItem?.ID
                 }.onDelete { removeItems ->
                     log.debug("removing datastore: ${removeItems?.size()}")
                     context.async.cloud.datastore.remove(removeItems).blockingGet()
-                }.onUpdate {  updateItems ->
+                }.onUpdate { updateItems ->
                     updateMatchedFileShares(updateItems, objList)
                 }.onAdd { itemsToAdd ->
                     addMissingFileShares(itemsToAdd, objList)
-                }.withLoadObjectDetailsFromFinder {  updateItems ->
-                    return context.async.cloud.datastore.listById(updateItems.collect { it.existingItem.id } as List<Long>)
+                }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItem> updateItems ->
+                    context.async.cloud.datastore.listById(
+                            updateItems.collect { updateItem -> updateItem.existingItem.id } as List<Long>)
                 }.start()
             } else {
-                log.info("Not getting the RegisteredStorageFileShares data")
+                log.info('Not getting the RegisteredStorageFileShares data')
             }
         } catch (e) {
+            // @SuppressWarnings('UnnecessaryGetter')
             log.error("RegisteredStorageFileSharesSync error: ${e}", e.getMessage())
         }
     }
 
-    private addMissingFileShares(Collection<Map> addList, objList) {
-        log.debug("RegisteredStorageFileSharesSync: addMissingFileShares: called")
+    protected void addMissingFileShares(Collection<Map> addList, List objList) {
+        log.debug('RegisteredStorageFileSharesSync: addMissingFileShares: called')
         def dataStoreAdds = []
         try {
             def hostToShareMap = [:]
 
             def getOrCreateHostEntry = { hostId ->
-                if(!hostToShareMap[hostId]) {
-                    hostToShareMap[hostId] = [] as Set
-                }
-                return hostToShareMap[hostId]
+                hostToShareMap[hostId] = hostToShareMap[hostId] ?: ([] as Set)
+                hostToShareMap[hostId]
             }
             addList?.each { cloudItem ->
                 def externalId = cloudItem.ID
-                def name = cloudItem.Name
                 def totalSize = cloudItem.Capacity ? cloudItem.Capacity?.toLong() : 0
                 def freeSpace = cloudItem.FreeSpace?.toLong() ?: 0
-                def usedSpace = totalSize - freeSpace
                 def online = cloudItem.IsAvailableForPlacement
                 // Create the datastore
                 def datastoreConfig = [
                         owner      : cloud.owner,
                         name       : cloudItem.Name,
                         externalId : cloudItem.ID,
-                        refType    : 'ComputeZone',
+                        refType    : COMPUTE_ZONE,
                         refId      : cloud.id,
                         freeSpace  : freeSpace,
                         storageSize: totalSize,
@@ -108,13 +111,13 @@ class RegisteredStorageFileSharesSync {
                         category   : "scvmm.registered.file.share.datastore.${cloud.id}",
                         drsEnabled : false,
                         online     : online,
-                        type       : 'generic'
+                        type       : GENERIC,
                 ]
                 log.info "Created registered file share for id: ${cloudItem.ID}"
                 Datastore datastore = new Datastore(datastoreConfig)
                 dataStoreAdds << datastore
                 // buildMap
-                //def externalId = ds.ID
+                // def externalId = ds.ID
                 // Build up a mapping of host (externalId) to registered file shares
                 cloudItem.ClusterAssociations?.each { ca ->
                     def hostEntry = getOrCreateHostEntry(ca.HostID)
@@ -125,7 +128,7 @@ class RegisteredStorageFileSharesSync {
                     hostEntry << externalId
                 }
             }
-            //create dataStore
+            // create dataStore
             if (dataStoreAdds.size() > 0) {
                 context.async.cloud.datastore.bulkCreate(dataStoreAdds).blockingGet()
             }
@@ -135,171 +138,298 @@ class RegisteredStorageFileSharesSync {
         }
     }
 
-    private updateMatchedFileShares(List<SyncTask.UpdateItem<Datastore, Map>> updateList, objList) {
-        log.debug("RegisteredStorageFileSharesSync >> updateMatchedFileShares >> Entered")
-        def itemsToUpdate = []
+    protected void updateMatchedFileShares(List<SyncTask.UpdateItem<Datastore, Map>> updateList, List objList) {
+        log.debug('RegisteredStorageFileSharesSync >> updateMatchedFileShares >> Entered')
         try {
             def hostToShareMap = [:]
+            def itemsToUpdate = []
 
-            def getOrCreateHostEntry = { hostId ->
-                if(!hostToShareMap[hostId]) {
-                    hostToShareMap[hostId] = [] as Set
-                }
-                return hostToShareMap[hostId]
+            updateList.each { update ->
+                processDatastoreUpdate(update, itemsToUpdate, hostToShareMap)
             }
-            for (update in updateList) {
-                Datastore existingItem = update.existingItem
-                Map masterItem = update.masterItem
-                def externalId = masterItem.ID
-                def save = false
-                if (existingItem.online != masterItem.IsAvailableForPlacement) {
-                    existingItem.online = masterItem.IsAvailableForPlacement
-                    save = true
-                }
-                if (existingItem.name != masterItem.Name) {
-                    existingItem.name = masterItem.Name
-                    save = true
-                }
-                def freeSpace = masterItem.FreeSpace?.toLong() ?: 0
-                if (existingItem.freeSpace != freeSpace) {
-                    existingItem.freeSpace = freeSpace
-                    save = true
-                }
-                def totalSize = masterItem.Capacity ? masterItem.Capacity?.toLong() : 0
-                if (existingItem.storageSize != totalSize) {
-                    existingItem.storageSize = totalSize
-                    save = true
-                }
-                if (save) {
-                    itemsToUpdate << existingItem
-                }
 
-                masterItem.ClusterAssociations?.each { ca ->
-                    def hostEntry = getOrCreateHostEntry(ca.HostID)
-                    hostEntry << externalId
-                }
-                masterItem.HostAssociations?.each { ha ->
-                    def hostEntry = getOrCreateHostEntry(ha.HostID)
-                    hostEntry << externalId
-                }
-            }
-            if (itemsToUpdate.size() > 0) {
-                context.async.cloud.datastore.bulkSave(itemsToUpdate).blockingGet()
-            }
+            saveUpdatedDatastores(itemsToUpdate)
             syncVolumeForEachHosts(hostToShareMap, objList)
         } catch (e) {
             log.error "Error in update updateMatchedFileShares ${e}", e
         }
     }
 
-	/// hostToShareMap is a map of host externalId to a list of registered file share IDs
-	/// objList is the list of registered file shares
-    private syncVolumeForEachHosts (hostToShareMap, objList){
+    protected void processDatastoreUpdate(SyncTask.UpdateItem<Datastore, Map> update,
+                                          List itemsToUpdate, Map hostToShareMap) {
+        Datastore existingItem = update.existingItem
+        Map masterItem = update.masterItem
+
+        if (updateDatastoreProperties(existingItem, masterItem)) {
+            itemsToUpdate << existingItem
+        }
+
+        mapHostToShares(masterItem, hostToShareMap)
+    }
+
+    protected boolean updateDatastoreProperties(Datastore datastore, Map masterItem) {
+        boolean save = false
+
+        save |= updateDatastoreOnlineStatus(datastore, masterItem)
+        save |= updateDatastoreName(datastore, masterItem)
+        save |= updateDatastoreFreeSpace(datastore, masterItem)
+        save |= updateDatastoreStorageSize(datastore, masterItem)
+
+        return save
+    }
+
+    protected boolean updateDatastoreOnlineStatus(Datastore datastore, Map masterItem) {
+        if (datastore.online != masterItem.IsAvailableForPlacement) {
+            datastore.online = masterItem.IsAvailableForPlacement
+            return true
+        }
+        return false
+    }
+
+    protected boolean updateDatastoreName(Datastore datastore, Map masterItem) {
+        if (datastore.name != masterItem.Name) {
+            datastore.name = masterItem.Name
+            return true
+        }
+        return false
+    }
+
+    protected boolean updateDatastoreFreeSpace(Datastore datastore, Map masterItem) {
+        def freeSpace = masterItem.FreeSpace?.toLong() ?: 0
+        if (datastore.freeSpace != freeSpace) {
+            datastore.freeSpace = freeSpace
+            return true
+        }
+        return false
+    }
+
+    protected boolean updateDatastoreStorageSize(Datastore datastore, Map masterItem) {
+        def totalSize = masterItem.Capacity ? masterItem.Capacity?.toLong() : 0
+        if (datastore.storageSize != totalSize) {
+            datastore.storageSize = totalSize
+            return true
+        }
+        return false
+    }
+
+    protected void mapHostToShares(Map masterItem, Map hostToShareMap) {
+        def externalId = masterItem.ID
+        def getOrCreateHostEntry = createHostEntryGetter(hostToShareMap)
+
+        processClusterAssociations(masterItem, externalId, getOrCreateHostEntry)
+        processHostAssociations(masterItem, externalId, getOrCreateHostEntry)
+    }
+
+    protected Closure createHostEntryGetter(Map hostToShareMap) {
+        return { hostId ->
+            hostToShareMap[hostId] = hostToShareMap[hostId] ?: ([] as Set)
+            hostToShareMap[hostId]
+        }
+    }
+
+    protected void processClusterAssociations(Map masterItem, String externalId, Closure getOrCreateHostEntry) {
+        masterItem.ClusterAssociations?.each { ca ->
+            def hostEntry = getOrCreateHostEntry(ca.HostID)
+            hostEntry << externalId
+        }
+    }
+
+    protected void processHostAssociations(Map masterItem, String externalId, Closure getOrCreateHostEntry) {
+        masterItem.HostAssociations?.each { ha ->
+            def hostEntry = getOrCreateHostEntry(ha.HostID)
+            hostEntry << externalId
+        }
+    }
+
+    protected void saveUpdatedDatastores(List itemsToUpdate) {
+        if (itemsToUpdate.size() > 0) {
+            context.async.cloud.datastore.bulkSave(itemsToUpdate).blockingGet()
+        }
+    }
+
+    /// hostToShareMap is a map of host externalId to a list of registered file share IDs
+    /// objList is the list of registered file shares
+    protected void syncVolumeForEachHosts(Map hostToShareMap, List objList) {
         try {
-            def existingHostsList = context.services.computeServer.list(new DataQuery().withFilter('zone.id', cloud.id)
-                    .withFilter('computeServerType.code', 'scvmmHypervisor'))
-            def existingHostIds = []
-            existingHostsList?.each {
-                existingHostIds << it.id
-            }
-            def findMountPath = { dsID ->
-                def obj = objList.find { it.ID == dsID}
-                obj.MountPoints?.size() > 0 ? obj.MountPoints[0] : null
-            }
-            def morphDatastores = context.services.cloud.datastore.list(new DataQuery()
-                    .withFilter('category', '=~', 'scvmm.registered.file.share.datastore.%')
-                    .withFilter('refType', 'ComputeZone').withFilter('refId', cloud.id)
-                    .withFilter('type', 'generic'))
+            // @SuppressWarnings('UnnecessaryGetter')
+            def existingHostsList = getExistingHosts()
+            // @SuppressWarnings('UnnecessaryGetter')
+            def morphDatastores = getMorphDatastores()
+            def findMountPath = createMountPathFinder(objList)
 
-            existingHostIds?.each{ it ->
-                def hostId = it
-                def volumeType = context.services.storageVolume.storageVolumeType.find(new DataQuery()
-                        .withFilter('code', 'scvmm-registered-file-share-datastore'))
-                ComputeServer host = context.services.computeServer.get(hostId)
-                def existingStorageVolumes = host.volumes?.findAll { it.type == volumeType }
-                def masterVolumeIds = hostToShareMap[host.externalId]
-                log.debug "${hostId}:${host.externalId} has ${existingStorageVolumes?.size()} volumes already"
-                def domainRecords = Observable.fromIterable(existingStorageVolumes)
-
-                SyncTask<StorageVolumeIdentityProjection, Map, StorageVolume> syncTask = new SyncTask<>(domainRecords, masterVolumeIds as Collection<Map>)
-
-                syncTask.addMatchFunction { StorageVolumeIdentityProjection storageVolume, Map cloudItem ->
-                    storageVolume?.externalId == cloudItem?.ID
-                }.onDelete { removeItems ->
-                    log.debug("${hostId}: removing storageVolume: ${removeItems.size()}")
-                    removeItems?.each { currentVolume ->
-                        log.debug "removing volume: ${currentVolume}"
-                        currentVolume.controller = null
-                        currentVolume.datastore = null
-
-                        context.async.storageVolume.save(currentVolume).blockingGet()
-                        context.async.storageVolume.remove([currentVolume], server, true).blockingGet()
-                        context.async.storageVolume.remove(currentVolume).blockingGet()
-                    }
-                }.onUpdate { List<SyncTask.UpdateItem<Datastore, Map>> updateItems ->
-                    updateItems?.each { updateMap ->
-                        StorageVolume storageVolume = updateMap.existingItem
-                        def dsExternalId = updateMap.masterItem
-                        log.debug "${hostId}: Updating existing volumes ${dsExternalId}"
-
-                        Datastore match = morphDatastores.find { it.externalId == dsExternalId}
-
-                        def save = false
-                        if(storageVolume.maxStorage != match.storageSize) {
-                            storageVolume.maxStorage = match.storageSize
-                            save = true
-                        }
-                        def usedSpace = match.storageSize - match.freeSpace
-                        if(storageVolume.usedStorage != usedSpace) {
-                            storageVolume.usedStorage = usedSpace
-                            save = true
-                        }
-                        if(storageVolume.name != match.name) {
-                            storageVolume.name = match.name
-                            save = true
-                        }
-                        def mountPoint = findMountPath(dsExternalId)
-                        if(storageVolume.volumePath != mountPoint){
-                            storageVolume.volumePath = mountPoint
-                            save = true
-                        }
-                        if(storageVolume.datastore?.id != match.id) {
-                            storageVolume.datastore = match
-                            save = true
-                        }
-
-                        if(save) {
-                            context.async.storageVolume.save(storageVolume).blockingGet()
-                        }
-                    }
-                }.onAdd { itemsToAdd ->
-                    itemsToAdd?.each { dsExternalId ->
-                        Datastore match = morphDatastores.find { it.externalId == dsExternalId}
-                        if(match) {
-                            log.debug "${hostId}: Adding new volume ${dsExternalId}"
-                            def newVolume = new StorageVolume(
-                                    type:volumeType,
-                                    maxStorage:match.storageSize,
-                                    usedStorage:match.storageSize - match.freeSpace,
-                                    externalId:dsExternalId,
-                                    internalId:dsExternalId,
-                                    name:match.name,
-                                    volumePath:findMountPath(dsExternalId),
-                                    cloudId:cloud?.id
-                            )
-                            newVolume.datastore = match
-                            context.async.storageVolume.create([newVolume], host).blockingGet()
-                            context.async.computeServer.save(host).blockingGet()
-                        } else {
-                            log.error "Matching datastore with id ${dsExternalId} not found!"
-                        }
-                    }
-                }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<StorageVolumeIdentityProjection, Map>> updateItems ->
-                    return context.async.storageVolume.listById(updateItems.collect { it.existingItem.id } as List<Long>)
-                }.start()
+            existingHostsList?.each { host ->
+                syncVolumesForSingleHost(host, hostToShareMap, morphDatastores, findMountPath)
             }
         } catch (e) {
             log.error "error in cacheRegisteredStorageFileShares: ${e}", e
         }
     }
+
+    protected List<ComputeServer> getExistingHosts() {
+        return context.services.computeServer.list(new DataQuery()
+                .withFilter('zone.id', cloud.id)
+                .withFilter('computeServerType.code', SCVMM_HYPERVISOR))
+    }
+
+    protected List<Datastore> getMorphDatastores() {
+        return context.services.cloud.datastore.list(new DataQuery()
+                .withFilter(CATEGORY, EQUALS_REGEX, CATEGORY_PATTERN)
+                .withFilter(REF_TYPE, COMPUTE_ZONE)
+                .withFilter(REF_ID, cloud.id)
+                .withFilter(TYPE, GENERIC))
+    }
+
+    protected Closure createMountPathFinder(List objList) {
+        return { dsID ->
+            def obj = objList.find { storageObj -> storageObj.ID == dsID }
+            obj?.MountPoints?.size() > 0 ? obj.MountPoints[0] : null
+        }
+    }
+
+    protected void syncVolumesForSingleHost(ComputeServer host, Map hostToShareMap,
+                                            List morphDatastores, Closure findMountPath) {
+        // @SuppressWarnings('UnnecessaryGetter')
+        def volumeType = getVolumeType()
+        def existingStorageVolumes = getExistingStorageVolumes(host, volumeType)
+        def masterVolumeIds = hostToShareMap[host.externalId]
+
+        log.debug "${host.id}:${host.externalId} has ${existingStorageVolumes?.size()} volumes already"
+
+        def domainRecords = Observable.fromIterable(existingStorageVolumes)
+        def syncTask = createStorageVolumeSyncTask(domainRecords, masterVolumeIds, host, morphDatastores, findMountPath)
+        syncTask.start()
+    }
+
+    protected Object getVolumeType() {
+        return context.services.storageVolume.storageVolumeType.find(new DataQuery()
+                .withFilter('code', 'scvmm-registered-file-share-datastore'))
+    }
+
+    protected List<StorageVolume> getExistingStorageVolumes(ComputeServer host, Object volumeType) {
+        return host.volumes?.findAll { volume -> volume.type == volumeType }
+    }
+
+    protected SyncTask createStorageVolumeSyncTask(Observable domainRecords, Collection masterVolumeIds,
+                                                   ComputeServer host, List morphDatastores, Closure findMountPath) {
+        def syncTask = new SyncTask<StorageVolumeIdentityProjection, Map, StorageVolume>(
+                domainRecords, masterVolumeIds as Collection<Map>)
+
+        return syncTask
+                .addMatchFunction(this::matchStorageVolume)
+                .onDelete { removeItems -> deleteStorageVolumes(removeItems, host) }
+                .onUpdate { updateItems -> updateStorageVolumes(updateItems, morphDatastores, findMountPath) }
+                .onAdd { itemsToAdd -> addStorageVolumes(itemsToAdd, morphDatastores, findMountPath, host) }
+                .withLoadObjectDetailsFromFinder { updateItems ->
+                    context.async.storageVolume.listById(
+                            updateItems.collect { updateItem -> updateItem.existingItem.id } as List<Long>)
+                }
+    }
+
+    protected boolean matchStorageVolume(StorageVolumeIdentityProjection storageVolume, Map cloudItem) {
+        return storageVolume?.externalId == cloudItem?.ID
+    }
+
+    protected void deleteStorageVolumes(Collection removeItems, ComputeServer host) {
+        log.debug("${host.id}: removing storageVolume: ${removeItems.size()}")
+        removeItems?.each { currentVolume ->
+            removeStorageVolume(currentVolume, host)
+        }
+    }
+
+    protected void removeStorageVolume(StorageVolume currentVolume, ComputeServer host) {
+        log.debug "removing volume: ${currentVolume}"
+        currentVolume.controller = null
+        currentVolume.datastore = null
+
+        context.async.storageVolume.save(currentVolume).blockingGet()
+        context.async.storageVolume.remove([currentVolume], host, true).blockingGet()
+        context.async.storageVolume.remove(currentVolume).blockingGet()
+    }
+
+    protected void updateStorageVolumes(Collection updateItems, List morphDatastores, Closure findMountPath) {
+        updateItems?.each { updateMap ->
+            updateSingleStorageVolume(updateMap, morphDatastores, findMountPath)
+        }
+    }
+
+    protected void updateSingleStorageVolume(Object updateMap, List morphDatastores, Closure findMountPath) {
+        StorageVolume storageVolume = updateMap.existingItem
+        def dsExternalId = updateMap.masterItem
+        Datastore match = morphDatastores.find { datastore -> datastore.externalId == dsExternalId }
+
+        if (updateStorageVolumeProperties(storageVolume, match, findMountPath, dsExternalId)) {
+            context.async.storageVolume.save(storageVolume).blockingGet()
+        }
+    }
+
+    protected boolean updateStorageVolumeProperties(StorageVolume storageVolume, Datastore match,
+                                                    Closure findMountPath, Object dsExternalId) {
+        boolean save = false
+
+        save |= updateProperty(storageVolume, 'maxStorage', match.storageSize)
+        save |= updateProperty(storageVolume, 'usedStorage', match.storageSize - match.freeSpace)
+        save |= updateProperty(storageVolume, 'name', match.name)
+        save |= updateProperty(storageVolume, 'volumePath', findMountPath(dsExternalId))
+        save |= updateDatastoreProperty(storageVolume, match)
+
+        return save
+    }
+
+    protected boolean updateProperty(StorageVolume volume, String property, Object value) {
+        if (volume."${property}" != value) {
+            volume."${property}" = value
+            return true
+        }
+        return false
+    }
+
+    protected boolean updateDatastoreProperty(StorageVolume volume, Datastore match) {
+        if (volume.datastore?.id != match.id) {
+            volume.datastore = match
+            return true
+        }
+        return false
+    }
+
+    protected void addStorageVolumes(Collection itemsToAdd, List morphDatastores,
+                                     Closure findMountPath, ComputeServer host) {
+        itemsToAdd?.each { dsExternalId ->
+            addSingleStorageVolume(dsExternalId, morphDatastores, findMountPath, host)
+        }
+    }
+
+    protected void addSingleStorageVolume(Object dsExternalId, List morphDatastores,
+                                          Closure findMountPath, ComputeServer host) {
+        Datastore match = morphDatastores.find { datastore -> datastore.externalId == dsExternalId }
+        if (match) {
+            log.debug "${host.id}: Adding new volume ${dsExternalId}"
+            def newVolume = createNewStorageVolume(match, dsExternalId, findMountPath)
+            saveNewStorageVolume(newVolume, host)
+        } else {
+            log.error "Matching datastore with id ${dsExternalId} not found!"
+        }
+    }
+
+    protected StorageVolume createNewStorageVolume(Datastore match, Object dsExternalId, Closure findMountPath) {
+        // @SuppressWarnings('UnnecessaryGetter')
+        def volumeType = getVolumeType()
+        def newVolume = new StorageVolume(
+                type: volumeType,
+                maxStorage: match.storageSize,
+                usedStorage: match.storageSize - match.freeSpace,
+                externalId: dsExternalId,
+                internalId: dsExternalId,
+                name: match.name,
+                volumePath: findMountPath(dsExternalId),
+                cloudId: cloud?.id
+        )
+        newVolume.datastore = match
+        return newVolume
+    }
+
+    protected void saveNewStorageVolume(StorageVolume newVolume, ComputeServer host) {
+        context.async.storageVolume.create([newVolume], host).blockingGet()
+        context.async.computeServer.save(host).blockingGet()
+    }
 }
+
