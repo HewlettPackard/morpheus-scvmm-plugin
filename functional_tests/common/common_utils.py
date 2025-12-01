@@ -9,9 +9,9 @@ class CommonUtils:
     """ Common utility functions for functional tests. """
 
     @staticmethod
-    def get_scvmm_instance_layout_id(morpheus_session):
+    def get_scvmm_instance_layout_id(morpheus_session, layout_code: str):
         """Fetch the first SCVMM layout ID using the SCVMM layout code from env."""
-        response = morpheus_session.library.list_layouts(code=os.getenv("SCVMM_LAYOUT_CODE"))
+        response = morpheus_session.library.list_layouts(code= layout_code)
         assert response.status_code == 200, "Failed to retrieve cluster layouts!"
 
         layouts = response.json().get("instanceTypeLayouts", [])
