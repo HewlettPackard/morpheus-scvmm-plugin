@@ -797,35 +797,23 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                             }
                         }
 
-                        def serverDetails = apiService.getServerDetails(scvmmOpts, server.externalId)
-                        if (serverDetails.success == true) {
-                            log.info("serverDetail: ${serverDetails}")
-							def status = provisionResponse.skipNetworkWait ? 'waiting for server status' : 'waiting for network'
-							context.process.startProcessStep(workloadRequest.process, new ProcessEvent(type: ProcessEvent.ProcessType.provisionNetwork), status).blockingGet()
-                            opts.network = applyComputeServerNetworkIp(server, serverDetails.server?.ipAddress, serverDetails.server?.ipAddress, 0, null)
-                            server.osDevice = '/dev/sda'
-                            server.dataDevice = '/dev/sda'
-                            server.lvmEnabled = false
-                            server.sshHost = server.internalIp
-                            server.managed = true
-                            server.capacityInfo = new ComputeCapacityInfo(maxCores: scvmmOpts.maxCores, maxMemory: scvmmOpts.maxMemory, maxStorage: scvmmOpts.maxTotalStorage)
-                            server.status = 'provisioned'
-                            context.async.computeServer.save(server).blockingGet()
-                            provisionResponse.success = true
-							// By default installAgent is true.
-							// 1. The below section instructs the subsequent code to
-							// 1a. skip agent installation for Linux VMs (as cloud init will take care of installing agent)
-							// 1b. If we are in a Clone scenario, we don't want to skip agent installation here.
-							if (server?.platform == 'linux' && !scvmmOpts.cloneVMId) {
-								provisionResponse.installAgent = false
-							}
-                            log.debug("provisionResponse.success: ${provisionResponse.success}")
-                        } else {
-                            server.statusMessage = 'Failed to run server'
-                            context.async.computeServer.save(server).blockingGet()
-                            provisionResponse.success = false
-                        }
-
+						server.osDevice = '/dev/sda'
+						server.dataDevice = '/dev/sda'
+						server.lvmEnabled = false
+						server.sshHost = server.internalIp
+						server.managed = true
+						server.capacityInfo = new ComputeCapacityInfo(maxCores: scvmmOpts.maxCores, maxMemory: scvmmOpts.maxMemory, maxStorage: scvmmOpts.maxTotalStorage)
+						server.status = 'provisioned'
+						context.async.computeServer.save(server).blockingGet()
+						provisionResponse.success = true
+						// By default installAgent is true.
+						// 1. The below section instructs the subsequent code to
+						// 1a. skip agent installation for Linux VMs (as cloud init will take care of installing agent)
+						// 1b. If we are in a Clone scenario, we don't want to skip agent installation here.
+						if (server?.platform == 'linux' && !scvmmOpts.cloneVMId) {
+							provisionResponse.installAgent = false
+						}
+						log.debug("provisionResponse.success: ${provisionResponse.success}")
                     } else {
                         if (createResults.server?.externalId) {
                             // we did create a vm though so we need to bind it to the server
@@ -1244,11 +1232,28 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      * @param server to check status
      * @return Response from API. The publicIp and privateIp set on the WorkloadResponse will be utilized to update the ComputeServer
      */
-    @Override
-    ServiceResponse<ProvisionResponse> getServerDetails(ComputeServer server) {
-        return new ServiceResponse<ProvisionResponse>(true, null, null,
-				new ProvisionResponse(privateIp:server.internalIp, publicIp:server.externalIp, success: true))
-    }
+	@Override
+	ServiceResponse<ProvisionResponse> getServerDetails(ComputeServer server) {
+		def opts = [:]
+		opts.server = server
+		opts.waitForIp = true
+		context.process.startProcessStep(workloadRequest.process,
+				new ProcessEvent(type: ProcessEvent.ProcessType.provisionNetwork),
+				'waiting for network').blockingGet()
+		def serverDetails = apiService.getServerDetails(opts, server.externalId)
+
+		if (serverDetails.success == true) {
+			server = serverDetails.server
+			def newIpAddress = serverDetails.server?.ipAddress ?: createResults.server?.ipAddress
+			def macAddress = serverDetails.server?.macAddress
+			applyComputeServerNetworkIp(server, newIpAddress, newIpAddress, 0, macAddress)
+			return new ServiceResponse<ProvisionResponse>(true, null, null,
+					new ProvisionResponse(privateIp:server.internalIp, publicIp:server.externalIp, success: true))
+		} else {
+			return new ServiceResponse(success: false, msg: serverDetails.message ?: 'Failed to get server details', error: serverDetails.message, data: serverDetails)
+		}
+	}
+
 
     /**
      * Method called before runWorkload to allow implementers to create resources required before runWorkload is called
