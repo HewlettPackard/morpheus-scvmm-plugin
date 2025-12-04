@@ -284,13 +284,13 @@ class ScvmmApiService {
                 log.info("Starting Server  ${opts.name}")
                 startServer(opts, opts.externalId)
                 //get details
-                log.info("SCVMM Check for Server Ready ${opts.name}")
-                def serverDetail = checkServerReady(opts, opts.externalId)
+                //log.info("SCVMM Check for Server Ready ${opts.name}")
+                def serverDetail = getServerDetails(opts, opts.externalId)
                 if (serverDetail.success == true) {
-                    rtn.server = [name: opts.name, id: opts.externalId, VMId: serverDetail.server?.VMId, ipAddress: serverDetail.server?.ipAddress, disks: disks]
+                    rtn.server = [name: opts.name, id: opts.externalId, VMId: serverDetail.server?.VMId, disks: disks]
                     rtn.success = true
                 } else {
-                    rtn.server = [name: opts.name, id: opts.externalId, VMId: serverDetail.server?.VMId, ipAddress: serverDetail.server?.ipAddress, disks: disks]
+                    rtn.server = [name: opts.name, id: opts.externalId, VMId: serverDetail.server?.VMId, disks: disks]
                 }
             }
 
@@ -1610,12 +1610,12 @@ foreach (\$network in \$networks) {
                     // the expected count.. we are good
                     log.debug "serverStatus: ${serverDetail.server?.Status}, opts.dataDisks: ${opts.dataDisks?.size()}, additionalTemplateDisks: ${opts.additionalTemplateDisks?.size()}"
 
-                     if (serverDetail.server?.Status != 'UnderCreation' &&
-                             serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
+                    if (serverDetail.server?.Status != 'UnderCreation' &&
+                            serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
                         // additionalTemplateDisks are created after VM creation
                         // data disks are created and attached after vm creation
 
-                    // if(serverDetail.server?.Status != 'UnderCreation' && serverDetail.server?.VirtualDiskDrives?.size() == 1 - (opts.additionalTemplateDisks?.size() ?: 0)) {
+                        // if(serverDetail.server?.Status != 'UnderCreation' && serverDetail.server?.VirtualDiskDrives?.size() == 1 - (opts.additionalTemplateDisks?.size() ?: 0)) {
                         // additionalTemplateDisks are created after VM creation
                         rtn.success = true
                         rtn.server = serverDetail.server
@@ -2816,10 +2816,10 @@ For (\$i=0; \$i -le 10; \$i++) {
     }
 
     private getUsername(Cloud cloud) {
-		((cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.username : cloud.getConfigProperty('username')) ?: 'dunno'
+        ((cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.username : cloud.getConfigProperty('username')) ?: 'dunno'
     }
 
     private getPassword(Cloud cloud) {
-		(cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.password : cloud.getConfigProperty('password')
+        (cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.password : cloud.getConfigProperty('password')
     }
 }
