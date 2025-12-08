@@ -6,14 +6,17 @@ import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
-import groovy.util.logging.Slf4j
+import groovy.transform.CompileStatic
+import groovy.transform.CompileDynamic
 
+@CompileStatic
 class CloudCapabilityProfilesSync {
+    private static final String CAPABILITY_PROFILES = 'capabilityProfiles'
 
-    private MorpheusContext morpheusContext
-    private Cloud cloud
-    private ScvmmApiService apiService
-    private LogInterface log = LogWrapper.instance
+    private final MorpheusContext morpheusContext
+    private final Cloud cloud
+    private final ScvmmApiService apiService
+    private final LogInterface log = LogWrapper.instance
 
     CloudCapabilityProfilesSync(MorpheusContext morpheusContext, Cloud cloud) {
         this.cloud = cloud
@@ -21,23 +24,26 @@ class CloudCapabilityProfilesSync {
         this.apiService = new ScvmmApiService(morpheusContext)
     }
 
-    def execute() {
-        log.debug "CloudCapabilityProfilesSync"
+    @CompileDynamic
+    void execute() {
+        log.debug 'CloudCapabilityProfilesSync'
         try {
             def scvmmCloud = morpheusContext.services.cloud.get(cloud.id)
-            def server = morpheusContext.services.computeServer.find(new DataQuery().withFilter('cloud.id', scvmmCloud.id))
+            def server = morpheusContext.services.computeServer.find(
+                new DataQuery().withFilter('zone.id', scvmmCloud.id)
+            )
             def scvmmOpts = apiService.getScvmmZoneAndHypervisorOpts(morpheusContext, scvmmCloud, server)
 
-            if(scvmmCloud.regionCode) {
+            if (scvmmCloud.regionCode) {
                 def cloudResults = apiService.getCloud(scvmmOpts)
-                if(cloudResults.success == true && cloudResults?.cloud?.CapabilityProfiles) {
-                    scvmmCloud.setConfigProperty('capabilityProfiles', cloudResults?.cloud?.CapabilityProfiles)
+                if (cloudResults.success == true && cloudResults?.cloud?.CapabilityProfiles) {
+                    scvmmCloud.setConfigProperty(CAPABILITY_PROFILES, cloudResults?.cloud?.CapabilityProfiles)
                     morpheusContext.services.cloud.save(scvmmCloud)
                 }
             } else {
                 def capabilityProfileResults = apiService.getCapabilityProfiles(scvmmOpts)
-                if(capabilityProfileResults.success == true && capabilityProfileResults?.capabilityProfiles) {
-                    scvmmCloud.setConfigProperty('capabilityProfiles', capabilityProfileResults.capabilityProfiles.collect { it.Name })
+                if (capabilityProfileResults.success == true && capabilityProfileResults?.capabilityProfiles) {
+                    scvmmCloud.setConfigProperty(CAPABILITY_PROFILES, capabilityProfileResults.capabilityProfiles*.Name)
                     morpheusContext.services.cloud.save(scvmmCloud)
                 }
             }

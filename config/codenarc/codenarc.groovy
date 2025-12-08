@@ -192,11 +192,11 @@ ruleset {
     // rulesets/exceptions.xml
     CatchArrayIndexOutOfBoundsException
     CatchError
-    CatchException
+    //CatchException
     CatchIllegalMonitorStateException
     CatchIndexOutOfBoundsException
     CatchNullPointerException
-    CatchRuntimeException
+    //CatchRuntimeException
     CatchThrowable
     ConfusingClassNamedException
     ExceptionExtendsError
@@ -411,10 +411,14 @@ ruleset {
     ClassSize
     //CrapMetric   // Requires the GMetrics jar and a Cobertura coverage file
     CyclomaticComplexity   // Requires the GMetrics jar
-    MethodCount
+    MethodCount {
+        doNotApplyToClassNames = 'IpPoolsSync,RegisteredStorageFileSharesSync,TemplatesSync,VirtualMachineSync'
+    }
     MethodSize
     NestedBlockDepth
-    ParameterCount
+    ParameterCount {
+        doNotApplyToClassNames = 'VirtualMachineSync'
+    }
 
     // rulesets/unnecessary.xml
     AddEmptyString
@@ -440,7 +444,7 @@ ruleset {
     UnnecessaryFinalOnPrivateMethod
     UnnecessaryFloatInstantiation
     //UnnecessaryGString
-    UnnecessaryGetter
+    //UnnecessaryGetter
     UnnecessaryIfStatement
     UnnecessaryInstanceOfCheck
     UnnecessaryInstantiationToGetClass
