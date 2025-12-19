@@ -269,12 +269,24 @@ class SCVMMUtils:
         morpheus_session,
         instance_id,
         operation: str,
-        expected_status: str
+        expected_status: str,
+        timeout: int = 500,
+        sleep_time: int = 10
     ):
         """
         Perform an operation (start, restart, stop) on a given instance
-        and validate the final status.
+        and validate both transition and final status.
         """
+
+        OPERATION_TRANSITION_STATES = {
+            "start": "starting",
+            "restart": "restarting",
+            "stop": "stopping"
+        }
+
+        transition_state = OPERATION_TRANSITION_STATES.get(operation)
+        transition_seen = False
+
         log.info(f"Initiating '{operation}' operation on instance '{instance_id}'...")
 
         # Call correct API based on operation
@@ -288,12 +300,47 @@ class SCVMMUtils:
             raise ValueError(f"Unsupported operation: {operation}")
 
         assert response.status_code == 200, f"Instance {operation} operation failed!"
+        log.info(f"Polling for transition '{transition_state}' and final state '{expected_status}'")
 
-        final_status = ResourcePoller.poll_instance_status(instance_id, expected_status, morpheus_session)
-        assert final_status == expected_status, f"Instance {operation} failed, current status: {final_status}"
+        # Poll for transition + final state
+        for attempt in range(1, timeout + 1):
+            response = morpheus_session.instances.get_instance(id=instance_id)
+            instance_status = response.json()["instance"]["status"].lower()
 
-        log.info(f"Instance '{instance_id}' {operation}ed successfully.")
-        return final_status
+            log.info(f"Attempt {attempt}: Instance status = '{instance_status}'")
+
+            # Check transition state
+            if transition_state and instance_status == transition_state:
+                transition_seen = True
+                log.info(f"Transition state '{transition_state}' observed")
+
+            # Fail immediately if instance goes to failed
+            if instance_status == "failed":
+                log.error(f"Instance entered FAILED state during '{operation}'")
+                assert False, f"Instance {instance_id} entered FAILED state"
+
+            # Final expected state
+            if instance_status == expected_status.lower():
+                log.info(f"Instance reached final state '{expected_status}'")
+                break
+
+            time.sleep(sleep_time)
+        else:
+            assert False, f"Timeout while waiting for instance to reach '{expected_status}'"
+
+        # Assert transition state was seen at least once
+        assert transition_seen, (
+            f"Transition state '{transition_state}' was never observed "
+            f"during '{operation}' operation"
+        )
+
+        log.info(
+            f"Instance '{instance_id}' {operation} operation successful "
+            f"(transition '{transition_state}' → '{expected_status}')"
+        )
+
+        return expected_status
+
 
     @staticmethod
     def validate_labels(final_details: dict, expected_labels: list[str]) -> None:
