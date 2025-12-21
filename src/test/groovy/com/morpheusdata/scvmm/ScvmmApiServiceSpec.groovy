@@ -1044,7 +1044,7 @@ class ScvmmApiServiceSpec extends Specification {
         "empty nodeCount"                       | [scvmmCapabilityProfile: "Hyper-V", networkId: "net-123", nodeCount: ""]                   | false           | 1                  | "nodeCount"             | "You must indicate number of hosts"
         "valid config with networkId"           | [scvmmCapabilityProfile: "Hyper-V", networkId: "net-123"]                                  | true            | 0                  | null                    | null
         "missing network id in interface"       | [scvmmCapabilityProfile: "Hyper-V", networkInterfaces: [[network: [:]]]]                   | false           | 1                  | "networkInterface"      | "Network is required"
-        "invalid networkInterface config"       | [scvmmCapabilityProfile: "Hyper-V", networkInterface: [network: [id: [""]]]]               | false           | 1                  | "networkInterface"      | "Network is required"
+        "invalid networkInterface config"       | [scvmmCapabilityProfile: "Hyper-V", networkInterface: [network: [id: [""]], ipMode: ["static"]]]               | false           | 1                  | "networkInterface"      | "Network is required"
         "static IP missing in networkInterface" | [scvmmCapabilityProfile: "Hyper-V", networkInterface: [network: [id: ["net-def"]], ipMode: ["static"], ipAddress: [null]]] | false | 1 | "networkInterface" | "You must enter an ip address"
     }
 
@@ -2712,19 +2712,19 @@ class ScvmmApiServiceSpec extends Specification {
                     cmd.contains('$report')
         })  >> "generated powershell command"
 
-            // Verify wrapExecuteCommand was called with the generated command
-            1 * apiService.wrapExecuteCommand("generated powershell command", opts) >> resizeCommandOutput
+        // Verify wrapExecuteCommand was called with the generated command
+        1 * apiService.wrapExecuteCommand("generated powershell command", opts) >> resizeCommandOutput
 
-            // Verify waitForJobToComplete was called with correct parameters
-            1 * apiService.waitForJobToComplete(opts, "job-resize-12345") >> {
-                return waitResults
-            }
+        // Verify waitForJobToComplete was called with correct parameters
+        1 * apiService.waitForJobToComplete(opts, "job-resize-12345") >> {
+            return waitResults
+        }
 
-            // Verify the result
-            result.success == true
-            result.jobDetail.ID == "job-resize-12345"
-            result.jobDetail.Status == "Completed"
-            result.jobDetail.Progress == 100
+        // Verify the result
+        result.success == true
+        result.jobDetail.ID == "job-resize-12345"
+        result.jobDetail.Status == "Completed"
+        result.jobDetail.Progress == 100
 
     }
 
@@ -3181,10 +3181,10 @@ class ScvmmApiServiceSpec extends Specification {
         def opts = [name: "vm01", externalId: "vm-123"]
         def disks = [osDisk: [id: "disk-1"]]
         def rtn = [:]
-        def serverDetail = [success: true, server: [VMId: "vm-123", ipAddress: "10.0.0.1"]]
+        def serverDetail = [success: true, server: [VMId: "vm-123"]]
 
         apiService.startServer(opts, opts.externalId) >> [success: true]
-        apiService.checkServerReady(opts, opts.externalId) >> serverDetail
+        apiService.getServerDetails(opts, opts.externalId) >> serverDetail
 
         when:
         apiService.startAndCheckServer(opts, disks, rtn)
@@ -3195,7 +3195,6 @@ class ScvmmApiServiceSpec extends Specification {
                 name: "vm01",
                 id: "vm-123",
                 VMId: "vm-123",
-                ipAddress: "10.0.0.1",
                 disks: disks
         ]
     }
@@ -3680,5 +3679,50 @@ class ScvmmApiServiceSpec extends Specification {
         then:
         result.success == true
         result.disk == diskInfo
+    }
+
+    @Unroll
+    def "test listNetworkIPPools handles exception gracefully"() {
+        given:
+        def opts = [zone: [regionCode: "cloud-1"]]
+
+        // Mock wrapExecuteCommand to throw an exception
+        apiService.wrapExecuteCommand(_, opts) >> { throw new RuntimeException("Connection timeout") }
+
+        when:
+        def result = apiService.listNetworkIPPools(opts)
+
+        then:
+        result.success == false
+        result.msg == "Error syncing ip pools list from SCVMM Host"
+        result.ipPools == []
+        result.networkMapping == []
+    }
+
+    @Unroll
+    def "test listNetworkIPPools handles #scenario"() {
+        given:
+        def opts = [zone: [regionCode: "cloud-1"]]
+
+        when:
+        def result = apiService.listNetworkIPPools(opts)
+
+        then:
+        ipPoolsCallCount * apiService.wrapExecuteCommand({ it.contains("Get-SCStaticIPAddressPool") }, opts) >> ipPoolsResponse
+        networkMappingCallCount * apiService.wrapExecuteCommand({ it.contains("Get-SCVMNetwork") }, opts) >> networkMappingResponse
+
+        result.success == expectedSuccess
+        result.ipPools == expectedIpPools
+        result.networkMapping == expectedNetworkMapping
+
+        where:
+        scenario                          | ipPoolsResponse                                       | networkMappingResponse                               | ipPoolsCallCount | networkMappingCallCount | expectedSuccess | expectedIpPools | expectedNetworkMapping
+        "successful IP pools and mapping" | [success: true, exitCode: '0', data: [[ID: 'pool1']]] | [success: true, exitCode: '0', data: [[ID: 'net1']]] | 1                | 1                       | true            | [[ID: 'pool1']] | [[ID: 'net1']]
+        "IP pools failure"                | [success: false, exitCode: '1']                       | [success: true, exitCode: '0', data: [[ID: 'net1']]] | 1                | 0                       | false           | []              | []
+        "IP pools wrong exit code"        | [success: true, exitCode: '1']                        | [success: true, exitCode: '0', data: [[ID: 'net1']]] | 1                | 0                       | false           | []              | []
+        "network mapping failure"         | [success: true, exitCode: '0', data: [[ID: 'pool1']]] | [success: false, exitCode: '1']                      | 1                | 1                       | false           | [[ID: 'pool1']] | []
+        "network mapping wrong exit code" | [success: true, exitCode: '0', data: [[ID: 'pool1']]] | [success: true, exitCode: '1']                       | 1                | 1                       | false           | [[ID: 'pool1']] | []
+        "empty IP pools data"             | [success: true, exitCode: '0', data: null]            | [success: true, exitCode: '0', data: [[ID: 'net1']]] | 1                | 1                       | true            | []              | [[ID: 'net1']]
+        "empty network mapping data"      | [success: true, exitCode: '0', data: [[ID: 'pool1']]] | [success: true, exitCode: '0', data: null]           | 1                | 1                       | true            | [[ID: 'pool1']] | []
     }
 }

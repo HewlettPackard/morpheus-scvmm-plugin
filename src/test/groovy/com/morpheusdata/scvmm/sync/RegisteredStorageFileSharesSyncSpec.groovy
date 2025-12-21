@@ -1484,5 +1484,4 @@ class RegisteredStorageFileSharesSyncSpec extends Specification {
         then: "Exception is caught and logged"
         noExceptionThrown()
     }
-
 }

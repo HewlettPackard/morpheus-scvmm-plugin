@@ -7312,4 +7312,30 @@ class TemplatesSyncSpec extends Specification {
         result == finalDatastore
     }
 
+    def "updateVirtualImageLocationCode should return false when code already exists"() {
+        given: "A TemplatesSync instance"
+        def templatesSync = new TemplatesSync(cloud, node, mockContext, mockCloudProvider)
+
+        and: "A VirtualImageLocation with existing code"
+        def imageLocation = new VirtualImageLocation(
+                id: 1L,
+                code: "existing.code.123"
+        )
+
+        and: "A matched template"
+        def matchedTemplate = [ID: "template-456"]
+
+        when: "updateVirtualImageLocationCode is called"
+        def method = templatesSync.getClass().getDeclaredMethod('updateVirtualImageLocationCode',
+                VirtualImageLocation.class, Map.class)
+        method.setAccessible(true)
+        def result = method.invoke(templatesSync, imageLocation, matchedTemplate)
+
+        then: "Code remains unchanged"
+        imageLocation.code == "existing.code.123"
+
+        and: "Method returns false"
+        result == false
+    }
+
 }
