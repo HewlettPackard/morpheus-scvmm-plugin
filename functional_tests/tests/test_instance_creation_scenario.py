@@ -29,7 +29,8 @@ class TestSCVMMPlugin:
 
     start_time = time.time()
 
-    def test_validate_windows_instance_creation_and_agent_installation(self, morpheus_session):
+    pytest.mark.dependency(name="test_validate_instance_creation_and_agent_installation")
+    def test_validate_instance_creation_and_agent_installation(self, morpheus_session):
         """Validate Windows instance creation, agent installation, and basic operations."""
 
         plan_name = "2 Core, 8GB Memory"
@@ -48,25 +49,22 @@ class TestSCVMMPlugin:
             log.info("Creating SCVMM cloud...")
             TestSCVMMPlugin.cloud_id = SCVMMUtils.create_scvmm_cloud(morpheus_session, TestSCVMMPlugin.group_id)
 
-            # Create cluster
-            log.info("Creating SCVMM cluster...")
-            cluster_name= DateTimeGenUtils.name_with_datetime("scvmm-clus", "%Y%m%d-%H%M%S")
-            cluster_id = SCVMMUtils.create_scvmm_cluster(morpheus_session, TestSCVMMPlugin.cloud_id, TestSCVMMPlugin.group_id, plan_name, cluster_name)
-            assert cluster_id, "Cluster creation failed! No cluster ID returned."
-
             # Fetch template ID
             template_name= os.getenv("SCVMM_TEMPLATE_NAME")
             template_id = CommonUtils.get_template_id(morpheus_session, template_name)
 
             # Create instance
             log.info("Creating SCVMM instance...")
+            instance_type_code = os.getenv("SCVMM_INSTANCE_TYPE")
             instance_id, _ = SCVMMUtils.create_instance(
                 morpheus_session= morpheus_session,
+                layout_code=os.getenv("SCVMM_LAYOUT_CODE"),
                 template_id=template_id,
                 plan_name= plan_name,
                 instance_name=DateTimeGenUtils.name_with_datetime("scvmm-inst", "%Y%m%d-%H%M%S"),
                 group_id= TestSCVMMPlugin.group_id,
                 cloud_id= TestSCVMMPlugin.cloud_id,
+                instance_type_code= instance_type_code
 
             )
             assert instance_id, "Instance creation failed!"
@@ -84,7 +82,7 @@ class TestSCVMMPlugin:
                 zone_id=TestSCVMMPlugin.cloud_id,
                 group_id=TestSCVMMPlugin.group_id
             )
-            expected_layout_id = CommonUtils.get_scvmm_instance_layout_id(morpheus_session)
+            expected_layout_id = CommonUtils.get_scvmm_instance_layout_id(morpheus_session, layout_code= os.getenv("SCVMM_LAYOUT_CODE"))
 
             # Verify plan and layout dynamically
             assert instance["plan"][
@@ -114,10 +112,9 @@ class TestSCVMMPlugin:
 
         except Exception as e:
             pytest.fail(f"Windows instance creation & agent validation failed: {e}")
-        finally:
-            SCVMMUtils.cleanup_resource("cluster", morpheus_session, cluster_id)
 
-    def test_windows_instance_creation_with_selected_storage_and_host(self, morpheus_session):
+
+    def test_instance_creation_with_selected_storage_and_host(self, morpheus_session):
         """Validate Windows instance creation with selected storage and host."""
 
         instance_id= None
@@ -137,12 +134,14 @@ class TestSCVMMPlugin:
            # Create Instance
             instance_id, created_instance_name = SCVMMUtils.create_instance(
                 morpheus_session=morpheus_session,
+                layout_code=os.getenv("SCVMM_LAYOUT_CODE"),
                 template_id=template_id,
                 plan_name=plan_name,
                 instance_name= DateTimeGenUtils.name_with_datetime("scvmm-inst", "%Y%m%d-%H%M%S"),
                 group_id= TestSCVMMPlugin.group_id,
                 cloud_id= TestSCVMMPlugin.cloud_id,
-                host_id=host_id
+                host_id=host_id,
+                instance_type_code= os.getenv("SCVMM_INSTANCE_TYPE")
             )
 
             # Validate host assignment
@@ -161,6 +160,7 @@ class TestSCVMMPlugin:
         finally:
             SCVMMUtils.cleanup_resource("instance", morpheus_session, instance_id)
 
+    pytest.mark.dependency(depends=["test_validate_instance_creation_and_agent_installation"])
     def test_validate_reconfigure_operation_on_deployed_windows_instance(
             self, morpheus_session
     ):
@@ -201,6 +201,7 @@ class TestSCVMMPlugin:
         except Exception as e:
             pytest.fail(f"Reconfigure test failed: {e}")
 
+    pytest.mark.dependency(depends=["test_validate_instance_creation_and_agent_installation"])
     def test_validate_clone_instance_operation_on_windows_instance_with_agent_install_not_skipped(
             self, morpheus_session
     ):
@@ -245,6 +246,7 @@ class TestSCVMMPlugin:
             if 'cloned_instance_id':
                 SCVMMUtils.cleanup_resource("instance", morpheus_session, cloned_instance_id)
 
+    pytest.mark.dependency(depends=["test_validate_instance_creation_and_agent_installation"])
     def test_validate_backup_and_restore_operation_on_windows_instance(self, morpheus_session):
         """Test case to validate the backup and restore operation on a windows instance."""
 
@@ -256,6 +258,13 @@ class TestSCVMMPlugin:
         try:
             # Create backup
             container_id = CommonUtils.get_container_id(morpheus_session, instance_id)
+
+            # Check if backup and schedule is enabled in settings and enable if not
+            backup_setting_response= morpheus_session.backup_settings.list_backup_settings()
+            assert backup_setting_response.status_code == 200, "Failed to retrieve backup settings!"
+            backup_settings= backup_setting_response.json().get("backupSettings", {})
+            if not backup_settings.get("backupsEnabled") or not backup_settings.get("createBackups"):
+                SCVMMUtils.enable_backup_settings(morpheus_session)
 
             # Create schedule (after 5 min cron)
             schedule_id = SCVMMUtils.create_execute_schedule(morpheus_session)
@@ -326,6 +335,54 @@ class TestSCVMMPlugin:
         get_resp = morpheus_session.clusters.get_cluster(cluster_id=cluster_id)
         assert get_resp.status_code == 404, f"Cluster '{cluster_id}' still exists after deletion!"
         log.info(f"Cluster {cluster_id} deleted successfully and verified.")
+
+
+    @pytest.mark.parametrize(
+        "layout_code, instance_type_code, os_name",
+        [
+            (os.getenv("SCVMM_UBUNTU_LAYOUT_CODE"), os.getenv("UBUNTU_INSTANCE_TYPE"), "Ubuntu"),
+            (os.getenv("SCVMM_ALMALINUX_LAYOUT_CODE"), os.getenv("ALMALINUX_INSTANCE_TYPE"), "AlmaLinux"),
+            (os.getenv("SCVMM_DEBIAN_LAYOUT_CODE"), os.getenv("DEBIAN_INSTANCE_TYPE"), "Debian"),
+            (os.getenv("SCVMM_CENTOS_LAYOUT_CODE"), os.getenv("CENTOS_INSTANCE_TYPE"), "CentOS"),
+            (os.getenv("SCVMM_OPENSUSE_LAYOUT_CODE"), os.getenv("OPENSUSE_INSTANCE_TYPE"), "OpenSUSE"),
+            (os.getenv("SCVMM_ROCKYLINUX_LAYOUT_CODE"), os.getenv("ROCKYLINUX_INSTANCE_TYPE"), "RockyLinux"),
+
+        ]
+    )
+    def test_instance_creation(self, morpheus_session, layout_code, instance_type_code, os_name):
+        """Validate SCVMM instance creation for multiple OS types."""
+
+        instance_id = None
+        try:
+            plan_name = "1 Core, 4GB Memory"
+
+            log.info(f"Creating {os_name} instance...")
+
+            instance_id, created_instance_name = SCVMMUtils.create_instance(
+                morpheus_session=morpheus_session,
+                layout_code=layout_code,
+                plan_name=plan_name,
+                instance_name=DateTimeGenUtils.name_with_datetime(f"scvmm-{os_name.lower()}", "%Y%m%d-%H%M%S"),
+                group_id=TestSCVMMPlugin.group_id,
+                cloud_id=TestSCVMMPlugin.cloud_id,
+                instance_type_code=instance_type_code
+            )
+
+            # Fetch instance details
+            details = CommonUtils.get_instance_details(morpheus_session, instance_id)
+            server = details["instance"]["containerDetails"][0]["server"]
+
+            # Verify agent
+            log.info(f" Checking whether agent is installed on {os_name}..")
+            assert server.get("agentInstalled"), f"Agent installation failed for {os_name}!"
+
+            log.info(f"Agent version: {server.get('agentVersion')} on {os_name} (instance ID: {instance_id})")
+
+        except Exception as e:
+            pytest.fail(f"{os_name} instance creation test failed: {e}")
+
+        finally:
+            SCVMMUtils.cleanup_resource("instance", morpheus_session, instance_id)
 
     def test_validate_infrastructure_delete(self, morpheus_session):
         """Test case to validate the cleanup of created resources."""

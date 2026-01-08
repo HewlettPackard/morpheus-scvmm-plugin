@@ -1860,9 +1860,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     }
 
     /**
-     * Method called after a successful call to runWorkload to obtain the details of the ComputeServer. Implementations
-     * should not return until the server is successfully created in the underlying cloud or the server fails to
-     * create.
+     * Method called after a successful call to runWorkload to obtain the details of the ComputeServer.
+	 * Implementations should not return until the server is successfully created in the underlying cloud
+	 * or the server fails to create.
      * @param server to check status
      * @return Response from API. The publicIp and privateIp set on the WorkloadResponse will be utilized to update the
      * ComputeServer
@@ -1917,6 +1917,29 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
         return rtn
     }
+
+	def waitForAgentInstall(ComputeServer server, int maxAttempts = 1800) {
+	    def rtn = [success: false]
+	    try {
+	        int attempts = 0
+	        while (attempts < maxAttempts) {
+	            def fetchedServer = context.async.computeServer.get(server.id).blockingGet()
+	            if (fetchedServer?.agentInstalled) {
+	                rtn.success = true
+	                break
+	            } else {
+	                attempts++
+	                sleep(1000)
+	            }
+	        }
+	        if (!rtn.success) {
+	            rtn.msg = "Timed out waiting for agent connectivity from host. Verify the appliance url configuration is correct."
+	        }
+	    } catch (e) {
+	        log.error("waitForAgentInstall error: ${e}", e)
+	    }
+	    return rtn
+	}
 
     /**
      * Method called before runWorkload to allow implementers to create resources required before runWorkload is called

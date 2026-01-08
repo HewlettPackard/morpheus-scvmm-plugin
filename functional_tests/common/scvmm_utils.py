@@ -193,17 +193,19 @@ class SCVMMUtils:
             return None
 
     @staticmethod
-    def create_instance(morpheus_session, template_id, plan_name, instance_name=None, group_id=None, cloud_id=None, host_id=None):
+    def create_instance(morpheus_session, layout_code, template_id=None, plan_name=None, instance_name=None, group_id=None, cloud_id=None, host_id=None, instance_type_code= None):
         """
         Generic method to create an instance and wait until it's running.
 
         :param morpheus_session: Active Morpheus session
+        :param layout_code: Layout code for instance
         :param instance_name: Optional name; if None, random name will be generated
         :param template_id: Template ID for instance
         :param plan_name: Plan name for instance
         :param group_id: Group ID for instance
         :param cloud_id: Cloud ID for instance
         :param host_id: Host ID for instance (optional)
+        :param instance_type_code: Instance type code
         :return: (instance_id, instance_name)
         """
         log.info("Creating instance...")
@@ -214,7 +216,15 @@ class SCVMMUtils:
         log.info("Generating instance payload...")
         plan_id= CommonUtils.get_plan_id(morpheus_session, plan_name=plan_name, zone_id=cloud_id, group_id=group_id)
         create_instance_payload = SCVMMpayloads.get_create_instance_payload(
-            morpheus_session, instance_name=instance_name, template= template_id, group_id=group_id, cloud_id=cloud_id, plan_id=plan_id, host_id=host_id
+            morpheus_session,
+            instance_name=instance_name,
+            template=template_id if template_id else None,
+            group_id=group_id,
+            cloud_id=cloud_id,
+            plan_id=plan_id,
+            instance_type_code=instance_type_code,
+            layout_code=layout_code,
+            host_id=host_id
         )
         log.info("Payload generated successfully")
 
@@ -399,6 +409,23 @@ class SCVMMUtils:
             time.sleep(interval)
 
         pytest.fail(f"Agent installation did not complete within {retries * interval} seconds")
+
+
+    @staticmethod
+    def enable_backup_settings(morpheus_session):
+        """
+        Enable backup settings if disabled.
+        """
+        backup_setting_request={
+                "backupSettings": {
+                        "backupsEnabled": True,
+                        "createBackups": True
+                                    }
+                            }
+        response = morpheus_session.backup_settings.update_backup_settings(update_backup_settings_request= backup_setting_request)
+        assert response.status_code == 200, "Failed to enable backup settings!"
+        log.info("Backup settings enabled successfully.")
+
 
     @staticmethod
     def wait_for_backup_job_completion(morpheus_session, backup_job_id, timeout=7 * 60, interval=30):

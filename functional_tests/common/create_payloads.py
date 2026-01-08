@@ -12,16 +12,16 @@ class SCVMMpayloads:
     """ Helper class to create payloads for SCVMM related operations """
 
     @staticmethod
-    def get_create_instance_payload(morpheus_session, instance_name, template, group_id, cloud_id, plan_id, host_id=None):
+    def get_create_instance_payload(morpheus_session, instance_name, template, group_id, cloud_id, plan_id, instance_type_code, layout_code, host_id=None):
         """Helper function to create the payload for instance creation."""
 
-        instance_layout_id = CommonUtils.get_scvmm_instance_layout_id(morpheus_session)
+        instance_layout_id = CommonUtils.get_scvmm_instance_layout_id(morpheus_session, layout_code= layout_code)
         network_id = CommonUtils.get_network_id(morpheus_session)
-        return {
+        payload= {
             "instance": {
                 "name": instance_name,
                 "site": {"id": group_id},
-                "instanceType": {"code": "scvmm"},
+                "instanceType": {"code": instance_type_code},
                 "layout": {
                     "id": instance_layout_id
 
@@ -41,7 +41,6 @@ class SCVMMpayloads:
             "config": {
                 "noAgent": False,
                 "hostId": host_id,
-                "template": int(template),
                 "scvmmCapabilityProfile": "Hyper-V",
                 "createUser": False,
             },
@@ -50,11 +49,15 @@ class SCVMMpayloads:
                         {
                             "rootVolume": True,
                             "name": "root",
-                            "size": 80,
+                            "size": int(os.getenv("SCVMM_INSTANCE_VOLUME_SIZE")),
                             "datastoreId":{"id":"auto"},
                         }
                         ],
         }
+        if template:
+            payload["config"]["template"] = int(template)
+
+        return payload
 
     @staticmethod
     def get_create_cloud_payload(cloud_name, group_id, zone_type_id, api_proxy_id, provisioning_proxy):
@@ -188,7 +191,7 @@ class SCVMMpayloads:
                     "rootVolume":  volume.get("rootVolume", True),
                     "id": volume["id"],
                     "name": volume["name"],
-                    "size": 90,
+                    "size": 85,
                     "datastoreId": "auto"
                 }
             ]
