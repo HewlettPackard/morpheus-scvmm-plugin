@@ -336,4 +336,143 @@ class ScvmmBackupExecutionProviderSpec extends Specification {
         backupResult.status.toString() == BackupResult.Status.FAILED.toString()
         backupResult.errorOutput == "Error occurred"
     }
+
+    def "deleteBackupResult with cloudId in config map uses specified cloud"() {
+        given:
+        def backupResult = new BackupResult(serverId: 100L)
+        backupResult.configMap = [cloudId: 2L, snapshotId: "snap123"]
+
+        def specifiedCloud = new Cloud(id: 2L)
+        def server = new ComputeServer(id: 100L, externalId: "vm-100", cloud: new Cloud(id: 1L))
+        def node = new ComputeServer()
+        def zoneOpts = [zone: "test-zone"]
+        def deleteResult = [success: true]
+
+        when:
+        def result = provider.deleteBackupResult(backupResult, [:])
+
+        then:
+        1 * mockCloudService.get(2L) >> specifiedCloud
+        1 * mockComputeServerService.get(100L) >> server
+        1 * mockProvisionProvider.pickScvmmController(specifiedCloud) >> node
+        1 * mockApiService.getScvmmZoneAndHypervisorOpts(mockMorpheusContext, specifiedCloud, node) >> zoneOpts
+        1 * mockApiService.deleteSnapshot(zoneOpts, "vm-100", "snap123") >> deleteResult
+
+        result.success
+    }
+
+    def "deleteBackupResult with containerId uses container's server when serverId is null"() {
+        given:
+        def backupResult = new BackupResult(containerId: 200L, serverId: null)
+        backupResult.configMap = [snapshotId: "snap456"]
+
+        def cloudRef = new Cloud(id: 3L)
+        def server = new ComputeServer(id: 150L, externalId: "vm-150", cloud: cloudRef)
+        def container = new Workload(id: 200L, serverId: 150L)
+        def node = new ComputeServer()
+        def zoneOpts = [zone: "test-zone"]
+        def deleteResult = [success: true]
+
+        when:
+        def result = provider.deleteBackupResult(backupResult, [:])
+
+        then:
+        1 * mockWorkloadService.get(200L) >> container
+        1 * mockComputeServerService.get(150L) >> server
+        1 * mockCloudService.get(3L) >> cloudRef
+        1 * mockProvisionProvider.pickScvmmController(cloudRef) >> node
+        1 * mockApiService.getScvmmZoneAndHypervisorOpts(mockMorpheusContext, cloudRef, node) >> zoneOpts
+        1 * mockApiService.deleteSnapshot(zoneOpts, "vm-150", "snap456") >> deleteResult
+
+        result.success
+    }
+
+    def "deleteBackupResult handles null container"() {
+        given:
+        def backupResult = new BackupResult(containerId: 200L, serverId: null)
+        backupResult.configMap = [snapshotId: "snap789"]
+
+        when:
+        def result = provider.deleteBackupResult(backupResult, [:])
+
+        then:
+        1 * mockWorkloadService.get(200L) >> null
+        0 * mockComputeServerService.get(_)
+        0 * mockApiService.deleteSnapshot(_, _, _)
+
+        result.success
+    }
+
+    def "deleteBackupResult handles missing snapshotId"() {
+        given:
+        def backupResult = new BackupResult(serverId: 100L)
+        backupResult.configMap = [:]
+
+        def cloudRef = new Cloud(id: 1L)
+        def server = new ComputeServer(id: 100L, externalId: "vm-100", cloud: cloudRef)
+
+        when:
+        def result = provider.deleteBackupResult(backupResult, [:])
+
+        then:
+        1 * mockComputeServerService.get(100L) >> server
+        1 * mockCloudService.get(1L) >> cloudRef
+        0 * mockApiService.deleteSnapshot(_, _, _)
+
+        result.success
+    }
+
+    def "deleteBackupResult handles null server"() {
+        given:
+        def backupResult = new BackupResult(serverId: 100L)
+        backupResult.configMap = [snapshotId: "snap123"]
+
+        when:
+        def result = provider.deleteBackupResult(backupResult, [:])
+
+        then:
+        1 * mockComputeServerService.get(100L) >> null
+        0 * mockApiService.deleteSnapshot(_, _, _)
+
+        result.success
+    }
+
+    def "deleteBackupResult handles API delete failure"() {
+        given:
+        def backupResult = new BackupResult(serverId: 100L)
+        backupResult.configMap = [snapshotId: "snap123"]
+
+        def cloudRef = new Cloud(id: 1L)
+        def server = new ComputeServer(id: 100L, externalId: "vm-100", cloud: cloudRef)
+        def node = new ComputeServer()
+        def zoneOpts = [zone: "test-zone"]
+        def deleteResult = [success: false, error: "API Error"]
+
+        when:
+        def result = provider.deleteBackupResult(backupResult, [:])
+
+        then:
+        1 * mockComputeServerService.get(100L) >> server
+        1 * mockCloudService.get(1L) >> cloudRef
+        1 * mockProvisionProvider.pickScvmmController(cloudRef) >> node
+        1 * mockApiService.getScvmmZoneAndHypervisorOpts(mockMorpheusContext, cloudRef, node) >> zoneOpts
+        1 * mockApiService.deleteSnapshot(zoneOpts, "vm-100", "snap123") >> deleteResult
+
+        !result.success
+    }
+
+    def "deleteBackupResult handles exception and returns false"() {
+        given:
+        def backupResult = new BackupResult(serverId: 100L)
+        backupResult.configMap = [snapshotId: "snap123"]
+
+        when:
+        def result = provider.deleteBackupResult(backupResult, [:])
+
+        then:
+        1 * mockComputeServerService.get(100L) >> { throw new RuntimeException("Database error") }
+
+        !result.success
+    }
+
 }

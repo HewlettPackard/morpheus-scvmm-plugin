@@ -27,6 +27,7 @@ class IpPoolsSyncSpec extends Specification {
     private Account testAccount
     private NetworkPoolType poolType
     private static final String CATEGORY_FILTER = 'category'
+    private static final String NETWORK_POOL_TYPE = 'network.pool.type.scvmm'
 
     def setup() {
         // Setup test objects
@@ -2772,4 +2773,53 @@ class IpPoolsSyncSpec extends Specification {
         updateSubnetForPoolCalled == false
     }
 
+    def "test addMissingIpPools handles exceptions properly"() {
+        given:
+        def addList = [
+                [ID: "pool-1", Name: "TestPool", Subnet: "192.168.1.0/24", TotalAddresses: 100, AvailableAddresses: 50]
+        ]
+        def networks = []
+        def poolType = new NetworkPoolType(code: 'scvmm')
+        def networkMapping = []
+
+        // Create a spy to intercept the method call and throw exception
+        def ipPoolsSyncSpy = Spy(IpPoolsSync, constructorArgs: [mockContext, cloud])
+        ipPoolsSyncSpy.buildNetworkPoolsAndRanges(_, _, _, _) >> { throw new RuntimeException("Subnet parsing failed") }
+
+        when:
+        ipPoolsSyncSpy.addMissingIpPools(addList, networks, poolType, networkMapping)
+
+        then:
+        noExceptionThrown()
+    }
+
+    @Unroll
+    def "createResourcePermissions should create permissions for each network pool"() {
+        given: "Mock async services"
+        def mockAsyncServices = Mock(MorpheusAsyncServices)
+        def mockResourcePermissionService = Mock(com.morpheusdata.core.MorpheusResourcePermissionService)
+
+        mockContext.async >> mockAsyncServices
+        mockAsyncServices.resourcePermission >> mockResourcePermissionService
+        mockResourcePermissionService.bulkCreate(_) >> Single.just(true)
+
+        def networkPools = [
+                new NetworkPool(id: 1L, externalId: "pool-1"),
+                new NetworkPool(id: 2L, externalId: "pool-2")
+        ]
+
+        when: "createResourcePermissions is called"
+        ipPoolsSync.createResourcePermissions(networkPools)
+
+        then: "resource permissions are created with correct properties"
+        1 * mockResourcePermissionService.bulkCreate({ List<ResourcePermission> perms ->
+            perms.size() == 2 &&
+                    perms[0].uuid == "pool-1" &&
+                    perms[0].morpheusResourceId == 1L &&
+                    perms[0].account == testAccount &&
+                    perms[1].uuid == "pool-2" &&
+                    perms[1].morpheusResourceId == 2L &&
+                    perms[1].account == testAccount
+        }) >> Single.just(true)
+    }
 }

@@ -27,6 +27,7 @@ import io.reactivex.rxjava3.core.Observable
 import com.morpheusdata.core.MorpheusStorageVolumeService
 import com.morpheusdata.core.MorpheusStorageVolumeTypeService
 import io.reactivex.rxjava3.core.Observable
+import com.morpheusdata.core.util.SyncUtils
 
 class VirtualMachineSyncSpec extends Specification {
 
@@ -75,6 +76,7 @@ class VirtualMachineSyncSpec extends Specification {
         morpheusContext = Mock(MorpheusContext)
         cloudProvider = Mock(CloudProvider)
         mockApiService = Mock(ScvmmApiService)
+        GroovySpy(SyncUtils, global: true)
 
         // Mock services
         computeServerService = Mock(MorpheusSynchronousComputeServerService)
@@ -2990,5 +2992,123 @@ class VirtualMachineSyncSpec extends Specification {
         then: "instance service list is not called and no instances are saved"
         0 * mockInstanceService.list(_ as DataQuery)
         0 * mockInstanceService.save(_ as Instance)
+    }
+
+    @Unroll
+    def "updateSingleServer should catch RuntimeException and log error with server name"() {
+        given: "Server and data that will cause RuntimeException"
+        def currentServer = new ComputeServer(id: 123L, name: "error-server", externalId: "vm-789")
+        def masterItem = [VMId: "updated-vm-id", Name: "Updated Server", VirtualMachineState: "Running"]
+        def hosts = []
+        def consoleEnabled = true
+        def defaultServerType = new ComputeServerType(id: 1L)
+        def availablePlans = []
+        def fallbackPlan = new ServicePlan(id: 999L)
+
+        and: "Create spy to force RuntimeException"
+        def spy = Spy(virtualMachineSync)
+
+        when: "updateSingleServer is called and RuntimeException is thrown"
+        def result = spy.updateSingleServer(currentServer, masterItem, hosts, consoleEnabled,
+                defaultServerType, availablePlans, fallbackPlan)
+
+        then: "updateBasicServerProperties throws RuntimeException"
+        1 * spy.updateBasicServerProperties(currentServer, masterItem, defaultServerType) >> {
+            throw new RuntimeException("Database connection failed")
+        }
+
+        and: "exception is caught and false is returned"
+        result == false
+
+        and: "error is logged with server name and exception message"
+        noExceptionThrown()
+    }
+
+    @Unroll
+    def "updateServicePlan should return false when plan does not change"() {
+        given: "Server with existing plan that matches found plan"
+        def existingPlan = new ServicePlan(id: 100L, name: "existing-plan")
+        def currentServer = new ComputeServer(
+                id: 2L,
+                name: "test-server-2",
+                maxMemory: 4096L,
+                maxCores: 8L,
+                plan: existingPlan,
+                account: new Account(id: 20L)
+        )
+        def availablePlans = [existingPlan]
+        def fallbackPlan = new ServicePlan(id: 400L)
+
+        when: "updateServicePlan is called and plan matches"
+        def result = virtualMachineSync.updateServicePlan(currentServer, availablePlans, fallbackPlan)
+
+        then: "SyncUtils.findServicePlanBySizing returns same plan"
+        1 * SyncUtils.findServicePlanBySizing(availablePlans, 4096L, 8L, null, fallbackPlan, existingPlan, currentServer.account, []) >> existingPlan
+
+        and: "method should return false and not modify plan"
+        result == false
+        currentServer.plan == existingPlan
+    }
+
+    @Unroll
+    def "updatePowerState should set stopped status when power state is off and server is guest VM"() {
+        given: "a guest VM server that is currently on"
+        def guestVmType = new ComputeServerType(id: 1L, guestVm: true)
+        def currentServer = new ComputeServer(
+                id: 1L,
+                name: "test-vm",
+                powerState: ComputeServer.PowerState.on,
+                computeServerType: guestVmType
+        )
+        def masterItem = [VirtualMachineState: "PoweredOff"]
+
+        and: "Create spy to mock updateWorkloadAndInstanceStatuses"
+        def spy = Spy(virtualMachineSync)
+
+        when: "updatePowerState is called with powered off state"
+        def result = spy.updatePowerState(currentServer, masterItem)
+
+        then: "power state should be updated to off"
+        result == true
+        currentServer.powerState == ComputeServer.PowerState.off
+
+        and: "updateWorkloadAndInstanceStatuses should be called with stopped status"
+        1 * spy.updateWorkloadAndInstanceStatuses(
+                currentServer,
+                Workload.Status.stopped,
+                'stopped',
+                ['stopping', 'starting']
+        )
+    }
+
+    @Unroll
+    def "updatePowerState should set stopped status when power state is off and server is guest VM"() {
+        given: "a guest VM server that is currently on"
+        def guestVmType = new ComputeServerType(id: 1L, guestVm: true)
+        def currentServer = new ComputeServer(
+                id: 1L,
+                name: "test-vm",
+                powerState: ComputeServer.PowerState.on,
+                computeServerType: guestVmType
+        )
+        def masterItem = [VirtualMachineState: "PoweredOff"]
+
+        and: "Create spy to mock updateWorkloadAndInstanceStatuses"
+        def spy = Spy(virtualMachineSync)
+
+        when: "updatePowerState is called with powered off state"
+        def result = spy.updatePowerState(currentServer, masterItem)
+
+        then: "power state should be updated to off"
+        result == true
+        currentServer.powerState == ComputeServer.PowerState.off
+
+        and: "updateWorkloadAndInstanceStatuses should be called with stopped status"
+        1 * spy.updateWorkloadAndInstanceStatuses(
+                currentServer,
+                Workload.Status.stopped,
+                'stopped',
+                ['stopping', 'starting']
+        )
     }
 }

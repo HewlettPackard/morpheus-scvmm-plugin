@@ -240,5 +240,28 @@ class ScvmmBackupRestoreProviderSpec extends Specification {
         result.getMorpheus() == morpheusContext
     }
 
+    def "restoreBackup handles exceptions and sets error status"() {
+        given:
+        def backupRestore = new BackupRestore()
+        def backupResult = new BackupResult()
+        def backup = new Backup()
+        def opts = [:]
+        def errorMessage = "Test exception message"
+        def configMap = [snapshotId: "snap-1", vmId: "vm-1"]
+        backupResult.setConfigMap(configMap)
+        backupResult.containerId = 456L
+
+        // Mock the workloadService to throw an exception
+        workloadService.get(456) >> { throw new RuntimeException(errorMessage) }
+
+        when:
+        def resp = bkpRestoreProvider.restoreBackup(backupRestore, backupResult, backup, opts)
+
+        then:
+        !resp.success
+        resp.msg == errorMessage
+        resp.data.backupRestore == backupRestore
+    }
+
 }
 
