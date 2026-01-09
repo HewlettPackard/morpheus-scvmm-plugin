@@ -57,6 +57,8 @@ class StorageVolumeTypeHelper {
     protected static final String STANDARD_DISPLAY = 'Disk'
     protected static final String STANDARD_CODE = 'standard'
 
+    private static final Integer DISPLAY_ORDER_TWO = 2
+
     static Collection<StorageVolumeType> getDatastoreStorageTypes() {
         Collection<StorageVolumeType> volumeTypes = []
 
@@ -84,7 +86,7 @@ class StorageVolumeTypeHelper {
                 description: SCVMM_FILESHARE_DISPLAY,
                 volumeType: VOLUME_TYPE_DATASTORE,
                 enabled: true,
-                displayOrder: 2,
+                displayOrder: DISPLAY_ORDER_TWO,
                 customLabel: false,
                 customSize: false,
                 defaultType: false,
@@ -127,7 +129,7 @@ class StorageVolumeTypeHelper {
                 volumeType: VOLUME_TYPE_DISK,
                 externalId: DYNAMIC_VHD_EXTERNAL_ID,
                 enabled: true,
-                displayOrder: 2,
+                displayOrder: DISPLAY_ORDER_TWO,
                 customLabel: true,
                 customSize: true,
                 defaultType: true,
@@ -262,10 +264,10 @@ class StorageVolumeTypeHelper {
                 allowSearch: true,
                 volumeCategory: VOLUME_CATEGORY_DISK
         )
-
         return diskTypes
     }
 
+    @SuppressWarnings('UnnecessaryGetter')
     static Collection<StorageVolumeType> getAllStorageVolumeTypes() {
         Collection<StorageVolumeType> allTypes = []
         allTypes.addAll(getDatastoreStorageTypes())

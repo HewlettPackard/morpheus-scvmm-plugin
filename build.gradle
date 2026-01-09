@@ -103,7 +103,7 @@ dependencies {
     testImplementation "org.spockframework:spock-core:$spockVersion"
     testImplementation "org.spockframework:spock-junit4"  // you can remove this if your code does not rely on old JUnit 4 rules
     testImplementation 'cglib:cglib-nodep:3.2.12'
-    
+
     // Add Jackson dependencies for Spock framework
     testImplementation 'com.fasterxml.jackson.core:jackson-core:2.15.2'
     testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
