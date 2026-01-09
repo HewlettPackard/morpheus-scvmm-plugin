@@ -1918,29 +1918,6 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         return rtn
     }
 
-	def waitForAgentInstall(ComputeServer server, int maxAttempts = 1800) {
-	    def rtn = [success: false]
-	    try {
-	        int attempts = 0
-	        while (attempts < maxAttempts) {
-	            def fetchedServer = context.async.computeServer.get(server.id).blockingGet()
-	            if (fetchedServer?.agentInstalled) {
-	                rtn.success = true
-	                break
-	            } else {
-	                attempts++
-	                sleep(1000)
-	            }
-	        }
-	        if (!rtn.success) {
-	            rtn.msg = "Timed out waiting for agent connectivity from host. Verify the appliance url configuration is correct."
-	        }
-	    } catch (e) {
-	        log.error("waitForAgentInstall error: ${e}", e)
-	    }
-	    return rtn
-	}
-
     /**
      * Method called before runWorkload to allow implementers to create resources required before runWorkload is called
      * @param workload that will be provisioned
