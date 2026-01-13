@@ -717,7 +717,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     @SuppressWarnings(['UnnecessarySetter', 'UnnecessaryGetter'])
     @Override
     ServiceResponse<ProvisionResponse> runWorkload(Workload workload, WorkloadRequest workloadRequest, Map opts) {
-        log.debug "runWorkload: ${workload} ${workloadRequest} ${opts}"
+        log.info "runWorkload: ${workload} ${workloadRequest} ${opts}"
         ProvisionResponse provisionResponse = new ProvisionResponse(
                 success: true,
                 installAgent: !opts?.noAgent,
@@ -737,7 +737,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             scvmmOpts.controllerServerId = controllerNode.id
 
             def externalPoolId = resolveExternalPoolId(containerConfig, server)
-            log.debug("externalPoolId: ${externalPoolId}")
+            log.info("externalPoolId: ${externalPoolId}")
 
             def hostDatastoreResult = selectHostAndDatastore([
                     cloud: cloud,
@@ -792,7 +792,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     // Helper to resolve externalPoolId
     protected String resolveExternalPoolId(Map containerConfig, ComputeServer server) {
         def externalPoolId
-        if (containerConfig.resourcePool) {
+        log.info("runWorkload: containerConfig.resourcePool: ${containerConfig?.resourcePool} " +
+                "server.resourcePool: ${server?.resourcePool?.code}")
+        if (containerConfig.resourcePool || opts.cloneContainerId && workloadRequest.hasProperty(CONFIG_CONTEXT) &&
+                workloadRequest?.config?.resourcePoolId) {
             try {
                 def resourcePool = server.resourcePool
                 externalPoolId = resourcePool?.externalId
@@ -881,7 +884,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         (node, datastore, volumePath, highlyAvailable) =
                 getHostAndDatastore(cloud, server.account, externalPoolId, containerConfig.hostId,
                         rootVolume?.datastore, rootVolume?.datastoreOption,
-                        maxStorage, workload.instance.site?.id, maxMemory)
+                        maxStorage, workload.instance.site?.id, maxMemory, true)
         def scvmmOpts = [
                 datastoreId: datastore?.externalId,
                 hostExternalId: node?.externalId,
@@ -1861,8 +1864,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
     /**
      * Method called after a successful call to runWorkload to obtain the details of the ComputeServer.
-	 * Implementations should not return until the server is successfully created in the underlying cloud
-	 * or the server fails to create.
+     * Implementations should not return until the server is successfully created in the underlying cloud
+     * or the server fails to create.
      * @param server to check status
      * @return Response from API. The publicIp and privateIp set on the WorkloadResponse will be utilized to update the
      * ComputeServer
@@ -2429,16 +2432,18 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     }
 
     // Helper to check highly available
-    protected boolean isHighlyAvailable(String clusterId, Datastore datastore) {
-        return clusterId && datastore?.zonePool
+    protected boolean isHighlyAvailable(String clusterId, Datastore datastore, boolean isClone) {
+        return clusterId && (datastore?.zonePool || isClone)
     }
 
     // Refactored getHostAndDatastore
     @SuppressWarnings('ParameterCount')
     List getHostAndDatastore(Cloud cloud, Account account, String clusterId, Integer hostId, Datastore datastore,
-                             String datastoreOption, Long size, Long siteId = null, Long maxMemory) {
-        log.debug "clusterId: ${clusterId}, hostId: ${hostId}, datastore: ${datastore}," +
-                " datastoreOption: ${datastoreOption}, size: ${size}, siteId: ${siteId}, maxMemory ${maxMemory}"
+                             String datastoreOption, Long size, Long siteId = null, Long maxMemory,
+                             boolean isClone=false) {
+        log.info "getHostAndDatastore : clusterId: ${clusterId}, hostId: ${hostId}, " +
+                "datastore: ${datastore}, datastoreOption: ${datastoreOption}, size: ${size}, " +
+                "siteId: ${siteId}, maxMemory ${maxMemory}"
         // If clusterId (resourcePool) is not specified AND host not specified AND datastore is 'auto',
         // then we are just deploying to the cloud (so... can not select the datastore, nor host)
         def tempClusterId = clusterId && clusterId != 'null' ? clusterId : null
@@ -2459,7 +2464,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         def volumePath = getVolumePath(selectedDatastore)
         // Highly Available (in the Failover Cluster Manager) if we are in a cluster and
         // the datastore is a shared volume
-        def highlyAvailable = isHighlyAvailable(tempClusterId, selectedDatastore)
+        def highlyAvailable = isHighlyAvailable(tempClusterId, selectedDatastore, isClone)
         return [selectedHost, selectedDatastore, volumePath, highlyAvailable]
     }
 
@@ -2613,7 +2618,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             if (!vol.rootVolume) {
                 def tmpNode, tmpDatastore, tmpVolumePath, tmpHighlyAvailable
                 (tmpNode, tmpDatastore, tmpVolumePath, tmpHighlyAvailable) = getHostAndDatastore(cloud, account,
-                        clusterId, hostId, vol?.datastore, vol?.datastoreOption, maxStorage, provisionSiteId, maxMemory)
+                        clusterId, hostId, vol?.datastore, vol?.datastoreOption, maxStorage,
+                        provisionSiteId, maxMemory, true)
                 vol.datastore = tmpDatastore
                 context.services.storageVolume.save(vol)
             }
