@@ -94,8 +94,7 @@ dependencies {
     testImplementation 'org.apache.httpcomponents:httpclient:4.5.13'
     testImplementation 'org.apache.httpcomponents:httpcore:4.4.5'
     testImplementation "org.slf4j:slf4j-parent:$slf4jVersion"
-    // Add SLF4J implementation for tests to enable logging in coverage testing
-    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.9'
+    testImplementation "org.slf4j:slf4j-simple:$slf4jVersion"
 
     testImplementation 'net.bytebuddy:byte-buddy:1.9.3'
     testImplementation 'org.objenesis:objenesis:2.6'
@@ -114,10 +113,6 @@ dependencies {
 sourceSets {
     main {
         compileClasspath += configurations.provided
-    }
-    test {
-        compileClasspath += configurations.provided
-        runtimeClasspath += configurations.provided
     }
 }
 
@@ -356,12 +351,6 @@ jacocoTestCoverageVerification {
 }
 
 jacocoTestReport {
-    dependsOn test
-    reports {
-        xml.required = true
-        csv.required = false
-        html.required = true
-    }
     afterEvaluate {
         classDirectories.setFrom(files(classDirectories.files.collect {
             fileTree(dir: it)
