@@ -740,12 +740,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             log.info("externalPoolId: ${externalPoolId}")
 
             def hostDatastoreResult = selectHostAndDatastore([
-                    cloud: cloud,
-                    server: server,
+                    cloud          : cloud,
+                    server         : server,
                     containerConfig: containerConfig,
-                    workload: workload,
-                    opts: opts,
-                    externalPoolId: externalPoolId,
+                    workload       : workload,
+                    opts           : opts,
+                    externalPoolId : externalPoolId,
             ])
             if (!hostDatastoreResult.success) {
                 return hostDatastoreResult.response
@@ -760,15 +760,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             scvmmOpts += imageResult.scvmmOpts
 
             def serverCreationResult = createServerAndFinalize([
-                    scvmmOpts: scvmmOpts,
-                    server: server,
-                    workload: workload,
+                    scvmmOpts      : scvmmOpts,
+                    server         : server,
+                    workload       : workload,
                     workloadRequest: workloadRequest,
-                    opts: opts,
-                    nodeId: hostDatastoreResult.nodeId,
-                    imageId: imageResult.imageId,
-                    virtualImage: imageResult.virtualImage,
-                    controllerNode: controllerNode,
+                    opts           : opts,
+                    nodeId         : hostDatastoreResult.nodeId,
+                    imageId        : imageResult.imageId,
+                    virtualImage   : imageResult.virtualImage,
+                    controllerNode : controllerNode,
             ])
             rtn = serverCreationResult
             if (rtn.data?.success) {
@@ -825,14 +825,14 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
             result.scvmmOpts.volumePaths = []
             def hostDatastoreInfo = getHostDatastoreInfo([
-                    cloud: cloud,
-                    server: server,
+                    cloud          : cloud,
+                    server         : server,
                     containerConfig: containerConfig,
-                    rootVolume: rootVolume,
-                    maxStorage: maxStorage,
-                    maxMemory: maxMemory,
-                    externalPoolId: externalPoolId,
-                    workload: workload,
+                    rootVolume     : rootVolume,
+                    maxStorage     : maxStorage,
+                    maxMemory      : maxMemory,
+                    externalPoolId : externalPoolId,
+                    workload       : workload,
             ])
             result.nodeId = hostDatastoreInfo.nodeId
             result.scvmmOpts << hostDatastoreInfo.scvmmOpts
@@ -840,15 +840,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             updateRootVolume(rootVolume, hostDatastoreInfo.datastore)
 
             updateDataVolumes([
-                    storageVolumes: storageVolumes,
-                    cloud: cloud,
-                    server: server,
+                    storageVolumes : storageVolumes,
+                    cloud          : cloud,
+                    server         : server,
                     containerConfig: containerConfig,
-                    maxStorage: maxStorage,
-                    maxMemory: maxMemory,
-                    externalPoolId: externalPoolId,
-                    workload: workload,
-                    scvmmOpts: result.scvmmOpts,
+                    maxStorage     : maxStorage,
+                    maxMemory      : maxMemory,
+                    externalPoolId : externalPoolId,
+                    workload       : workload,
+                    scvmmOpts      : result.scvmmOpts,
             ])
         } catch (e) {
             log.error("Error in determining host and datastore: {}", e.message, e)
@@ -886,10 +886,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         rootVolume?.datastore, rootVolume?.datastoreOption,
                         maxStorage, workload.instance.site?.id, maxMemory, true)
         def scvmmOpts = [
-                datastoreId: datastore?.externalId,
-                hostExternalId: node?.externalId,
-                volumePath: volumePath,
-                volumePaths: [volumePath],
+                datastoreId    : datastore?.externalId,
+                hostExternalId : node?.externalId,
+                volumePath     : volumePath,
+                volumePaths    : [volumePath],
                 highlyAvailable: highlyAvailable,
         ]
         return [nodeId: node?.id, scvmmOpts: scvmmOpts, datastore: datastore]
@@ -950,12 +950,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     setCloudFilesError(server, result, virtualImage)
                 }
                 imageId = handleContainerImage([
-                        scvmmOpts: scvmmOpts,
-                        workload: workload,
+                        scvmmOpts   : scvmmOpts,
+                        workload    : workload,
                         virtualImage: virtualImage,
-                        cloudFiles: cloudFiles,
-                        cloud: cloud,
-                        result: result,
+                        cloudFiles  : cloudFiles,
+                        cloud       : cloud,
+                        result      : result,
                 ])
             }
 
@@ -1083,12 +1083,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
         if (opts.cloneContainerId) {
             handleCloneContainerOpts([
-                    scvmmOpts: scvmmOpts,
-                    opts: opts,
-                    server: server,
+                    scvmmOpts      : scvmmOpts,
+                    opts           : opts,
+                    server         : server,
                     workloadRequest: workloadRequest,
-                    virtualImage: virtualImage,
-                    controlNode: controlNode,
+                    virtualImage   : virtualImage,
+                    controlNode    : controlNode,
             ])
         }
 
@@ -1106,12 +1106,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
         if (createResults.success == true) {
             handleServerReady([
-                    createResults: createResults,
-                    scvmmOpts: scvmmOpts,
-                    server: server,
-                    opts: opts,
-                    nodeId: nodeId,
-                    workloadRequest: workloadRequest,
+                    createResults    : createResults,
+                    scvmmOpts        : scvmmOpts,
+                    server           : server,
+                    opts             : opts,
+                    nodeId           : nodeId,
+                    workloadRequest  : workloadRequest,
                     provisionResponse: provisionResponse,
             ])
         } else {
@@ -1466,7 +1466,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             if (filteredVolMap.id == MINUS_ONE) {
                 new StorageVolume(filteredVolMap)
             }
-        }.findAll { v ->  v != null }
+        }.findAll { v -> v != null }
         return [count: nonRootCount, volumes: storageVolumes]
     }
 
@@ -2224,9 +2224,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     protected ServiceResponse validateNonHypervisorHost(Map opts) {
         def rtn = ServiceResponse.success()
         def validationOpts = [
-                networkId: extractNetworkId(opts),
+                networkId             : extractNetworkId(opts),
                 scvmmCapabilityProfile: extractCapabilityProfile(opts),
-                nodeCount: extractNodeCount(opts),
+                nodeCount             : extractNodeCount(opts),
         ]
         def validationResults = apiService.validateServerConfig(validationOpts)
         if (!validationResults.success) {
@@ -2440,7 +2440,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     @SuppressWarnings('ParameterCount')
     List getHostAndDatastore(Cloud cloud, Account account, String clusterId, Integer hostId, Datastore datastore,
                              String datastoreOption, Long size, Long siteId = null, Long maxMemory,
-                             boolean isClone=false) {
+                             boolean isClone = false) {
         log.info "getHostAndDatastore : clusterId: ${clusterId}, hostId: ${hostId}, " +
                 "datastore: ${datastore}, datastoreOption: ${datastoreOption}, size: ${size}, " +
                 "siteId: ${siteId}, maxMemory ${maxMemory}"
@@ -2988,8 +2988,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         if (resizeConfig.neededMemory != 0 || resizeConfig.neededCores != 0 ||
                 resizeConfig.minDynamicMemory || resizeConfig.maxDynamicMemory) {
             def resizeResults = apiService.updateServer(scvmmOpts, vmId, [
-                    maxMemory: resizeConfig.requestedMemory,
-                    maxCores: resizeConfig.requestedCores,
+                    maxMemory       : resizeConfig.requestedMemory,
+                    maxCores        : resizeConfig.requestedCores,
                     minDynamicMemory: resizeConfig.minDynamicMemory,
                     maxDynamicMemory: resizeConfig.maxDynamicMemory,
             ])
@@ -3046,11 +3046,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             def diskSize = ComputeUtility.parseGigabytesToBytes(volumeAdd.size?.toLong()) / ComputeUtility.ONE_MEGABYTE
             def volumePath = getVolumePathForDatastore(volumeAdd.datastore)
             def diskSpec = [
-                    vhdName: "data-${UUID.randomUUID().toString()}",
-                    vhdType: null,
+                    vhdName  : "data-${UUID.randomUUID().toString()}",
+                    vhdType  : null,
                     vhdFormat: null,
-                    vhdPath: null,
-                    sizeMb: diskSize,
+                    vhdPath  : null,
+                    sizeMb   : diskSize,
             ]
             log.info("resizeContainer - volumePath: ${volumePath} - diskSpec: ${diskSpec}")
             def diskResults = apiService.createAndAttachDisk(scvmmOpts, diskSpec, true)
@@ -3101,7 +3101,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             addVolumes(resizeRequest.volumesAdd, computeServer, scvmmOpts, rtn)
             deleteVolumes(resizeRequest.volumesDelete, computeServer, scvmmOpts)
         }
-        return  rtn.error ? false : true
+        return rtn.error ? false : true
     }
 
     // Refactored resizeWorkloadAndServer
