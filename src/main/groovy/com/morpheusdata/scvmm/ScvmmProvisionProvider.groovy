@@ -83,8 +83,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     private static final String PROVISION_TYPE_SCVMM_CUSTOM_CATEGORY = 'provisionType.scvmm.custom'
     private static final String DOMAIN_FIELD_CONTEXT = 'domain'
     private static final String CONTAINER_TYPE_FIELD_CONTEXT = 'containerType'
+    private static final String INSTANCE_TYPE_FIELD_CONTEXT = 'instanceType'
+    private static final String INSTANCE_TYPE_LAYOUT_FIELD_CONTEXT = 'instanceTypeLayout'
     private static final String OPTIONS_FIELD_GROUP = 'Options'
     private static final String SELECT_NO_SELECTION = 'Select'
+    private static final String VM_DEFAULT_VALUE = 'vm'
+    private static final String SERVER_TYPE_FILTER = 'serverType'
+    private static final String HYPERVISOR_VALUE = 'hypervisor'
 
     private static final String ERROR_CREATING_SERVER_MSG = 'Error creating server'
     private static final String VM_CONFIG_ERROR_MSG = 'vm config error'
@@ -100,6 +105,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 // Common numeric constants
     private static final Integer FIVE_TWELVE_INT = 512
 
+    private static final Integer DISPLAY_ORDER_5 = 5
     private static final Integer DISPLAY_ORDER_6 = 6
     private static final Integer DISPLAY_ORDER_7 = 7
     private static final Integer DISPLAY_ORDER_8 = 8
@@ -110,6 +116,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     private static final Integer DISPLAY_ORDER_20 = 20
     private static final Integer DISPLAY_ORDER_30 = 30
     private static final Integer DISPLAY_ORDER_40 = 40
+    private static final Integer DISPLAY_ORDER_140 = 140
 
     private static final Integer FOUR_INT = 4
     private static final Long BYTES_IN_KB = 1024L
@@ -389,6 +396,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         nodeOptions << new OptionType(
                 name: 'virtual image type',
                 code: 'scvmm-node-virtual-image-type',
+                category: PROVISION_TYPE_SCVMM_CUSTOM_CATEGORY,
                 fieldContext: CONFIG_CONTEXT,
                 fieldName: 'virtualImageSelect',
                 fieldCode: null,
@@ -412,6 +420,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 fieldCode: 'gomorpheus.label.vmImage',
                 fieldLabel: 'VM Image',
                 fieldContext: DOMAIN_FIELD_CONTEXT,
+                category: PROVISION_TYPE_SCVMM_CUSTOM_CATEGORY,
                 noSelection: SELECT_NO_SELECTION,
                 required: false,
                 enabled: true,
@@ -438,6 +447,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 editable: true,
                 noSelection: SELECT_NO_SELECTION,
                 global: false,
+                category: PROVISION_TYPE_SCVMM_CUSTOM_CATEGORY,
                 optionSource: 'osTypes',
                 visibleOnCode: 'config.virtualImageSelect:os'
         )
@@ -452,6 +462,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 fieldGroup: null,
                 inputType: OptionType.InputType.TEXT,
                 displayOrder: DISPLAY_ORDER_20,
+                category: PROVISION_TYPE_SCVMM_CUSTOM_CATEGORY,
                 required: false,
                 enabled: true,
                 editable: true,
@@ -498,6 +509,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 helpTextI18nCode: "gomorpheus.help.deployFolder",
                 defaultValue: null,
                 custom: false,
+                category: PROVISION_TYPE_SCVMM_CUSTOM_CATEGORY,
                 fieldClass: null
         )
 
@@ -514,12 +526,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 enabled: true,
                 editable: false,
                 global: false,
-                defaultValue: SCVMM_CODE,
+                defaultValue: VM_DEFAULT_VALUE,
                 custom: false,
                 displayOrder: DISPLAY_ORDER_6,
                 fieldClass: null
         )
-
         nodeOptions << new OptionType(
                 code: 'provisionType.scvmm.custom.containerType.logTypeCode',
                 inputType: OptionType.InputType.HIDDEN,
@@ -533,10 +544,30 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 enabled: true,
                 editable: false,
                 global: false,
-                defaultValue: SCVMM_CODE,
+                defaultValue: VM_DEFAULT_VALUE,
                 custom: false,
                 displayOrder: DISPLAY_ORDER_7,
                 fieldClass: null
+        )
+        nodeOptions << new OptionType(
+                code: "provisionType.scvmm.custom.containerType.serverType",
+                inputType: OptionType.InputType.HIDDEN,
+                name: 'server type',
+                category: PROVISION_TYPE_SCVMM_CUSTOM_CATEGORY,
+                fieldName: SERVER_TYPE_FILTER,
+                fieldCode: 'gomorpheus.optiontype.ServerType',
+                fieldLabel: 'Server Type',
+                fieldContext: CONTAINER_TYPE_FIELD_CONTEXT,
+                required: false,
+                enabled: true,
+                editable: false,
+                global: false,
+                placeHolder: null,
+                helpBlock: '',
+                defaultValue: VM_DEFAULT_VALUE,
+                custom: false,
+                displayOrder: DISPLAY_ORDER_140,
+                fieldClass: null,
         )
 
         nodeOptions << new OptionType(
@@ -547,7 +578,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 fieldName: 'description',
                 fieldCode: 'gomorpheus.optiontype.LayoutDescription',
                 fieldLabel: 'Layout Description',
-                fieldContext: 'instanceTypeLayout',
+                fieldContext: INSTANCE_TYPE_LAYOUT_FIELD_CONTEXT,
                 required: false,
                 enabled: true,
                 editable: false,
@@ -566,14 +597,14 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 fieldName: 'backupType',
                 fieldCode: 'gomorpheus.optiontype.BackupType',
                 fieldLabel: 'Backup Type',
-                fieldContext: 'instanceType',
+                fieldContext: INSTANCE_TYPE_FIELD_CONTEXT,
                 required: false,
                 enabled: true,
                 editable: false,
                 global: false,
                 defaultValue: 'scvmmSnapshot',
                 custom: false,
-                displayOrder: INTEGER_FIVE,
+                displayOrder: DISPLAY_ORDER_5,
                 fieldClass: null
         )
 
@@ -1653,7 +1684,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             if (rtn == null) {
                 rtn = context.services.computeServer.find(new DataQuery()
                         .withFilter(CLOUD_ID_FIELD, cloud.id)
-                        .withFilter('serverType', 'hypervisor'))
+                        .withFilter(SERVER_TYPE_FILTER, HYPERVISOR_VALUE))
             }
             // if we have tye type
             if (rtn) {
