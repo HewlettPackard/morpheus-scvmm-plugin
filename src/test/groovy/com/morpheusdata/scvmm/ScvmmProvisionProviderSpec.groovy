@@ -219,6 +219,26 @@ class ScvmmProvisionProviderSpec extends Specification {
             return ProvisionDataHelper.runWorkload_getScvmmContainerOptsResponse(container)
         }
 
+        // Mock resolveExternalPoolId to prevent MissingMethodException
+        provisionProvider.resolveExternalPoolId(_, _) >> { Map containerConfig, ComputeServer server ->
+            return null // or return a specific externalPoolId value if needed
+        }
+
+        // Mock selectHostAndDatastore to prevent null pointer exceptions
+        provisionProvider.selectHostAndDatastore(_) >> { Map args ->
+            return [success: true, response: null, node: node, datastore: datastore, scvmmOpts: [:]]
+        }
+
+        // Mock getHostDatastoreInfo to prevent null pointer exceptions
+        provisionProvider.getHostDatastoreInfo(_) >> { Map args ->
+            return [success: true, node: node, datastore: datastore, volumePath: "/volume/path", highlyAvailable: false]
+        }
+
+        // Mock selectDatastore to prevent null pointer exceptions
+        provisionProvider.selectDatastore(_, _, _, _, _, _, _) >> { args ->
+            return datastore
+        }
+
         provisionProvider.constructCloudInitOptions(_, _, _, _, _, _, _) >> { args ->
             return ProvisionDataHelper.runWorkload_constructCloudInitOptionsResponse(args)
         }
@@ -2730,7 +2750,17 @@ class ScvmmProvisionProviderSpec extends Specification {
         def tmpVolumePath = "/mnt/data"
         def tmpHighlyAvailable = true
 
-        provisionProvider.getHostAndDatastore(_, _, _, _, _, _, _, _, _) >> [tmpNode, tmpDatastore, tmpVolumePath, tmpHighlyAvailable]
+        // Mock the datastore service to avoid null pointer exception
+        def datastoreService = Mock(MorpheusSynchronousDatastoreService)
+        cloudService.getDatastore() >> datastoreService
+        datastoreService.list(_ as DataQuery) >> [tmpDatastore]
+
+        // Mock compute server service
+        computeServerService.get(hostId.toLong()) >> tmpNode
+
+        // Mock volume path method
+        provisionProvider.getVolumePathForDatastore(tmpDatastore) >> tmpVolumePath
+
         storageVolumeService.save(_) >> { StorageVolume vol -> vol }
 
         when:
@@ -3955,7 +3985,7 @@ class ScvmmProvisionProviderSpec extends Specification {
         def clusterId = "cluster1"
 
         expect:
-        provisionProvider.isHighlyAvailable(clusterId, datastore) == true
+        provisionProvider.isHighlyAvailable(clusterId, datastore, false) == true
 
     }
 
