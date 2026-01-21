@@ -736,7 +736,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             scvmmOpts.name = server.name
             scvmmOpts.controllerServerId = controllerNode.id
 
-            def externalPoolId = resolveExternalPoolId(containerConfig, server)
+            def externalPoolId = resolveExternalPoolId(containerConfig, server, opts, workloadRequest)
             log.info("externalPoolId: ${externalPoolId}")
 
             def hostDatastoreResult = selectHostAndDatastore([
@@ -790,16 +790,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     }
 
     // Helper to resolve externalPoolId
-    protected String resolveExternalPoolId(Map containerConfig, ComputeServer server) {
-        def externalPoolId
+    protected String resolveExternalPoolId(Map containerConfig, ComputeServer server, Map opts,
+                                           WorkloadRequest workloadRequest) {
+        def externalPoolId = null
         log.info("runWorkload: containerConfig.resourcePool: ${containerConfig?.resourcePool} " +
                 "server.resourcePool: ${server?.resourcePool?.code}")
-        if (containerConfig.resourcePool || opts.cloneContainerId && workloadRequest.hasProperty(CONFIG_CONTEXT) &&
-                workloadRequest?.config?.resourcePoolId) {
+        if (containerConfig.resourcePool || (opts.cloneContainerId && workloadRequest.hasProperty(CONFIG_CONTEXT) &&
+                workloadRequest?.config?.resourcePoolId)) {
             try {
-                def resourcePool = server.resourcePool
-                externalPoolId = resourcePool?.externalId
-            } catch (exN) {
+                externalPoolId = server.resourcePool?.externalId
+            } catch (ignored) {
                 externalPoolId = containerConfig.resourcePool
             }
         }
