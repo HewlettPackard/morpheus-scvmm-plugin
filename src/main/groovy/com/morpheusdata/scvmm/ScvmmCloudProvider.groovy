@@ -512,6 +512,8 @@ class ScvmmCloudProvider implements CloudProvider {
 	@Override
 	ServiceResponse initializeCloud(Cloud cloudInfo) {
 		log.debug ('initializing cloud: {}', cloudInfo.code)
+		initializePoolServer(cloudInfo)
+
 		ServiceResponse rtn = ServiceResponse.prepare()
 		try {
 			if(cloudInfo) {
@@ -621,7 +623,7 @@ class ScvmmCloudProvider implements CloudProvider {
 		try {
 			def syncDate = new Date()
 			//why would we ever have more than 1? i don't think we would
-			def scvmmController = getScvmmController(cloudInfo)
+			def scvmmController = apiService.getScvmmController(cloudInfo)
 			if (scvmmController) {
 				def scvmmOpts = apiService.getScvmmZoneAndHypervisorOpts(context, cloudInfo, scvmmController)
 				def hostOnline = ConnectionUtils.testHostConnectivity(scvmmOpts.sshHost, 5985, false, true, null)
@@ -666,7 +668,7 @@ class ScvmmCloudProvider implements CloudProvider {
 						log.debug("${cloudInfo.name}: TemplatesSync in ${new Date().time - now}ms")
 
 						now = new Date().time
-						new IpPoolsSync(context, cloudInfo).execute()
+						new IpPoolsSync(context, cloudInfo, lookUpPoolServer(cloudInfo)).execute()
 						log.debug("${cloudInfo.name}: IpPoolsSync in ${new Date().time - now}ms")
 
 						def doInventory = cloudInfo.getConfigProperty('importExisting')
@@ -709,37 +711,6 @@ class ScvmmCloudProvider implements CloudProvider {
 		return rtn
 	}
 
-	def getScvmmController(Cloud cloud) {
-		def sharedControllerId = cloud.getConfigProperty('sharedController')
-		def sharedController = sharedControllerId ? context.services.computeServer.get(sharedControllerId.toLong()) : null
-		if (sharedController) {
-			return sharedController
-		}
-		def rtn = context.services.computeServer.find(new DataQuery()
-				.withFilter('zone.id', cloud.id)
-				.withFilter('computeServerType.code', 'scvmmController')
-				.withJoin('computeServerType'))
-		if (rtn == null) {
-			//old zone with wrong type
-			rtn = context.services.computeServer.find(new DataQuery()
-					.withFilter('zone.id', cloud.id)
-					.withFilter('computeServerType.code', 'scvmmController')
-					.withJoin('computeServerType'))
-			if (rtn == null) {
-				rtn = context.services.computeServer.find(new DataQuery()
-						.withFilter('zone.id', cloud.id)
-						.withFilter('serverType', 'hypervisor'))
-			}
-			//if we have tye type
-			if (rtn) {
-				def serverType = context.async.cloud.findComputeServerTypeByCode("scvmmController").blockingGet()
-				rtn.computeServerType = serverType
-				context.async.computeServer.save(rtn).blockingGet()
-			}
-		}
-		return rtn
-	}
-
 	/**
 	 * Zones/Clouds are refreshed periodically by the Morpheus Environment. This includes things like caching of brownfield
 	 * environments and resources such as Networks, Datastores, Resource Pools, etc. This represents the long term sync method that happens
@@ -749,8 +720,9 @@ class ScvmmCloudProvider implements CloudProvider {
 	@Override
 	void refreshDaily(Cloud cloudInfo) {
 		log.debug("refreshDaily: {}", cloudInfo)
+		initializePoolServer(cloudInfo)
 		try {
-			def scvmmController = getScvmmController(cloudInfo)
+			def scvmmController = apiService.getScvmmController(cloudInfo)
 			if (scvmmController) {
 				def scvmmOpts = apiService.getScvmmZoneAndHypervisorOpts(context, cloudInfo, scvmmController)
 				def hostOnline = ConnectionUtils.testHostConnectivity(scvmmOpts.sshHost, 5985, false, true, null)
@@ -774,6 +746,22 @@ class ScvmmCloudProvider implements CloudProvider {
 	 */
 	@Override
 	ServiceResponse deleteCloud(Cloud cloudInfo) {
+		def poolServer = lookUpPoolServer(cloudInfo)
+		if (poolServer) {
+			def pools = context.services.network.pool.list(new DataQuery().withFilters(
+					new DataFilter('refType', 'ComputeZone'),
+					new DataFilter('refId', cloudInfo.id)
+			))
+
+			if (pools) {
+				for (def pool in pools) {
+					pool.poolServer = null
+				}
+				// Delete NetworkPools, so we can clear references to pool server before deleting
+				context.async.network.pool.remove(poolServer.id, pools).blockingGet()
+			}
+			context.async.network.poolServer.bulkRemove([poolServer]).blockingGet()
+		}
 		return ServiceResponse.success()
 	}
 
@@ -1044,5 +1032,33 @@ class ScvmmCloudProvider implements CloudProvider {
 			server.statusMessage = msg
 			context.services.computeServer.save(server)
 		}
+	}
+
+	private void initializePoolServer(Cloud cloudInfo) {
+		def poolServer = lookUpPoolServer(cloudInfo)
+		if (!poolServer) {
+			log.info("Creating default pool server for NPE cloud ${cloudInfo.id}")
+
+			context.services.network.poolServer.create(new NetworkPoolServer(
+					name: "SCVMM Network Pool Server - ${cloudInfo.id}",
+					internalId: getNetworkPoolServerId(cloudInfo),
+					type: new NetworkPoolServerType(code: ScvmmNetworkPoolProvider.NETWORK_POOL_PROVIDER_CODE),
+					account: cloudInfo.account,
+					visible: false,
+			))
+		}
+	}
+
+	private NetworkPoolServer lookUpPoolServer(Cloud cloudInfo) {
+		context.services.network.poolServer.find(
+				new DataQuery().withFilters(
+						new DataFilter("internalId", getNetworkPoolServerId(cloudInfo)),
+						new DataFilter("account.id", cloudInfo.account.id)
+				)
+		)
+	}
+
+	private static def getNetworkPoolServerId(Cloud cloudInfo) {
+		"${ScvmmNetworkPoolProvider.NETWORK_POOL_PROVIDER_CODE}.${cloudInfo.id}"
 	}
 }
