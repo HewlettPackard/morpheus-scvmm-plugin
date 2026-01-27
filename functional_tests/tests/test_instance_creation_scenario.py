@@ -384,6 +384,119 @@ class TestSCVMMPlugin:
         finally:
             SCVMMUtils.cleanup_resource("instance", morpheus_session, instance_id)
 
+
+    pytest.mark.dependency(depends=["test_validate_instance_creation_and_agent_installation"])
+    def test_create_and_execute_task_and_workflow_on_instance(self, morpheus_session):
+        """Test case to validate creating and executing task and workflow on instance."""
+        instance_id = TestSCVMMPlugin.instance_id
+        task_id = None
+        workflow_id = None
+
+        try:
+            task_payload = {
+                "task": {
+                    "visibility": "private",
+                    "taskType": {"code": "script"},
+                    "executeTarget": "local",
+                    "file": {
+                        "sourceType": "local",
+                        "content": "ls -la"
+                    },
+                    "name": DateTimeGenUtils.name_with_datetime("task", "%Y%m%d-%H%M%S")
+                }
+            }
+
+            task_response = morpheus_session.automation.add_tasks(add_tasks_request=task_payload)
+            assert task_response.status_code == 200, "Task creation failed"
+
+            task_name = task_response.json()["task"]["name"]
+            task_id = task_response.json()["task"]["id"]
+            log.info(f"Task created successfully with ID: {task_name}")
+
+            execute_task_payload = {
+                "job": {
+                    "instances": [instance_id],
+                    "targetType": "instance",
+                    "name": DateTimeGenUtils.name_with_datetime("execute-task", "%Y%m%d-%H%M%S")
+                }
+            }
+
+            execute_task_response = morpheus_session.automation.execute_tasks(
+                id=task_id, execute_tasks_request=execute_task_payload
+            )
+            assert execute_task_response.status_code == 200, "Task execution failed"
+
+            ResourcePoller.poll_instance_event(
+                morpheus_session=morpheus_session,
+                instance_id=instance_id,
+                process_type_code="executeTask",
+                description=task_name,
+            )
+
+            log.info(f"Task '{task_name}' executed successfully")
+
+            # Create Workflow
+            workflow_payload = {
+                "taskSet": {
+                    "type": "operation",
+                    "tasks": [{"taskId": int(task_id)}],
+                    "name": DateTimeGenUtils.name_with_datetime("workflow", "%Y%m%d-%H%M%S")
+                }
+            }
+            url = f"{morpheus_session.base_url}/api/task-sets"
+
+            workflow_response = morpheus_session.post(
+                url=url,
+                json=workflow_payload,
+                ignore_handle_response=True,
+            )
+
+            assert workflow_response.status_code == 200, "Workflow creation failed"
+            log.info(f"Workflow Response: {workflow_response.json()}")
+
+
+            workflow_id = workflow_response.json()["taskSet"]["id"]
+            log.info(f"Workflow created successfully with ID: {workflow_id}")
+
+            execute_workflow_payload = {
+                "job": {
+                    "instances": [instance_id],
+                    "targetType": "instance",
+                    "name": DateTimeGenUtils.name_with_datetime("execute-workflow", "%Y%m%d-%H%M%S")
+                }
+            }
+
+            execute_workflow_response = morpheus_session.automation.execute_workflows(
+                id=workflow_id, execute_tasks_request=execute_workflow_payload
+            )
+            assert execute_workflow_response.status_code == 200, "Workflow execution failed"
+            workflow_job_name = execute_workflow_payload["job"]["name"]
+
+            ResourcePoller.poll_instance_event(
+                morpheus_session=morpheus_session,
+                instance_id=instance_id,
+                process_type_code="instanceWorkflow",
+                description=workflow_job_name,
+            )
+
+            log.info(
+                f"Workflow '{workflow_job_name}' executed successfully "
+                f"on instance {instance_id}"
+            )
+
+        except Exception as e:
+            pytest.fail(f"Task and Workflow test failed: {e}")
+
+        finally:
+            try:
+                if task_id:
+                    morpheus_session.automation.remove_tasks(id=task_id)
+                if workflow_id:
+                    morpheus_session.automation.remove_workflows(id=workflow_id)
+            except Exception as err:
+                log.warning(f"Cleanup failed: {err}")
+
+
     def test_validate_infrastructure_delete(self, morpheus_session):
         """Test case to validate the cleanup of created resources."""
         try:

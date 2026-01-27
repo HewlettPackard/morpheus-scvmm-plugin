@@ -225,3 +225,57 @@ class ResourcePoller:
             time.sleep(interval)
 
         pytest.fail("Backup job did not execute within expected time")
+
+    def poll_instance_event(
+            morpheus_session,
+            instance_id,
+            process_type_code,
+            description,
+            expected_status="complete",
+            timeout=300,
+            interval=10,
+    ):
+        """
+        Poll instance history until a specific event reaches the expected status.
+
+        :param morpheus_session: Morpheus API session
+        :param instance_id: Instance ID
+        :param process_type_code: processType.code (e.g. executeTask, instanceWorkflow)
+        :param description: Event or process description/name
+        :param expected_status: Expected final status (default: complete)
+        :param timeout: Max wait time in seconds
+        :param interval: Poll interval in seconds
+        :return: Matching event/process dict
+        """
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            history_res = morpheus_session.instances.get_instance_history(id=instance_id)
+            assert history_res.status_code == 200, "Failed to retrieve instance history"
+
+            processes = history_res.json().get("processes", [])
+
+            for process in processes:
+                # Case 1: workflow (process-level)
+                if (
+                        process.get("processType", {}).get("code") == process_type_code
+                        and process.get("description") == description
+                ):
+                    if process.get("status") == expected_status:
+                        return process
+
+                # Case 2: task (event-level)
+                for event in process.get("events", []):
+                    if (
+                            event.get("processType", {}).get("code") == process_type_code
+                            and event.get("description") == description
+                    ):
+                        if event.get("status") == expected_status:
+                            return event
+
+            time.sleep(interval)
+
+        raise TimeoutError(
+            f"Timed out waiting for '{description}' "
+            f"({process_type_code}) to reach '{expected_status}' state"
+        )
