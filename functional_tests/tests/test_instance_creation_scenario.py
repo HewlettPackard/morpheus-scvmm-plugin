@@ -220,6 +220,7 @@ class TestSCVMMPlugin:
             assert ResourcePoller.poll_instance_status(instance_id, "running", morpheus_session) == "running"
 
             # Fetch cloned instance ID & verify it's running
+            time.sleep(20)
             cloned_instance_id = morpheus_session.instances.list_instances(name=clone_name).json()["instances"][0]["id"]
             assert ResourcePoller.poll_instance_status(cloned_instance_id, "running", morpheus_session) == "running"
 
