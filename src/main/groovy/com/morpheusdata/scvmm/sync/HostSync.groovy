@@ -126,6 +126,7 @@ class HostSync {
                                 name             : cloudItem.computerName,
                                 resourcePool     : cluster,
                                 externalId       : cloudItem.id,
+                                uniqueId         : cloudItem.id,
                                 cloud            : cloud,
                                 sshUsername      : cloud?.accountCredentialData?.username ?: cloud?.getConfigProperty('username'),
                                 apiKey           : java.util.UUID.randomUUID(),
@@ -247,6 +248,12 @@ class HostSync {
             if (cpuPercent) {
                 updates = true
             }
+
+            if(server.uniqueId == null && hostMap.id) {
+                server.uniqueId = hostMap.id
+                updates = true
+            }
+
             if (updates == true) {
                 server.capacityInfo = capacityInfo
                 context.async.computeServer.save(server).blockingGet()
