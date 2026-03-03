@@ -16,6 +16,9 @@
 package com.morpheusdata.scvmm
 
 import com.morpheusdata.core.Plugin
+import com.morpheusdata.scvmm.logging.LogInterceptor
+import com.morpheusdata.scvmm.logging.LogInterface
+import com.morpheusdata.scvmm.logging.LogWrapper
 
 class ScvmmPlugin extends Plugin {
 
@@ -27,6 +30,11 @@ class ScvmmPlugin extends Plugin {
     @Override
     void initialize() {
         this.setName("SCVMM")
+        LogInterceptor.injectIn(ScvmmCloudProvider, LogWrapper.instance)
+        LogInterceptor.injectIn(ScvmmProvisionProvider, LogWrapper.instance)
+//        LogInterceptor.injectIn(ScvmmBackupProvider, LogWrapper.instance)
+//        LogInterceptor.injectIn(ScvmmOptionSourceProvider, LogWrapper.instance)
+
         this.registerProviders(
                 new ScvmmCloudProvider(this, this.morpheus),
                 new ScvmmProvisionProvider(this, this.morpheus),
