@@ -80,7 +80,6 @@ class PowerShellUtil {
         }
 
         // Limit input size to prevent DoS attacks (10 MB reasonable limit)
-        def xxx1 = cliXml.length()
         if (cliXml.length() > maxInputLimit) {
             String sanitizedForLog = sanitizeForLogging(cliXml)
             log.warn("CLI XML input exceeds maximum size limit (${maxInputLimit} bytes): ${cliXml.length()} bytes",

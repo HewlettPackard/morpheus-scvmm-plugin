@@ -1,3 +1,5 @@
+// Copyright 2026 Hewlett Packard Enterprise Development LP
+
 package com.morpheusdata.scvmm
 
 import com.bertramlabs.plugins.karman.CloudFile
@@ -12,9 +14,6 @@ import com.morpheusdata.scvmm.util.PowerShellUtil
 import groovy.json.JsonSlurper
 
 class ScvmmApiService {
-    static final int MILLIS_PER_SECOND = 1000
-    static final int MILLIS_PER_MINUTE = 60 * MILLIS_PER_SECOND
-
     MorpheusContext morpheusContext
     private LogInterface log = LogWrapper.instance
 
@@ -27,11 +26,12 @@ class ScvmmApiService {
         def winrmPort = opts.sshPort && opts.sshPort != 22 ? opts.sshPort : 5985
         def output = morpheusContext.executeWindowsCommand(opts.sshHost, winrmPort?.toInteger(), opts.sshUsername, opts.sshPassword, command, null, false).blockingGet()
 
+        // Log errors and/or warnings from the PowerShell output if present. These may not always cause the command to
+        // be unsuccessful but are still important to log.
         if (output.error) {
-            log.warn("MIKEMIKE1,\n${output.error}")
             List<String> parsedErrors = PowerShellUtil.parseCliXmlError(output.error)
             if (parsedErrors) {
-                log.warn("MIKEMIKE2, PowerShell script warnings and errors:\n${parsedErrors.join('\n')}")
+                log.warn("PowerShell script warnings and errors:\n${parsedErrors.join('\n')}")
             }
         }
 
@@ -2688,13 +2688,19 @@ For (\$i=0; \$i -le 10; \$i++) {
         def out = executeCommand(command, opts)
 
         if (out.data) {
-            // The PowerShell ConvertTo-Json cmdlet returns a single JSON object, not a JSON array, even when the object
-            // is an array but with just a single element. We need to wrap it in an array if it doesn't start with '['
-            // to ensure consistent parsing. This function is only intended to be used for commands that return arrays.
-            String payload = out.data.startsWith('[') ? out.data : "[${out.data}]"
-            out.data = new JsonSlurper().parseText(payload)
+            def payload = out.data
+            if (!out.data.startsWith('[')) {
+                payload = "[${out.data}]"
+            }
+            try {
+                log.debug "Received: ${JsonOutput.prettyPrint(payload)}"
+            } catch (e) {
+//				File file = new File("/Users/bob/Desktop/bad.json")
+//				file.write payload
+            }
+            out.data = new groovy.json.JsonSlurper().parseText(payload)
         }
-        return out
+        out
     }
 
     def loadControllerServer(opts) {
