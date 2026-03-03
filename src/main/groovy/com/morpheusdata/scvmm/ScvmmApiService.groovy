@@ -29,7 +29,7 @@ class ScvmmApiService {
 
         if (output.error) {
             log.warn("MIKEMIKE1,\n${output.error}")
-            List<String> parsedErrors = PowerShellUtil.parseCliXml(output.error)
+            List<String> parsedErrors = PowerShellUtil.parseCliXmlError(output.error)
             if (parsedErrors) {
                 log.warn("MIKEMIKE2, PowerShell script warnings and errors:\n${parsedErrors.join('\n')}")
             }

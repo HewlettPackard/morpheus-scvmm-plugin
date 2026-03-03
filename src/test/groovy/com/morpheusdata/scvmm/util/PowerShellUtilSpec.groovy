@@ -108,16 +108,14 @@ Write-Output "VM ID: $vmId, Server: $server"
         ]
     }
 
-    def "test parseCliXml #description"() {
+    def "test parseCliXmlError #description"() {
         when:
-        List<String> result = PowerShellUtil.parseCliXml(cliXml)
+        List<String> result = PowerShellUtil.parseCliXmlError(cliXml)
 
         then:
-        if (expectedPatterns == null) {
-            assert result == null
-        } else {
-            assert result != null
-            assert result.size() == expectedSize
+        assert result != null
+        assert result.size() == expectedSize
+        if (result.size()) {
             result.each { message ->
                 assert expectedPatterns.any { pattern -> message.contains(pattern) }
             }
@@ -239,19 +237,19 @@ Write-Output "VM ID: $vmId, Server: $server"
         ]
     }
 
-    def "test parseCliXml message size limit"() {
+    def "test parseCliXmlError message size limit"() {
         given:
-        String largeContent = 'x' * (2 * 1024 * 1024)  // 150 KB - exceeds 1 MiB limit
+        String largeContent = 'x' * (2 * 1024 * 1024)  // 2 MiB - exceeds 1 MiB limit
         String cliXml = "#< CLIXML\r\n<Objs Version=\"1.1.0.1\"><S S=\"Error\">${largeContent}</S></Objs>"
 
         when:
-        List<String> result = PowerShellUtil.parseCliXml(cliXml)
+        List<String> result = PowerShellUtil.parseCliXmlError(cliXml)
 
         then:
-        result == null
+        !result
     }
 
-    def "test parseCliXml message count limit"() {
+    def "test parseCliXmlError message count limit"() {
         given:
         StringBuilder cliXmlBuilder = new StringBuilder('#< CLIXML\r\n<Objs Version="1.1.0.1">')
         1500.times { i ->
@@ -261,7 +259,7 @@ Write-Output "VM ID: $vmId, Server: $server"
         String cliXml = cliXmlBuilder.toString()
 
         when:
-        List<String> result = PowerShellUtil.parseCliXml(cliXml)
+        List<String> result = PowerShellUtil.parseCliXmlError(cliXml)
 
         then:
         result.size() == 1000  // Should be limited to 1000 messages
@@ -269,12 +267,12 @@ Write-Output "VM ID: $vmId, Server: $server"
         !result.any { it.contains('Message 1499') }  // Last message should not be included
     }
 
-    def "test parseCliXml with invalid hex code"() {
+    def "test parseCliXmlError with invalid hex code"() {
         given:
         String cliXml = '#< CLIXML\r\n<Objs Version="1.1.0.1"><S S="Error">Invalid_xGGGG_Hex</S></Objs>'
 
         when:
-        List<String> result = PowerShellUtil.parseCliXml(cliXml)
+        List<String> result = PowerShellUtil.parseCliXmlError(cliXml)
 
         then:
         result.size() == 1
@@ -282,6 +280,4 @@ Write-Output "VM ID: $vmId, Server: $server"
         result[0].contains('[ERROR]')
         result[0].contains('Invalid_xGGGG_Hex')
     }
-
-
 }

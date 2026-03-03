@@ -65,9 +65,10 @@ class PowerShellUtil {
     @SuppressWarnings('CatchException')
     @SuppressWarnings('DuplicateNumberLiteral')
     @SuppressWarnings('MethodSize')
-    static List<String> parseCliXml(String cliXml) {
+    static List<String> parseCliXmlError(String cliXml) {
         final int oneKB = 1024
-        final int maxInputLimit = 1 * oneKB * oneKB // 1 MiB
+        final int oneMB = oneKB * oneKB
+        final int maxInputLimit = 1 * oneMB
         final int maxMessages = 1000
         final String xmlCliNodeName = 'S'
 
@@ -75,15 +76,16 @@ class PowerShellUtil {
         if (!cliXml?.startsWith('#< CLIXML')) {
             String sanitizedForLog = sanitizeForLogging(cliXml)
             log.warn("Output does not appear to be in CLI XML format: ${sanitizedForLog}")
-            return null
+            return []
         }
 
-        // Limit input size to prevent DoS attacks (1 MB reasonable limit)
+        // Limit input size to prevent DoS attacks (10 MB reasonable limit)
+        def xxx1 = cliXml.length()
         if (cliXml.length() > maxInputLimit) {
             String sanitizedForLog = sanitizeForLogging(cliXml)
             log.warn("CLI XML input exceeds maximum size limit (${maxInputLimit} bytes): ${cliXml.length()} bytes",
                     sanitizedForLog)
-            return null
+            return []
         }
 
         List<String> warningAndErrorMessages = []
@@ -155,9 +157,8 @@ class PowerShellUtil {
 
             return warningAndErrorMessages
         } catch (Exception e) {
-            String sanitizedForLog = sanitizeForLogging(cliXml)
-            log.warn("Failed to parse CLI XML, cliXml=${sanitizedForLog}, exception=${e.message}", e)
-            return null
+            log.warn("Failed to parse CLI XML, cliXml=${cliXml}, exception=${e.message}", e)
+            return warningAndErrorMessages
         }
     }
 
