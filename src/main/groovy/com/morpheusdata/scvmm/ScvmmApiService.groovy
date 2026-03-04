@@ -23,16 +23,17 @@ class ScvmmApiService {
     static defaultRoot = 'C:\\morpheus'
 
     def executeCommand(command, opts) {
+        log.debug("Execute PowerShell command, opts: ${opts}\n${command}")
         def winrmPort = opts.sshPort && opts.sshPort != 22 ? opts.sshPort : 5985
+        long startNanoTime = System.nanoTime()
         def output = morpheusContext.executeWindowsCommand(opts.sshHost, winrmPort?.toInteger(), opts.sshUsername, opts.sshPassword, command, null, false).blockingGet()
+        long elapsedMs = (System.nanoTime() - startNanoTime) / 1_000_000L as long
+        log.debug("Completed PowerShell command, success=${output.success}, elapsedMs=${elapsedMs}")
 
         // Log errors and/or warnings from the PowerShell output if present. These may not always cause the command to
         // be unsuccessful but are still important to log.
         if (output.error) {
-            List<String> parsedErrors = PowerShellUtil.parseCliXmlError(output.error)
-            if (parsedErrors) {
-                log.warn("PowerShell script warnings and errors:\n${parsedErrors.join('\n')}")
-            }
+            log.info("PowerShell script reported warnings and/or errors\n${output.error}")
         }
 
         return output
@@ -2698,7 +2699,7 @@ For (\$i=0; \$i -le 10; \$i++) {
 //				File file = new File("/Users/bob/Desktop/bad.json")
 //				file.write payload
             }
-            out.data = new groovy.json.JsonSlurper().parseText(payload)
+            out.data = new JsonSlurper().parseText(payload)
         }
         out
     }

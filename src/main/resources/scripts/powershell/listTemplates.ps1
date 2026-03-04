@@ -1,3 +1,5 @@
+$ErrorActionPreference = 'Stop'
+$report = @()
 foreach ($Template in $VMTemplates) {
         $data = New-Object PSObject -property @{
                 ID              = $Template.ID
