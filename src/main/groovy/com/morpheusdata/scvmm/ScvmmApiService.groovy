@@ -33,7 +33,8 @@ class ScvmmApiService {
         // Log errors and/or warnings from the PowerShell output if present. These may not always cause the command to
         // be unsuccessful but are still important to log.
         if (output.error) {
-            log.info("PowerShell script reported warnings and/or errors\n${output.error}")
+            String logError = PowerShellUtil.prettyPrintPowerShellScriptError(output.error)
+            log.info("PowerShell script reported warnings and/or errors\n${logError}")
         }
 
         return output
@@ -2322,8 +2323,8 @@ For (\$i=0; \$i -le 10; \$i++) {
         def vlanEnabled = networkConfig.primaryInterface?.vlanId > 0
         def vlanId = networkConfig.primaryInterface?.vlanId
         // network may be a vlan network... therefore, the externalId includes the VLAN id.. need to remove it
-        def networkExternalId = networkConfig.primaryInterface.network.externalId?.take(36)
-        def subnetExternalId = networkConfig.primaryInterface.subnet?.externalId?.take(36)
+        def networkExternalId = networkConfig?.primaryInterface?.network?.externalId?.take(36)
+        def subnetExternalId = networkConfig?.primaryInterface?.subnet?.externalId?.take(36)
 
         if (isTemplate && templateId) {
             commands << "\$template = Get-SCVMTemplate -VMMServer localhost | where {\$_.ID -eq \"$templateId\"}"
@@ -2347,7 +2348,9 @@ For (\$i=0; \$i -le 10; \$i++) {
         }
 
         commands << "\$ignore = New-SCVirtualScsiAdapter -VMMServer localhost -JobGroup $hardwareGuid -AdapterID 7 -ShareVirtualScsiAdapter \$false -ScsiControllerType DefaultTypeNoType"
-        commands << "\$VMNetwork = Get-SCVMNetwork -VMMServer localhost -ID \"${networkExternalId}\""
+        if (networkExternalId) {
+            commands << "\$VMNetwork = Get-SCVMNetwork -VMMServer localhost -ID \"${networkExternalId}\""
+        }
         if (subnetExternalId) {
             commands << "\$VMSubnet = Get-SCVMSubnet -VMMServer localhost -ID \"${subnetExternalId}\""
         }
