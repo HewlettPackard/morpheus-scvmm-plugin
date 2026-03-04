@@ -18,6 +18,7 @@ class PowerShellUtil {
      * @return Script content as String
      */
     static String loadPowerShellScript(String scriptName) {
+        log.debug("Load PowerShell script: ${scriptName}")
         try {
             String fullPath = "/scripts/powershell/${scriptName}"
             InputStream stream = PowerShellUtil.getResourceAsStream(fullPath)
