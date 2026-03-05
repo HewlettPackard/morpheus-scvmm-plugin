@@ -1,6 +1,6 @@
 package com.morpheusdata.scvmm.logging
 
-import org.slf4j.Logger
+
 import spock.lang.Specification
 
 class LogWrapperSpec extends Specification {
@@ -19,7 +19,7 @@ class LogWrapperSpec extends Specification {
         def instance2 = LogWrapper.instance
 
         expect:
-        instance1 == instance2
+        instance1 != instance2
         instance1.is(instance2)
     }
 
@@ -223,10 +223,10 @@ class LogWrapperSpec extends Specification {
         when:
         // Test logging from current class (should include caller details with package prefix match)
         logWrapper.info("Message from LogWrapperSpec")
-        
+
         // Test logging from a method
         testMethod()
-        
+
         // Test logging from nested method calls
         nestedTestMethod()
 
@@ -240,10 +240,10 @@ class LogWrapperSpec extends Specification {
 
         when:
         def debugEnabled = logWrapper.isDebugEnabled()
-        
+
         // Test all log levels regardless of current log level
         logWrapper.debug("Debug message")
-        logWrapper.info("Info message") 
+        logWrapper.info("Info message")
         logWrapper.warn("Warn message")
         logWrapper.error("Error message")
 
@@ -259,7 +259,7 @@ class LogWrapperSpec extends Specification {
         when:
         // These should trigger different paths in getCallerDetails
         logWrapper.info("Testing caller detection edge cases")
-        
+
         then:
         noExceptionThrown()
     }
@@ -314,7 +314,7 @@ class LogWrapperSpec extends Specification {
         when:
         // Call from this test class (should match caller package prefix)
         logWrapper.info("Test message with caller details")
-        
+
         then:
         noExceptionThrown()
     }

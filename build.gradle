@@ -1,6 +1,5 @@
 // (C) Copyright 2025 Hewlett Packard Enterprise Development LP
 
-import org.gradle.api.publish.maven.MavenPublication
 import java.text.SimpleDateFormat
 
 buildscript {
@@ -101,9 +100,10 @@ dependencies {
     testImplementation 'org.objenesis:objenesis:2.6'
     testImplementation platform("org.spockframework:spock-bom:$spockVersion")
     testImplementation "org.spockframework:spock-core:$spockVersion"
-    testImplementation "org.spockframework:spock-junit4"  // you can remove this if your code does not rely on old JUnit 4 rules
+    testImplementation "org.spockframework:spock-junit4"
+    // you can remove this if your code does not rely on old JUnit 4 rules
     testImplementation 'cglib:cglib-nodep:3.2.12'
-    
+
     // Add Jackson dependencies for Spock framework
     testImplementation 'com.fasterxml.jackson.core:jackson-core:2.15.2'
     testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
@@ -121,64 +121,59 @@ sourceSets {
     }
 }
 
-// ===== STATIC ANALYSIS =====
 codenarc {
     toolVersion = '3.5.0'
     configFile = file('config/codenarc/codenarc.groovy')
-    reportFormat = 'html'
-    sourceSets = [sourceSets.main]
-    ignoreFailures = true  // This makes CodeNarc not fail the build
-    maxPriority1Violations = -1  // No limit on P1 violations (handled in our custom reporting)
-    maxPriority2Violations = -1  // No limit on P2 violations (handled in our custom reporting)
-    maxPriority3Violations = -1  // No limit on P3 violations (handled in our custom reporting)
 }
 
 codenarcMain {
-    reports {
-        html {
-            required = true
-            outputLocation = layout.buildDirectory.file('reports/codenarc/main.html')
-        }
-        xml {
-            required = true
-            outputLocation = layout.buildDirectory.file('reports/codenarc/main.xml')
-        }
-    }
-    ignoreFailures = true  // Also set at task level for extra safety
-    // source = sourceSets.main.allGroovy
+    maxPriority1Violations = 0
+    // TODO: Temporarily allowing existing number of violations while they are being addressed incrementally. The
+    //       current thresholds are set based on the current violation counts and will be lowered as violations are
+    //       addressed. They also ensure that no new violations will be added.
+    maxPriority2Violations = 1337
+    maxPriority3Violations = 2565
+}
+
+codenarcTest {
+    maxPriority1Violations = 0
+    maxPriority2Violations = 2000
+    maxPriority3Violations = 2000
 }
 
 // ===== ANSI COLOR CONSTANTS =====
 ext.colors = [
-        RESET: "\u001B[0m",
-        GREEN: "\u001B[32m",
-        RED: "\u001B[31m",
+        RESET : "\u001B[0m",
+        GREEN : "\u001B[32m",
+        RED   : "\u001B[31m",
         YELLOW: "\u001B[33m",
         ORANGE: "\u001B[38;5;208m", // Using 256-color mode for orange
-        BOLD: "\u001B[1m"
+        BOLD  : "\u001B[1m"
 ]
 
 // ===== UTILITY FUNCTIONS =====
 def calculatePassRate(passed, total) {
     return total > 0 ? Math.round((passed * 100.0) / total * 10) / 10 : 0.0
 }
+
 def getTestStatus(failed, skipped) {
     if (failed > 0) {
-       return "${colors.RED}FAILED${colors.RESET}"
+        return "${colors.RED}FAILED${colors.RESET}"
     } else if (skipped > 0) {
-       return "${colors.YELLOW}PASSED${colors.RESET} (${skipped} skipped)"
+        return "${colors.YELLOW}PASSED${colors.RESET} (${skipped} skipped)"
     } else {
-       return "${colors.GREEN}PASSED${colors.RESET}"
+        return "${colors.GREEN}PASSED${colors.RESET}"
     }
 }
+
 def formatNumber(value, width) {
     def numStr = value.toString()
     def isBold = value > 0
     if (isBold) {
-	def padding = Math.max(0, width - numStr.length())
-	return " " * padding + "${colors.BOLD}${numStr}${colors.RESET}"
+        def padding = Math.max(0, width - numStr.length())
+        return " " * padding + "${colors.BOLD}${numStr}${colors.RESET}"
     } else {
-	return String.format("%${width}d", value)
+        return String.format("%${width}d", value)
     }
 }
 
@@ -186,10 +181,10 @@ def formatDecimal(value, width, decimals) {
     def numStr = String.format("%.${decimals}f", value)
     def isBold = value > 0
     if (isBold) {
-	def padding = Math.max(0, width - numStr.length())
-	return " " * padding + "${colors.BOLD}${numStr}${colors.RESET}"
+        def padding = Math.max(0, width - numStr.length())
+        return " " * padding + "${colors.BOLD}${numStr}${colors.RESET}"
     } else {
-	return String.format("%${width}.${decimals}f", value)
+        return String.format("%${width}.${decimals}f", value)
     }
 }
 
@@ -197,10 +192,10 @@ def formatPercentage(value, width) {
     def numStr = String.format("%.1f%%", value)
     def isBold = value > 0
     if (isBold) {
-       def padding = Math.max(0, width - numStr.length())
-       return " " * padding + "${colors.BOLD}${numStr}${colors.RESET}"
+        def padding = Math.max(0, width - numStr.length())
+        return " " * padding + "${colors.BOLD}${numStr}${colors.RESET}"
     } else {
-       return String.format("%${width}.1f%%", value)
+        return String.format("%${width}.1f%%", value)
     }
 }
 
@@ -213,53 +208,53 @@ def displayTestResultsSummary(unitTestResults, integrationTestResults) {
 
     if (totalTests > 0) {
         def header = String.format("  %-22s | %8s | %8s | %8s | %8s | %8s | %12s | %8s | %-14s",
-	        "Test Type", "Classes", "Executed", "Passed", "Failed", "Skipped", "Time (s)", "Pass %", "Status")
-	        println header
-	        println "-" * 120
+                "Test Type", "Classes", "Executed", "Passed", "Failed", "Skipped", "Time (s)", "Pass %", "Status")
+        println header
+        println "-" * 120
 
         // Only show individual test types if there are multiple types
         def showIndividualTypes = (unitTestResults.total > 0 && integrationTestResults.total > 0)
 
         if (showIndividualTypes) {
-         // Unit Tests row
+            // Unit Tests row
             def unitPassRate = calculatePassRate(unitTestResults.passed, unitTestResults.total)
             def unitStatus = getTestStatus(unitTestResults.failed, unitTestResults.skipped)
             printf "  %-22s | %8d | %8d | %8d | %8d | %8d | %12.3f | %7.1f%% | %s\n",
-                "Unit Tests", unitTestResults.classes, unitTestResults.total, unitTestResults.passed,
-            unitTestResults.failed, unitTestResults.skipped, unitTestResults.time, unitPassRate, unitStatus
+                    "Unit Tests", unitTestResults.classes, unitTestResults.total, unitTestResults.passed,
+                    unitTestResults.failed, unitTestResults.skipped, unitTestResults.time, unitPassRate, unitStatus
 
             // Integration Tests row
             def integrationPassRate = calculatePassRate(integrationTestResults.passed, integrationTestResults.total)
             def integrationStatus = getTestStatus(integrationTestResults.failed, integrationTestResults.skipped)
             printf "  %-22s | %8d | %8d | %8d | %8d | %8d | %12.3f | %7.1f%% | %s\n",
-                "Integration Tests", integrationTestResults.classes, integrationTestResults.total, integrationTestResults.passed,
-                integrationTestResults.failed, integrationTestResults.skipped, integrationTestResults.time, integrationPassRate, integrationStatus
+                    "Integration Tests", integrationTestResults.classes, integrationTestResults.total, integrationTestResults.passed,
+                    integrationTestResults.failed, integrationTestResults.skipped, integrationTestResults.time, integrationPassRate, integrationStatus
 
             println "-" * 120
-		}
+        }
 
         def totalPassRate = calculatePassRate(totalPassed, totalTests)
         def totalStatus
-		if (totalFailed > 0) {
+        if (totalFailed > 0) {
             totalStatus = "${colors.BOLD}${colors.RED}FAILED${colors.RESET}"
         } else if (totalSkipped > 0) {
-			totalStatus = "${colors.BOLD}${colors.YELLOW}ALL PASSED${colors.RESET}"
-		} else {
-			totalStatus = "${colors.BOLD}${colors.GREEN}ALL PASSED${colors.RESET}"
+            totalStatus = "${colors.BOLD}${colors.YELLOW}ALL PASSED${colors.RESET}"
+        } else {
+            totalStatus = "${colors.BOLD}${colors.GREEN}ALL PASSED${colors.RESET}"
         }
 
         def totalClasses = unitTestResults.classes + integrationTestResults.classes
 
         printf "  ${colors.BOLD}%-22s${colors.RESET} | %s | %s | %s | %s | %s | %s | %s | %s\n",
-            "TOTAL",
-            formatNumber(totalClasses, 8),
-            formatNumber(totalTests, 8),
-            formatNumber(totalPassed, 8),
-            formatNumber(totalFailed, 8),
-            formatNumber(totalSkipped, 8),
-            formatDecimal(totalTime, 12, 3),
-            formatPercentage(totalPassRate, 8),
-            totalStatus
+                "TOTAL",
+                formatNumber(totalClasses, 8),
+                formatNumber(totalTests, 8),
+                formatNumber(totalPassed, 8),
+                formatNumber(totalFailed, 8),
+                formatNumber(totalSkipped, 8),
+                formatDecimal(totalTime, 12, 3),
+                formatPercentage(totalPassRate, 8),
+                totalStatus
 
         println "=" * 120
         println ""
@@ -267,11 +262,6 @@ def displayTestResultsSummary(unitTestResults, integrationTestResults) {
 
     return [total: totalTests, passed: totalPassed, failed: totalFailed, skipped: totalSkipped, time: totalTime]
 }
-
-import groovy.util.XmlSlurper
-import org.gradle.api.GradleException
-import org.gradle.api.tasks.testing.Test
-import org.gradle.testing.jacoco.tasks.JacocoReport
 
 def configureXmlParser() {
     def parser = new XmlSlurper()
@@ -289,17 +279,17 @@ def configureXmlParser() {
 jar {
     manifest {
         attributes(
-            'Plugin-Class': 'com.morpheusdata.scvmm.ScvmmPlugin',
-            'Plugin-Version': version,
-            'Morpheus-Name': 'SCVMM',
-            'Morpheus-Organization': 'morpheus',
-            'Morpheus-Code': 'morpheus-scvmm-plugin',
-            'Morpheus-Description': 'Plugin for System Center Virtual Machine Manager',
-            'Morpheus-Logo': 'assets/scvmm.svg',
-            'Morpheus-Logo-Dark': 'assets/scvmm-dark.svg',
-            'Morpheus-Labels': 'Plugin, Cloud',
-            'Morpheus-Repo': 'https://github.com/HewlettPackard/morpheus-scvmm-plugin',
-            'Morpheus-Min-Appliance-Version': "8.0.3"
+                'Plugin-Class': 'com.morpheusdata.scvmm.ScvmmPlugin',
+                'Plugin-Version': version,
+                'Morpheus-Name': 'SCVMM',
+                'Morpheus-Organization': 'morpheus',
+                'Morpheus-Code': 'morpheus-scvmm-plugin',
+                'Morpheus-Description': 'Plugin for System Center Virtual Machine Manager',
+                'Morpheus-Logo': 'assets/scvmm.svg',
+                'Morpheus-Logo-Dark': 'assets/scvmm-dark.svg',
+                'Morpheus-Labels': 'Plugin, Cloud',
+                'Morpheus-Repo': 'https://github.com/HewlettPackard/morpheus-scvmm-plugin',
+                'Morpheus-Min-Appliance-Version': "8.0.3"
         )
     }
 }
@@ -368,7 +358,7 @@ jacocoTestReport {
         }))
     }
     doLast {
-	println "Comprehensive Jacoco report generated: ${reports.html.outputLocation.get()}"
+        println "Comprehensive Jacoco report generated: ${reports.html.outputLocation.get()}"
     }
 }
 
@@ -417,8 +407,8 @@ artifactory {
             publishPom = true
             publishBuildInfo = false
             properties = [
-                'commit_id': gitCommitId,
-                'branch'   : gitBranchName,
+                    'commit_id': gitCommitId,
+                    'branch'   : gitBranchName,
             ]
         }
         artifacts {
@@ -431,18 +421,18 @@ publishing {
     publications {
         mavenJava(MavenPublication) {
             artifact(tasks.named("shadowJar"))
-                pom {
-                    name.set("morpheus-scvmm-plugin")
-                    description.set("scvmm plugins for Morpheus")
-                    url.set("https://github.com/HewlettPackard/morpheus-scvmm-plugin")
-                }
+            pom {
+                name.set("morpheus-scvmm-plugin")
+                description.set("scvmm plugins for Morpheus")
+                url.set("https://github.com/HewlettPackard/morpheus-scvmm-plugin")
+            }
         }
     }
 }
 
 // Common method to parse coverage data from XML report
 def parseCoverageFromXml(xmlReport) {
-    def coverageData = [ line: null]
+    def coverageData = [line: null]
 
     if (xmlReport.exists()) {
         def parser = configureXmlParser()
@@ -454,10 +444,10 @@ def parseCoverageFromXml(xmlReport) {
             def total = missed + covered
             def percentage = total > 0 ? Math.round((covered * 100.0) / total * 10) / 10 : 0.0
 
-            switch(type) {
+            switch (type) {
                 case 'LINE':
                     coverageData.line = percentage
-                break
+                    break
             }
         }
     }
@@ -479,8 +469,8 @@ def displayCoverageResults(buildDir, displayIfMissing = true) {
         }
         if (coverageData.line != null) println formatCoverageMetric(coverageData.line, minLineCoverage, "Line Coverage       ")
 
-         println "=" * 120
-	 println ""
+        println "=" * 120
+        println ""
     }
 
     return coverageData
@@ -488,8 +478,8 @@ def displayCoverageResults(buildDir, displayIfMissing = true) {
 
 // Common method to display report locations
 def displayReportLocations(buildDir) {
-        println "Test Report Locations:"
-        println "----------------------------------------"
+    println "Test Report Locations:"
+    println "----------------------------------------"
 
     def codenarcHtml = file("${buildDir}/reports/codenarc/main.html")
 
@@ -551,7 +541,7 @@ tasks.register('testSummary') {
     doLast {
         def buildDir = layout.buildDirectory.asFile.get()
         println "DEBUG: Build Dir: ${layout.buildDirectory.asFile.get().absolutePath}"
-         // 1. FIRST: Show detailed test case results (consolidated table only)
+        // 1. FIRST: Show detailed test case results (consolidated table only)
         println "\n1. TEST EXECUTION RESULTS"
         println "=" * 120
         def unitTestResults = parseTestResultsFromDir("${buildDir}/test-results/test", "Unit Tests")
@@ -579,12 +569,12 @@ tasks.register('testSummary') {
 def parseCodenarcReport(buildDir) {
     def codenarcData = [
             totalViolations: 0,
-            priority1: 0,
-            priority2: 0,
-            priority3: 0,
-            filesAnalyzed: 0,
-            reportExists: false,
-            fileViolations: [:] // Map to track violations per file
+            priority1      : 0,
+            priority2      : 0,
+            priority3      : 0,
+            filesAnalyzed  : 0,
+            reportExists   : false,
+            fileViolations : [:] // Map to track violations per file
     ]
 
     def codenarcHtml = file("${buildDir}/reports/codenarc/main.html")
@@ -620,7 +610,7 @@ def parseCodenarcReport(buildDir) {
                         def filePath = pkgPath ? "${pkgPath}/${fileName}" : fileName
 
                         def fileViolations = [
-                                total: 0,
+                                total    : 0,
                                 priority1: 0,
                                 priority2: 0,
                                 priority3: 0
@@ -631,7 +621,7 @@ def parseCodenarcReport(buildDir) {
                             fileViolations.total++
 
                             def priority = violation.@priority?.toString() ?: "3" // Default to medium if unspecified
-                            switch(priority) {
+                            switch (priority) {
                                 case '1':
                                     codenarcData.priority1++
                                     fileViolations.priority1++
@@ -703,7 +693,7 @@ def displayCodenarcResults(buildDir) {
 
                 // Display violations per file - optimized layout with file names only
                 println ""
-                println  "-" * 120
+                println "-" * 120
 
                 // Get the max width needed for the file name column
                 def maxFileNameWidth = 0
