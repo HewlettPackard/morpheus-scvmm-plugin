@@ -1,16 +1,14 @@
 package com.morpheusdata.scvmm
 
+import com.bertramlabs.plugins.karman.CloudFile
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ComputeUtility
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
-import com.morpheusdata.model.KeyPair
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
 import groovy.json.JsonOutput
-import groovy.util.logging.Slf4j
-import com.bertramlabs.plugins.karman.CloudFile
 
 class ScvmmApiService {
     MorpheusContext morpheusContext
@@ -190,7 +188,7 @@ class ScvmmApiService {
             log.debug "Servercreated: ${serverCreated}"
 
             // Server Created - Remove Temporary templates and profiles
-            if(removeTemplateCommands) {
+            if (removeTemplateCommands) {
                 log.info("createServer - removing Temporary Templates and Hardware Profiles")
                 def command = removeTemplateCommands.join(';')
                 command += "@()"
@@ -202,7 +200,7 @@ class ScvmmApiService {
                 loadControllerServer(opts)
                 //Get the created VM Disk configuration for new server with id opts.externalId
                 //expect Map [success:true/false, disks: []]
-                def vmDisk = listVirtualDiskDrives(opts,opts.externalId)
+                def vmDisk = listVirtualDiskDrives(opts, opts.externalId)
                 if (vmDisk.success) {
                     log.info("createServer - received current Disk configuration for VM ${opts.externalId}")
                     log.info("createServer - additional volumes - opts.additionalTemplateDisks: ${opts.additionalTemplateDisks}")
@@ -1372,8 +1370,8 @@ foreach (\$network in \$networks) {
 		$report 
 		'''
         String cmd = templateCmd.stripIndent().trim()
-                .replace("<%vmid%>",externalId)
-                .replace("<%vhdname%>",name ?: "")
+                .replace("<%vmid%>", externalId)
+                .replace("<%vhdname%>", name ?: "")
         //Execute
         def out = wrapExecuteCommand(generateCommandString(cmd), opts)
         if (out.success) {
@@ -1422,9 +1420,9 @@ foreach (\$network in \$networks) {
 		\$report 
 		"""
         String resizeCmd = templateCmd.stripIndent().trim()
-                .replace("<%vmid%>",opts.externalId)
-                .replace("<%diskid%>",diskId ?: "")
-                .replace("<%sizegb%>","${(int)(diskSizeBytes.toLong()).div(ComputeUtility.ONE_GIGABYTE)}")
+                .replace("<%vmid%>", opts.externalId)
+                .replace("<%diskid%>", diskId ?: "")
+                .replace("<%sizegb%>", "${(int) (diskSizeBytes.toLong()).div(ComputeUtility.ONE_GIGABYTE)}")
 
         log.debug "resizeDisk: ${resizeCmd}"
         def resizeResults = wrapExecuteCommand(generateCommandString(resizeCmd), opts)
@@ -1441,11 +1439,11 @@ foreach (\$network in \$networks) {
             }
         } else {
             log.warn("resizeDisk - rpc disk not return a usable response - ${resizeResults}")
-            return [success:false,errOut: "resizeDisk - did not receive expected response from rpc"]
+            return [success: false, errOut: "resizeDisk - did not receive expected response from rpc"]
         }
     }
 
-    def createAndAttachDisk(Map opts, Map diskSpec, Boolean returnDiskDrives=true) {
+    def createAndAttachDisk(Map opts, Map diskSpec, Boolean returnDiskDrives = true) {
         LogWrapper.instance.info("createAndAttachDisk - Adding new Virtual SCSI Disk VHDType:${diskSpec}")
         String templateCmd = '''
         #Morpheus will replace items in <%   %>
@@ -1554,23 +1552,23 @@ foreach (\$network in \$networks) {
         $report
         '''
         def addDiskCmd = templateCmd.stripIndent().trim()
-                .replace("<%vmid%>",opts.externalId ?: "")
-                .replace("<%vhdname%>",diskSpec.vhdName ?: "data-${UUID.randomUUID().toString()}")
-                .replace("<%sizemb%>",diskSpec.sizeMb.toString())
-                .replace("<%vhdtype%>",diskSpec.vhdType ?: "")
-                .replace("<%vhdformat%>",diskSpec.vhdFormat ?: "")
-                .replace("<%vhdpath%>",diskSpec.vhdPath ?: "")
+                .replace("<%vmid%>", opts.externalId ?: "")
+                .replace("<%vhdname%>", diskSpec.vhdName ?: "data-${UUID.randomUUID().toString()}")
+                .replace("<%sizemb%>", diskSpec.sizeMb.toString())
+                .replace("<%vhdtype%>", diskSpec.vhdType ?: "")
+                .replace("<%vhdformat%>", diskSpec.vhdFormat ?: "")
+                .replace("<%vhdpath%>", diskSpec.vhdPath ?: "")
         //Execute
         def out = wrapExecuteCommand(generateCommandString(addDiskCmd), opts)
-        if(out.success && returnDiskDrives) {
+        if (out.success && returnDiskDrives) {
             def listResults = listVirtualDiskDrives(opts, opts.externalId, diskSpec.vhdName)
             return [success: listResults.success, disk: listResults.disks.first()]
         }
     }
 
     def getDiskName(index, platform = 'linux') {
-        if(platform == 'windows')
-            return "disk ${index+1}"
+        if (platform == 'windows')
+            return "disk ${index + 1}"
         // return windowsDiskNames[index]
         else
             return getDiskNameList()[index]
@@ -1606,12 +1604,12 @@ foreach (\$network in \$networks) {
                     // the expected count.. we are good
                     log.debug "serverStatus: ${serverDetail.server?.Status}, opts.dataDisks: ${opts.dataDisks?.size()}, additionalTemplateDisks: ${opts.additionalTemplateDisks?.size()}"
 
-                     if (serverDetail.server?.Status != 'UnderCreation' &&
-                             serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
+                    if (serverDetail.server?.Status != 'UnderCreation' &&
+                            serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
                         // additionalTemplateDisks are created after VM creation
                         // data disks are created and attached after vm creation
 
-                    // if(serverDetail.server?.Status != 'UnderCreation' && serverDetail.server?.VirtualDiskDrives?.size() == 1 - (opts.additionalTemplateDisks?.size() ?: 0)) {
+                        // if(serverDetail.server?.Status != 'UnderCreation' && serverDetail.server?.VirtualDiskDrives?.size() == 1 - (opts.additionalTemplateDisks?.size() ?: 0)) {
                         // additionalTemplateDisks are created after VM creation
                         rtn.success = true
                         rtn.server = serverDetail.server
@@ -1910,7 +1908,7 @@ foreach(\$share in \$shares) {
         def command = "\$ignore = mkdir \"${diskFolder}\""
         def dirResults = wrapExecuteCommand(generateCommandString(command), opts)
         def fileResults = morpheusContext.services.fileCopy.copyToServer(opts.hypervisor, "${opts.fileName}", "${diskFolder}\\${opts.fileName}", inputStream, opts.cloudConfigBytes?.size(), null, true)
-        log.debug ("importScript: fileResults.success: ${fileResults.success}")
+        log.debug("importScript: fileResults.success: ${fileResults.success}")
         if (!fileResults.success) {
             throw new Exception("Script Upload to SCVMM Host Failed. Perhaps an agent communication issue...${opts.hypervisor.name}")
         }
@@ -1968,7 +1966,7 @@ For (\$i=0; \$i -le 10; \$i++) {
         def command = "\$ignore = mkdir \"${diskFolder}\""
         def dirResults = wrapExecuteCommand(generateCommandString(command), opts)
         def fileResults = morpheusContext.services.fileCopy.copyToServer(opts.hypervisor, "config.iso", "${diskFolder}\\config.iso", inputStream, cloudConfigBytes?.size())
-        log.debug ("importAndMountIso: fileResults?.success: ${fileResults?.success}")
+        log.debug("importAndMountIso: fileResults?.success: ${fileResults?.success}")
         if (!fileResults.success) {
             throw new Exception("ISO Upload to SCVMM Host Failed. Perhaps an agent communication issue...${opts.hypervisor.name}")
         }
@@ -2077,7 +2075,7 @@ For (\$i=0; \$i -le 10; \$i++) {
 
     def cleanData(data, ignoreString = null) {
         def rtn = ''
-        if(data){
+        if (data) {
             def lines = data.tokenize('\n')
             lines = lines?.findAll { it?.trim()?.length() > 1 }
             if (lines?.size() > 0) {
@@ -2524,7 +2522,7 @@ For (\$i=0; \$i -le 10; \$i++) {
                     if (isSyncdImage) {
                         fromDisk = "\$VirtualHardDisk${index}"
                         def diskExternalId = diskExternalIdMappings[1 + index]?.externalId
-                        if(diskExternalId) {
+                        if (diskExternalId) {
                             commands << "${fromDisk} = Get-SCVirtualHardDisk -VMMServer localhost -ID \"${diskExternalId}\""
                         }
                     }
@@ -2574,7 +2572,7 @@ For (\$i=0; \$i -le 10; \$i++) {
                 commands << newVMString
             } else {
                 //HostGroup deployment NOT TO CLOUD
-                if(hostExternalId) {
+                if (hostExternalId) {
                     commands << "\$vmHost = Get-SCVMHost -ID \"$hostExternalId\""
                     commands << "\$ignore = Set-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration -VMHost \$vmHost"
                     commands << "\$ignore = Update-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration"
@@ -2812,10 +2810,10 @@ For (\$i=0; \$i -le 10; \$i++) {
     }
 
     private getUsername(Cloud cloud) {
-		((cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.username : cloud.getConfigProperty('username')) ?: 'dunno'
+        ((cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.username : cloud.getConfigProperty('username')) ?: 'dunno'
     }
 
     private getPassword(Cloud cloud) {
-		(cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.password : cloud.getConfigProperty('password')
+        (cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.password : cloud.getConfigProperty('password')
     }
 }

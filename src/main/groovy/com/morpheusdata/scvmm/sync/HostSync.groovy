@@ -1,6 +1,5 @@
 package com.morpheusdata.scvmm.sync
 
-import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ComputeUtility
@@ -10,9 +9,9 @@ import com.morpheusdata.model.ComputeCapacityInfo
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.OsType
 import com.morpheusdata.model.projection.ComputeServerIdentityProjection
+import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
-import groovy.util.logging.Slf4j
 
 /**
  * @author rahul.ray
@@ -249,7 +248,7 @@ class HostSync {
                 updates = true
             }
 
-            if(server.uniqueId == null && hostMap.id) {
+            if (server.uniqueId == null && hostMap.id) {
                 server.uniqueId = hostMap.id
                 updates = true
             }

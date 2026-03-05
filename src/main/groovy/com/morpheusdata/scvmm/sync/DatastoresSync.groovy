@@ -1,14 +1,18 @@
 package com.morpheusdata.scvmm.sync
 
-import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.SyncTask
-import com.morpheusdata.model.*
+import com.morpheusdata.model.Cloud
+import com.morpheusdata.model.CloudPool
+import com.morpheusdata.model.ComputeServer
+import com.morpheusdata.model.Datastore
+import com.morpheusdata.model.StorageVolume
+import com.morpheusdata.model.StorageVolumeType
 import com.morpheusdata.model.projection.DatastoreIdentityProjection
+import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
-import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Observable
 
 /**

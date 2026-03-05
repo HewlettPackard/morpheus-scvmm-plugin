@@ -1,12 +1,11 @@
 package com.morpheusdata.scvmm.sync
 
-import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.model.Cloud
+import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
-import groovy.util.logging.Slf4j
 
 class CloudCapabilityProfilesSync {
 
@@ -28,15 +27,15 @@ class CloudCapabilityProfilesSync {
             def server = morpheusContext.services.computeServer.find(new DataQuery().withFilter('cloud.id', scvmmCloud.id))
             def scvmmOpts = apiService.getScvmmZoneAndHypervisorOpts(morpheusContext, scvmmCloud, server)
 
-            if(scvmmCloud.regionCode) {
+            if (scvmmCloud.regionCode) {
                 def cloudResults = apiService.getCloud(scvmmOpts)
-                if(cloudResults.success == true && cloudResults?.cloud?.CapabilityProfiles) {
+                if (cloudResults.success == true && cloudResults?.cloud?.CapabilityProfiles) {
                     scvmmCloud.setConfigProperty('capabilityProfiles', cloudResults?.cloud?.CapabilityProfiles)
                     morpheusContext.services.cloud.save(scvmmCloud)
                 }
             } else {
                 def capabilityProfileResults = apiService.getCapabilityProfiles(scvmmOpts)
-                if(capabilityProfileResults.success == true && capabilityProfileResults?.capabilityProfiles) {
+                if (capabilityProfileResults.success == true && capabilityProfileResults?.capabilityProfiles) {
                     scvmmCloud.setConfigProperty('capabilityProfiles', capabilityProfileResults.capabilityProfiles.collect { it.Name })
                     morpheusContext.services.cloud.save(scvmmCloud)
                 }
