@@ -63,7 +63,7 @@ class TemplatesSync {
                     existingLocations.remove(row)
                 }
             }
-            query = query.withFilter('id', 'in', existingLocations.collect{it.id})
+            query = query.withFilter('id', 'in', existingLocations.collect { it.id })
             def domainRecords = context.async.virtualImage.location.listIdentityProjections(query)
             SyncTask<VirtualImageLocationIdentityProjection, Map, VirtualImageLocation> syncTask = new SyncTask<>(domainRecords, listResults.templates as Collection<Map>)
             syncTask.addMatchFunction { VirtualImageLocationIdentityProjection domainObject, Map cloudItem ->
@@ -108,7 +108,7 @@ class TemplatesSync {
                 def tmpImgProjs = context.async.virtualImage.listIdentityProjections(cloud.id).filter { img ->
                     img.id in imageIds || (!img.systemImage && img.externalId != null && img.externalId in externalIds)
                 }.toList().blockingGet()
-                if(tmpImgProjs) {
+                if (tmpImgProjs) {
                     existingItems = context.async.virtualImage.listById(tmpImgProjs.collect { it.id }).filter { img ->
                         img.id in imageIds || img.imageLocations.size() == 0
                     }.toList().blockingGet()
@@ -264,7 +264,7 @@ class TemplatesSync {
                 def tmpImgProjs = context.async.virtualImage.listIdentityProjections(cloud.id).filter { img ->
                     img.id in imageIds || (!img.systemImage && img.externalId != null && img.externalId in externalIds)
                 }.toList().blockingGet()
-                if(tmpImgProjs) {
+                if (tmpImgProjs) {
                     existingItems = context.async.virtualImage.listById(tmpImgProjs.collect { it.id }).filter { img ->
                         img.id in imageIds || img.imageLocations.size() == 0
                     }.toList().blockingGet()
@@ -468,15 +468,15 @@ class TemplatesSync {
             def volumeConfig = [
                     // Dont replace the Morpheus volume name with the one from SCVMM
                     // name      : diskData.Name,
-                    size      : diskData.TotalSize?.toLong() ?: 0,
-                    rootVolume: diskData.VolumeType == 'BootAndSystem' || !addLocation.volumes?.size(),
+                    size        : diskData.TotalSize?.toLong() ?: 0,
+                    rootVolume  : diskData.VolumeType == 'BootAndSystem' || !addLocation.volumes?.size(),
                     // Note there is no property diskData.deviceName??
-                    deviceName: (diskData.deviceName ?: apiService.getDiskName(diskNumber)),
-                    externalId: diskData.ID,
+                    deviceName  : (diskData.deviceName ?: apiService.getDiskName(diskNumber)),
+                    externalId  : diskData.ID,
                     // To ensure unique take the internalId from the Location property on diskData as this is the fully qualified path
-                    internalId: diskData.Location,
+                    internalId  : diskData.Location,
                     // StorageVolumeType code eg 'scvmm-dynamicallyexpanding-vhd'
-                    storageType: getStorageVolumeType("scvmm-${diskData?.VHDType}-${diskData?.VHDFormat}".toLowerCase()).getId(),
+                    storageType : getStorageVolumeType("scvmm-${diskData?.VHDType}-${diskData?.VHDFormat}".toLowerCase()).getId(),
                     displayOrder: volumes?.size()
             ]
             if (datastore)
@@ -505,7 +505,7 @@ class TemplatesSync {
                 save = true
             }
             // InternalId - Unique Path for the VHD disk file from masterItem.Location
-            if(volume.internalId != masterItem.Location) {
+            if (volume.internalId != masterItem.Location) {
                 volume.internalId = masterItem.Location
                 // volume.name = masterItem.Name
                 save = true
