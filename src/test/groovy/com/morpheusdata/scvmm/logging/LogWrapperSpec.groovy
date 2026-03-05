@@ -1,6 +1,5 @@
 package com.morpheusdata.scvmm.logging
 
-
 import spock.lang.Specification
 
 class LogWrapperSpec extends Specification {

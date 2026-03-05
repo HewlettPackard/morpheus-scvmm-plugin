@@ -100,8 +100,8 @@ dependencies {
     testImplementation 'org.objenesis:objenesis:2.6'
     testImplementation platform("org.spockframework:spock-bom:$spockVersion")
     testImplementation "org.spockframework:spock-core:$spockVersion"
+    // you can remove spock-junit4 if your code does not rely on old JUnit 4 rules
     testImplementation "org.spockframework:spock-junit4"
-    // you can remove this if your code does not rely on old JUnit 4 rules
     testImplementation 'cglib:cglib-nodep:3.2.12'
 
     // Add Jackson dependencies for Spock framework
