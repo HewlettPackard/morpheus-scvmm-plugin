@@ -45,10 +45,10 @@ class PowerShellUtil {
      * @param replacements Map of tokens to replace (e.g., ['<%vmid%>': actualVmId])
      * @return Processed script content
      */
-    static String loadPowerShellScriptWithTokens(String scriptName, Map<String, String> replacements) {
+    static String loadPowerShellScriptWithTokens(String scriptName, Map<String, Object> replacements) {
         String script = loadPowerShellScript(scriptName)
         replacements.each { token, value ->
-            script = script.replace(token, value ?: '')
+            script = script.replace(token, value.toString() ?: '')
         }
         return script
     }

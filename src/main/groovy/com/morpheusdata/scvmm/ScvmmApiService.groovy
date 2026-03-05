@@ -3,6 +3,8 @@
 package com.morpheusdata.scvmm
 
 import com.bertramlabs.plugins.karman.CloudFile
+import com.morpheusdata.scvmm.util.MorpheusUtil
+import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ComputeUtility
@@ -23,7 +25,9 @@ class ScvmmApiService {
     static defaultRoot = 'C:\\morpheus'
 
     def executeCommand(command, opts) {
-        log.debug("Execute PowerShell command, opts: ${opts}\n${command}")
+        // Log command and opts in separate log entries due to truncation issues with a large opts list
+        log.debug("Execute PowerShell command\n${command}")
+        log.debug("PowerShell command opts=${opts}")
         def winrmPort = opts.sshPort && opts.sshPort != 22 ? opts.sshPort : 5985
         long startNanoTime = System.nanoTime()
         def output = morpheusContext.executeWindowsCommand(opts.sshHost, winrmPort?.toInteger(), opts.sshUsername, opts.sshPassword, command, null, false).blockingGet()
@@ -35,6 +39,10 @@ class ScvmmApiService {
         if (output.error) {
             String logError = PowerShellUtil.prettyPrintPowerShellScriptError(output.error)
             log.info("PowerShell script reported warnings and/or errors\n${logError}")
+        }
+
+        if (output.success && output.data) {
+            log.info("PowerShell script response\n${output.data}")
         }
 
         return output
@@ -1866,30 +1874,14 @@ foreach(\$share in \$shares) {
         def busNumber = 0
         def lunNumber = opts.scvmmGeneration == 'generation1' ? 0 : 1
 
-        def command = """\$busNumber = ${busNumber}
-\$lunNumber = ${lunNumber}
-\$externalId = "${opts.externalId}"
-\$VM = Get-SCVirtualMachine -VMMServer localhost -ID \$externalId
-\$success = \$false
-For (\$i=0; \$i -le 10; \$i++) {
-	If (\$success -eq \$false) {
-		\$jobGuid = New-Guid
-		\$ignore = New-SCVirtualDVDDrive -VMMServer localhost -JobGroup \$jobGuid -Bus \$busNumber -LUN \$lunNumber
-		\$ignore = Set-SCVirtualMachine -VM \$VM -JobGroup \$jobGuid
-		if( -not \$? ) {
-			\$lunNumber = \$lunNumber + 1
-			\$ignore = Repair-SCVirtualMachine -VM \$VM -Dismiss -Force
-		} else {
-			\$success = \$true
-		}
-	}
-}
-
-\$report = New-Object -Type PSObject -Property @{
-	'success'=\$success
-	'BUS'=\$busNumber
-	'LUN'=\$lunNumber}
-\$report"""
+        String command = PowerShellUtil.loadPowerShellScriptWithTokens(
+                'createDVD.ps1',
+                [
+                        '<%busNumber%>' : busNumber,
+                        '<%lunNumber%>' : lunNumber,
+                        '<%externalId%>': opts.externalId,
+                ]
+        )
 
         def out = wrapExecuteCommand(generateCommandString(command), opts)
         if (!out.success) {
@@ -2354,10 +2346,12 @@ For (\$i=0; \$i -le 10; \$i++) {
         if (subnetExternalId) {
             commands << "\$VMSubnet = Get-SCVMSubnet -VMMServer localhost -ID \"${subnetExternalId}\""
         }
+        commands << "If (Test-Path variable:VMNetwork) {"
         commands << "If (-not ([string]::IsNullOrEmpty(\$MACAddress))) {"
         commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddress \$MACAddress -MACAddressType \$MACAddressType -VLanEnabled ${vlanEnabled ? "\$true" : "\$false"} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${doStatic && doPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${subnetExternalId ? '-VMSubnet \$VMSubnet' : ''} -VMNetwork \$VMNetwork"
         commands << "} else {"
         commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddressType \$MACAddressType -VLanEnabled ${vlanEnabled ? "\$true" : "\$false"} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${doStatic && doPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${subnetExternalId ? '-VMSubnet \$VMSubnet' : ''} -VMNetwork \$VMNetwork"
+        commands << "}"
         commands << "}"
 
         if (scvmmCapabilityProfile) {
@@ -2659,6 +2653,7 @@ For (\$i=0; \$i -le 10; \$i++) {
     def getScvmmCloudOpts(MorpheusContext context, Cloud cloud, controllerServer) {
         def cloudConfig = cloud.getConfigMap()
         def keyPair = context.services.keyPair.find(new DataQuery().withFilter("accountId", cloud?.account?.id))
+        // TODO: Is privateKey logged?
         return [
                 account         : cloud.account,
                 zoneConfig      : cloudConfig,
