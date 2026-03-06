@@ -104,6 +104,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse<PrepareWorkloadResponse> prepareWorkload(Workload workload, WorkloadRequest workloadRequest, Map opts) {
+        log.error("DBGDBG prepareWorkload")
+        return ServiceResponse.error('prepareWorkload failure')
         log.debug("prepare workload scvmm")
         ServiceResponse<PrepareWorkloadResponse> resp = new ServiceResponse<PrepareWorkloadResponse>(
                 true, // successful
@@ -518,6 +520,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse validateWorkload(Map opts) {
+        log.error("DBGDBG validateWorkload")
+        return ServiceResponse.error('validateWorkload failure')
         return ServiceResponse.success()
     }
 
@@ -533,6 +537,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse<ProvisionResponse> runWorkload(Workload workload, WorkloadRequest workloadRequest, Map opts) {
+        log.error("DBGDBG runWorkload")
+        return ServiceResponse.error('runWorkload failure')
         log.info "runWorkload: ${workload} ${workloadRequest} ${opts}"
 		ProvisionResponse provisionResponse = new ProvisionResponse(
 				success: true,
@@ -1061,6 +1067,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse finalizeWorkload(Workload workload) {
+        log.error("DBGDBG finalizeWorkload")
+        return ServiceResponse.error('finalizeWorkload failure')
 		def scvmmOpts = getAllScvmmOpts(workload)
 		// Fetch the workload again to get the latest configMap with deleteDvdOnComplete
 		def fetchedWorkload = context.async.workload.get(workload.id).blockingGet()
@@ -1081,6 +1089,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse stopWorkload(Workload workload) {
+        log.error("DBGDBG stopWorkload")
+        return ServiceResponse.error('stopWorkload failure')
         def rtn = ServiceResponse.prepare()
         try {
             if (workload.server?.externalId) {
@@ -1198,6 +1208,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse startWorkload(Workload workload) {
+        log.error("DBGDBG startWorkload")
+        return ServiceResponse.error('startWorkload failure')
         log.debug("startWorkload: ${workload?.id}")
         def rtn = ServiceResponse.prepare()
         try {
@@ -1226,6 +1238,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse restartWorkload(Workload workload) {
+        log.error("DBGDBG restartWorkload")
+        return ServiceResponse.error('restartWorkload failure')
         // Generally a call to stopWorkLoad() and then startWorkload()
 		log.info("Executing restartWorkload, args: [server:${workload.name}]")
 		log.debug("Dump of params server: ${workload.dump()}")
@@ -1247,6 +1261,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse removeWorkload(Workload workload, Map opts) {
+        log.error("DBGDBG removeWorkload")
+        return ServiceResponse.error('removeWorkload failure')
         log.debug("removeWorkload: opts: ${opts}")
         ServiceResponse response = ServiceResponse.prepare()
         try {
@@ -1425,6 +1441,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse startServer(ComputeServer computeServer) {
+        log.error("DBGDBG startServer")
+        return ServiceResponse.error('startServer failure')
         log.debug("startServer: computeServer.id: ${computeServer?.id}")
         def rtn = ServiceResponse.prepare()
         try {
