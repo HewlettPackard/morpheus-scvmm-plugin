@@ -14,6 +14,7 @@ import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
 import com.morpheusdata.scvmm.util.PowerShellUtil
 import groovy.json.JsonSlurper
+import groovy.json.JsonOutput
 
 class ScvmmApiService {
     MorpheusContext morpheusContext
