@@ -2654,7 +2654,6 @@ foreach(\$share in \$shares) {
     def getScvmmCloudOpts(MorpheusContext context, Cloud cloud, controllerServer) {
         def cloudConfig = cloud.getConfigMap()
         def keyPair = context.services.keyPair.find(new DataQuery().withFilter("accountId", cloud?.account?.id))
-        // TODO: Is privateKey logged?
         return [
                 account         : cloud.account,
                 zoneConfig      : cloudConfig,
