@@ -79,8 +79,8 @@ dependencies {
     testImplementation 'org.apache.httpcomponents:httpclient:4.5.13'
     testImplementation 'org.apache.httpcomponents:httpcore:4.4.5'
     testImplementation "org.slf4j:slf4j-parent:$slf4jVersion"
-    // Add SLF4J implementation for tests to enable logging in coverage testing
-    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.9'
+    // Use Logback for tests to enable debug logs in coverage testing
+    testRuntimeOnly 'ch.qos.logback:logback-classic:1.4.14'
 
     testImplementation 'net.bytebuddy:byte-buddy:1.9.3'
     testImplementation 'org.objenesis:objenesis:2.6'
@@ -775,3 +775,4 @@ def displayCodenarcResults(buildDir) {
 
     return codenarcData
 }
+

@@ -3,8 +3,6 @@
 package com.morpheusdata.scvmm
 
 import com.bertramlabs.plugins.karman.CloudFile
-import com.morpheusdata.scvmm.util.MorpheusUtil
-import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ComputeUtility
@@ -12,9 +10,10 @@ import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.util.MorpheusUtil
 import com.morpheusdata.scvmm.util.PowerShellUtil
-import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 
 class ScvmmApiService {
     MorpheusContext morpheusContext
@@ -1856,7 +1855,7 @@ foreach(\$share in \$shares) {
         InputStream inputStream = new ByteArrayInputStream(content.getBytes())
         def command = "\$ignore = mkdir \"${diskFolder}\""
         def dirResults = wrapExecuteCommand(generateCommandString(command), opts)
-        def fileResults = morpheusContext.services.fileCopy.copyToServer(opts.hypervisor, "${opts.fileName}", "${diskFolder}\\${opts.fileName}", inputStream, opts.cloudConfigBytes?.size(), null, true)
+        def fileResults = MorpheusUtil.copyToServer(morpheusContext, opts.hypervisor, "${opts.fileName}", "${diskFolder}\\${opts.fileName}", inputStream, opts.cloudConfigBytes?.size(), null, true)
         log.debug("importScript: fileResults.success: ${fileResults.success}")
         if (!fileResults.success) {
             throw new Exception("Script Upload to SCVMM Host Failed. Perhaps an agent communication issue...${opts.hypervisor.name}")
@@ -1898,7 +1897,7 @@ foreach(\$share in \$shares) {
         InputStream inputStream = new ByteArrayInputStream(cloudConfigBytes)
         def command = "\$ignore = mkdir \"${diskFolder}\""
         def dirResults = wrapExecuteCommand(generateCommandString(command), opts)
-        def fileResults = morpheusContext.services.fileCopy.copyToServer(opts.hypervisor, "config.iso", "${diskFolder}\\config.iso", inputStream, cloudConfigBytes?.size())
+        def fileResults = MorpheusUtil.copyToServer(morpheusContext, opts.hypervisor, "config.iso", "${diskFolder}\\config.iso", inputStream, cloudConfigBytes?.size())
         log.debug("importAndMountIso: fileResults?.success: ${fileResults?.success}")
         if (!fileResults.success) {
             throw new Exception("ISO Upload to SCVMM Host Failed. Perhaps an agent communication issue...${opts.hypervisor.name}")
@@ -2196,7 +2195,7 @@ foreach(\$share in \$shares) {
         }
         fileList.each { Map fileItem ->
             Long contentLength = (Long) fileItem.contentLength
-            def fileResults = morpheusContext.services.fileCopy.copyToServer(opts.hypervisor, fileItem.copyRequestFileName, fileItem.targetPath, fileItem.inputStream, contentLength, null, true)
+            def fileResults = MorpheusUtil.copyToServer(morpheusContext, opts.hypervisor, fileItem.copyRequestFileName, fileItem.targetPath, fileItem.inputStream, contentLength, null, true)
             rtn.success = fileResults.success
         }
 
