@@ -23,11 +23,13 @@ class MorpheusUtil {
      * Only intended for use by unit tests to verify thread creation, start, and termination.
      * Production code should leave this null.
      */
-    @SuppressWarnings('PropertyName')
+    @SuppressWarnings('FieldName')
+    @SuppressWarnings('PrivateFieldCouldBeFinal')
     private static Closure _testWatchdogObserver = null
 
     // Watchdog thread timing constants
     // Do not declare WATCHDOG_INITIAL_SLEEP_MS as final so that it can be modified by unit tests
+    @SuppressWarnings('FieldName')
     @SuppressWarnings('PrivateFieldCouldBeFinal')
     private static long WATCHDOG_INITIAL_SLEEP_MS = 2000L
     private static final long WATCHDOG_MAX_SLEEP_MS = 30000L
