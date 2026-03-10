@@ -12,7 +12,6 @@ import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
-import groovy.util.logging.Slf4j
 
 class ScvmmBackupExecutionProvider implements BackupExecutionProvider {
 
