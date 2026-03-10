@@ -3,9 +3,9 @@
 package com.morpheusdata.scvmm.util
 
 import com.morpheusdata.response.ServiceResponse
-import groovy.transform.CompileStatic
+import groovy.transform.CompileDynamic
 
-@CompileStatic
+@CompileDynamic
 class ValidationUtility {
     /**
      * Validates the network configuration for a VM provisioning request.
@@ -18,7 +18,7 @@ class ValidationUtility {
 
         // Make sure there is a network specified
         boolean networkFound = opts.networkInterfaces.any { networkInterface ->
-            ((networkInterface as Map).network as Map)?.id != null
+            networkInterface?.network?.id != null
         }
         if (!networkFound) {
             return ServiceResponse.error(
