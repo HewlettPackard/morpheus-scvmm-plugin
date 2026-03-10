@@ -41,6 +41,10 @@ class MorpheusUtil {
             ComputeServer server,
             Boolean fullReload = false
     ) {
+        log.error("DBGDBG saveAndGetMorpheusServer ${server?.id} stack trace:\n" +
+                Thread.currentThread().stackTrace*.toString().join('\n')
+        )
+
         def saveResult = context.async.computeServer.bulkSave([server]).blockingGet()
         def updatedServer
         if (saveResult.success == true) {
@@ -105,7 +109,7 @@ class MorpheusUtil {
                      sleepTime = Math.min(sleepTime * 2, WATCHDOG_MAX_SLEEP_MS)) {
                     if (System.currentTimeMillis() - startTime >= MAX_OPERATION_TIME_MS) {
                         log.debug('copyToServer has been running for over an hour, stopping watchdog to prevent ' +
-                                'infinite logging')
+                                'continued logging')
                         return
                     }
                     Thread.sleep(sleepTime)
@@ -113,7 +117,6 @@ class MorpheusUtil {
                 }
             } catch (InterruptedException ignored) {
                 // Thread was interrupted, exit gracefully
-                log.debug("copyToServer watchdog thread signaled to exit")
             } catch (Exception ex) {
                 log.warn("copyToServer unexpected exception in watchdog thread: ${ex.message}", ex)
             }
@@ -145,13 +148,10 @@ class MorpheusUtil {
         } finally {
             // Signal the watchdog thread to stop and wait for it to exit
             isRunning.set(false)
-            log.debug("Signaled copyToServer watchdog thread to stop, waiting for it to exit...")
             watchdog.interrupt()
             watchdog.join(WATCHDOG_JOIN_TIMEOUT_MS)
             if (watchdog.alive) {
                 log.warn("copyToServer watchdog thread did not exit within timeout")
-            } else {
-                log.debug("copyToServer watchdog thread exited successfully")
             }
         }
     }

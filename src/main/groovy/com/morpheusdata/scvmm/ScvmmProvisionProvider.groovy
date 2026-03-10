@@ -44,6 +44,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         this.apiService = new ScvmmApiService(context)
     }
 
+    @Override
+    Boolean supportsAgent() {
+        return true
+    }
+
     /**
      * Initialize a compute server as a Hypervisor. Common attributes defined in the {@link InitializeHypervisorResponse} will be used
      * to update attributes on the hypervisor, including capacity information. Additional details can be updated by the plugin provider
@@ -520,6 +525,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse validateWorkload(Map opts) {
+        log.debug "validateWorkload: ${opts}"
+        return ServiceResponse.error(
+                'This is the bogus error',
+                [
+                        'networkInterfaces': "At least one network is required."
+                ]
+        )
         return ServiceResponse.success()
     }
 
@@ -628,26 +640,21 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 }
                 log.error("DBGDBG, scvmmOpts has hypervisor = ${scvmmOpts.containsKey('hypervisor')}")
 
-                ComputeServer computeServer = scvmmOpts.hypervisor as ComputeServer
-
-                for (int i = 15999; i <= 16000; i++) {
-                    byte[] buffer = (0..<i).collect { (byte) ('A'.charAt(0) + (it % 26)) } as byte[]
-                    InputStream inputStream = new ByteArrayInputStream(buffer)
-                    String testFile = "testFile-${i}.bin"
-                    long start = System.currentTimeMillis()
-                    ServiceResponse response = MorpheusUtil.copyToServer(
-                            context,
-                            computeServer,
-                            testFile,
-                            "c:\\VirtualDisks\\morpheus\\${testFile}",
-                            inputStream,
-                            buffer.size()
-                    )
-                    long elapsed = System.currentTimeMillis() - start
-                    log.error("copyToServer ${testFile} size: ${buffer.size()} elapsed: ${elapsed}ms success: ${response.success}")
-                }
-
-                throw new Exception('bogus exception')
+//                ComputeServer computeServer = scvmmOpts.hypervisor as ComputeServer
+//                for (int i = 15999; i <= 16000; i++) {
+//                    byte[] buffer = (0..<i).collect { (byte) ('A'.charAt(0) + (it % 26)) } as byte[]
+//                    InputStream inputStream = new ByteArrayInputStream(buffer)
+//                    String testFile = "testFileB-${i}.bin"
+//                    ServiceResponse response = MorpheusUtil.copyToServer(
+//                            context,
+//                            computeServer,
+//                            testFile,
+//                            "c:\\VirtualDisks\\morpheus\\${testFile}",
+//                            inputStream,
+//                            buffer.size()
+//                    )
+//                }
+//                throw new Exception('bogus exception')
 
                 scvmmOpts.scvmmGeneration = virtualImage?.getConfigProperty('generation') ?: 'generation1'
                 scvmmOpts.isSyncdImage = virtualImage?.refType == 'ComputeZone'
@@ -1289,7 +1296,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
         } catch (e) {
             log.error("removeWorkload error: ${e}", e)
-            response.error = e.message
+            response.msg = e.message
         }
         return response
     }
@@ -1310,16 +1317,23 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         opts.waitForIp = true
         def serverDetails = apiService.checkServerReady(opts, fetchedServer.externalId)
         if (serverDetails.success == true) {
+            // DBGDBG
+            log.error("DBGDBG, wait for Agent Install 1")
             def agentWait = waitForAgentInstall(fetchedServer)
+            log.error("DBGDBG, wait for Agent Install 2")
             if (agentWait.success) {
                 fetchedServer = context.async.computeServer.get(server.id).blockingGet()
             }
+            log.error("DBGDBG, wait for Agent Install 3")
             fetchedServer.externalIp = serverDetails.server?.ipAddress
             fetchedServer.powerState = ComputeServer.PowerState.on
             fetchedServer = MorpheusUtil.saveAndGetMorpheusServer(context, fetchedServer, true)
+            log.error("DBGDBG, wait for Agent Install 4")
             def newIpAddress = serverDetails.server?.ipAddress
             def macAddress = serverDetails.server?.macAddress
+            log.error("DBGDBG, wait for Agent Install 5")
             applyComputeServerNetworkIp(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
+            log.error("DBGDBG, wait for Agent Install 6")
             return new ServiceResponse<ProvisionResponse>(true, null, null,
                     new ProvisionResponse(privateIp: fetchedServer.internalIp, publicIp: fetchedServer.externalIp, success: true))
         } else {
@@ -1328,7 +1342,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
     }
 
-    def waitForAgentInstall(ComputeServer server, int maxAttempts = 1800) {
+    // 1800 seconds is 30 minutes which is a long time to wait for agent to get installed!!!
+    def waitForAgentInstall(ComputeServer server, int maxAttempts = 10 /*1800*/) {
         def rtn = [success: false]
         try {
             int attempts = 0

@@ -286,8 +286,10 @@ class VirtualMachineSync {
                             }
 
                             //plan
+                            log.error(">>> DBGDBG")
                             ServicePlan plan = SyncUtils.findServicePlanBySizing(availablePlans, currentServer.maxMemory, currentServer.maxCores,
                                     null, fallbackPlan, currentServer.plan, currentServer.account, [])
+                            log.error("<<< DBGDBG")
                             if (currentServer.plan?.id != plan?.id) {
                                 currentServer.plan = plan
                                 save = true
@@ -315,6 +317,7 @@ class VirtualMachineSync {
         } catch (Exception e) {
             log.error "Error in updating virtual machines: ${e.message}", e
         }
+        log.debug("Exiting VirtualMachineSync >> updateMatchedVirtualMachines() called")
     }
 
     private void updateWorkloadAndInstanceStatuses(ComputeServer server, Workload.Status workloadStatus,

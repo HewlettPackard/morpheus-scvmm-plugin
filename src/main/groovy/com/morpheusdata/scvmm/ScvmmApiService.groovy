@@ -1658,10 +1658,18 @@ Status=\$job.Status.toString()
                 def serverDetail = getServerDetails(opts, vmId)
                 if (serverDetail.success == true && serverDetail.server) {
                     def ipAddress = serverDetail.server?.internalIp ?: server?.externalIp
-                    log.debug "ipAddress found: ${ipAddress}"
+                    log.debug "DBGDBG ipAddress found 1: ${ipAddress}"
+//                    ipAddress = ipAddress ?: '127.0.0.1' // DBGDBG
+                    ipAddress = ipAddress ?: '192.168.0.64' // DBGDBG
+                    log.debug "DBGDBG ipAddress found 2: ${ipAddress}"
                     if (ipAddress) {
                         server.internalIp = ipAddress
                     }
+
+                    log.error("DBGDBG, waitForIp=${waitForIp}")
+                    log.error("DBGDBG stack trace:\n" +
+                            Thread.currentThread().stackTrace*.toString().join('\n')
+                    )
 
                     if (waitForIp && !ipAddress) {
                         // Keep waiting
@@ -1680,7 +1688,7 @@ Status=\$job.Status.toString()
                             pending = false
                         } else {
                             log.debug("check server loading server: ip: ${server.internalIp}")
-                            if (server.internalIp) {
+                            if (server.internalIp || true) { // DBGDBG
                                 rtn.success = true
                                 rtn.server = serverDetail.server
                                 rtn.server.ipAddress = ipAddress ?: server.internalIp
@@ -1694,13 +1702,16 @@ Status=\$job.Status.toString()
                     }
                 }
 
+                // 300 attempts * 5 second delay between attempt is 25 minutes!!!
                 attempts++
-                if (attempts > 300 || notFoundAttempts > 10)
+                if (attempts > 10 || notFoundAttempts > 10) // DBGDBG
                     pending = false
+                log.error("DBGDBG pending=${pending}")
             }
         } catch (e) {
             log.error("An Exception Has Occurred", e)
         }
+        log.error("DBGDBG Returning from checkServerReady")
         return rtn
     }
 
@@ -1729,7 +1740,7 @@ Status=\$job.Status.toString()
         try {
             def command = """\$VM = Get-SCVirtualMachine -VMMServer localhost  -ID \"${vmId}\"
 if(\$VM.Status -ne 'PowerOff') { 
-	\$ignore = Stop-SCVirtualMachine -VM \$VM; 
+	\$ignore = Stop-SCVirtualMachine -VM \$VM;
 } \$true """
             def out = wrapExecuteCommand(generateCommandString(command), opts)
             rtn.success = out.success
