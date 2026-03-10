@@ -2,8 +2,6 @@ package com.morpheusdata.scvmm
 
 import com.morpheusdata.PrepareHostResponse
 import com.morpheusdata.core.AbstractProvisionProvider
-import java.time.LocalTime
-import java.time.format.DateTimeFormatter
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.Plugin
 import com.morpheusdata.core.data.DataAndFilter
@@ -14,7 +12,29 @@ import com.morpheusdata.core.providers.HostProvisionProvider
 import com.morpheusdata.core.providers.ProvisionProvider
 import com.morpheusdata.core.providers.WorkloadProvisionProvider
 import com.morpheusdata.core.util.ComputeUtility
-import com.morpheusdata.model.*
+import com.morpheusdata.model.Cloud
+import com.morpheusdata.model.ComputeCapacityInfo
+import com.morpheusdata.model.ComputeServer
+import com.morpheusdata.model.ComputeServerInterface
+import com.morpheusdata.model.ComputeServerType
+import com.morpheusdata.model.ComputeTypeSet
+import com.morpheusdata.model.Datastore
+import com.morpheusdata.model.HostType
+import com.morpheusdata.model.Icon
+import com.morpheusdata.model.Instance
+import com.morpheusdata.model.NetAddress
+import com.morpheusdata.model.OptionType
+import com.morpheusdata.model.OsType
+import com.morpheusdata.model.PlatformType
+import com.morpheusdata.model.ProcessEvent
+import com.morpheusdata.model.ResourcePermission
+import com.morpheusdata.model.ServicePlan
+import com.morpheusdata.model.StorageVolume
+import com.morpheusdata.model.StorageVolumeType
+import com.morpheusdata.model.VirtualImage
+import com.morpheusdata.model.VirtualImageLocation
+import com.morpheusdata.model.Workload
+import com.morpheusdata.model.WorkloadType
 import com.morpheusdata.model.provisioning.HostRequest
 import com.morpheusdata.model.provisioning.WorkloadRequest
 import com.morpheusdata.request.ResizeRequest
@@ -25,6 +45,7 @@ import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
 import com.morpheusdata.scvmm.util.MorpheusUtil
+import com.morpheusdata.scvmm.util.ValidationUtility
 import groovy.json.JsonSlurper
 
 class ScvmmProvisionProvider extends AbstractProvisionProvider implements WorkloadProvisionProvider, HostProvisionProvider, ProvisionProvider.HypervisorProvisionFacet, HostProvisionProvider.ResizeFacet, WorkloadProvisionProvider.ResizeFacet, ProvisionProvider.BlockDeviceNameFacet {
@@ -526,12 +547,14 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     @Override
     ServiceResponse validateWorkload(Map opts) {
         log.debug "validateWorkload: ${opts}"
-        return ServiceResponse.error(
-                'This is the bogus error',
-                [
-                        'networkInterfaces': "At least one network is required."
-                ]
-        )
+        ServiceResponse response
+
+        // Validate network configuration
+        response = ValidationUtility.validateNetworkConfig(opts)
+        if (!response.success) {
+            return response
+        }
+
         return ServiceResponse.success()
     }
 
