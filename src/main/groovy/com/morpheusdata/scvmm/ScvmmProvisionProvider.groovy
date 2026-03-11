@@ -550,7 +550,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         ServiceResponse response
 
         // Validate network configuration
-        response = ValidationUtility.validateNetworkConfig(opts)
+        // response = ValidationUtility.validateNetworkConfig(opts)
+        // if (!response.success) {
+        //     return response
+        // }
+
+        response = ValidationUtility.validateImage(opts)
         if (!response.success) {
             return response
         }
@@ -573,8 +578,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         log.info "runWorkload: ${workload} ${workloadRequest} ${opts}"
         ProvisionResponse provisionResponse = new ProvisionResponse(
                 success: true,
-                installAgent: !opts?.noAgent,
-                noAgent: opts?.noAgent
+                installAgent: false, // DBGDBG !opts?.noAgent,
+                noAgent: true, // DBGDBG opts?.noAgent
         )
         ServiceResponse<ProvisionResponse> rtn = new ServiceResponse()
         def server = workload.server
@@ -661,8 +666,6 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 if (containerConfig.template) {
                     virtualImage = context.services.virtualImage.get(containerConfig.template?.toLong())
                 }
-                log.error("DBGDBG, scvmmOpts has hypervisor = ${scvmmOpts.containsKey('hypervisor')}")
-
 //                ComputeServer computeServer = scvmmOpts.hypervisor as ComputeServer
 //                for (int i = 15999; i <= 16000; i++) {
 //                    byte[] buffer = (0..<i).collect { (byte) ('A'.charAt(0) + (it % 26)) } as byte[]
@@ -832,7 +835,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 workloadConfig.deleteDvdOnComplete = createResults.deleteDvdOnComplete
                 workload.setConfigMap(workloadConfig)
                 context.async.workload.save(workload).blockingGet()
-                if (createResults.success == true) {
+                if (!createResults.success) {
+                    provisionResponse.success = false
+                    provisionResponse.message ?= createResults.errorMsg ?: 'Failed to create server'
+                } else {
                     node = context.services.computeServer.get(nodeId)
                     if (createResults.server) {
                         /*if (server.cloud.getConfigProperty('enableVnc')) {
@@ -1334,34 +1340,32 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse<ProvisionResponse> getServerDetails(ComputeServer server) {
+        log.debug("getServerDetails: name=${server?.name}, id=${server?.id}, externalId=${server?.externalId}, " +
+                "internalIp=${server?.internalIp}, externalIp=${server?.externalIp}, " +
+                "agentInstalled=${server?.agentInstalled}")
         def fetchedServer = context.async.computeServer.get(server.id).blockingGet()
         def opts = fetchScvmmConnectionDetails(fetchedServer)
         opts.server = fetchedServer
         opts.waitForIp = true
         def serverDetails = apiService.checkServerReady(opts, fetchedServer.externalId)
         if (serverDetails.success == true) {
-            // DBGDBG
-            log.error("DBGDBG, wait for Agent Install 1")
             def agentWait = waitForAgentInstall(fetchedServer)
-            log.error("DBGDBG, wait for Agent Install 2")
             if (agentWait.success) {
                 fetchedServer = context.async.computeServer.get(server.id).blockingGet()
             }
-            log.error("DBGDBG, wait for Agent Install 3")
             fetchedServer.externalIp = serverDetails.server?.ipAddress
             fetchedServer.powerState = ComputeServer.PowerState.on
             fetchedServer = MorpheusUtil.saveAndGetMorpheusServer(context, fetchedServer, true)
-            log.error("DBGDBG, wait for Agent Install 4")
             def newIpAddress = serverDetails.server?.ipAddress
             def macAddress = serverDetails.server?.macAddress
-            log.error("DBGDBG, wait for Agent Install 5")
             applyComputeServerNetworkIp(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
-            log.error("DBGDBG, wait for Agent Install 6")
+            log.debug("Server is ready with IP: ${newIpAddress}, macAddress: ${macAddress}")
             return new ServiceResponse<ProvisionResponse>(true, null, null,
                     new ProvisionResponse(privateIp: fetchedServer.internalIp, publicIp: fetchedServer.externalIp, success: true))
         } else {
-            return new ServiceResponse(success: false, msg: serverDetails.message ?: 'Failed to get server details',
-                    error: serverDetails.message, data: serverDetails)
+            String errorMsg = serverDetails.message ?: 'Failed to get server details'
+            log.error("getServerDetails failed: ${errorMsg}")
+            return new ServiceResponse(success: false, msg: errorMsg, error: errorMsg, data: serverDetails)
         }
     }
 
@@ -2198,7 +2202,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     @Override
     ServiceResponse finalizeHost(ComputeServer server) {
         ServiceResponse rtn = ServiceResponse.prepare()
-        log.debug("finalizeHost: ${server?.id}")
+        log.debug("finalizeHost: name=${server?.name}, id=${server?.id}, externalId=${server?.externalId}, " +
+                "internalIp=${server?.internalIp}, externalIp=${server?.externalIp}, " +
+                "agentInstalled=${server?.agentInstalled}")
         try {
             def fetchedServer = context.async.computeServer.get(server.id).blockingGet()
             LinkedHashMap<String, Object> scvmmOpts = fetchScvmmConnectionDetails(fetchedServer)
@@ -2212,6 +2218,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 def macAddress = serverDetail.server?.macAddress
                 def savedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
                 context.async.computeServer.save(savedServer).blockingGet()
+                log.debug("finalizeHost completed with IP: ${newIpAddress}, macAddress: ${macAddress}")
                 rtn.success = true
             }
         } catch (e) {

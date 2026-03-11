@@ -327,6 +327,7 @@ class ScvmmApiService {
             }
         } catch (e) {
             log.error("createServer error: ${e}", e)
+            rtn.errorMsg ?= e.message
         }
         return rtn
     }
@@ -1025,7 +1026,7 @@ Get-SCLogicalNetwork -VMMServer localhost -Cloud \$cloud | Select ID,Name"""
                 if (out.success && out.exitCode == '0' && out.data?.size() > 0) {
                     def logicalNetworks = out.data
                     command = generateCommandString("""\$report = @()
-\$networks = Get-SCVMNetwork -VMMServer localhost | where {\$_.IsolationType -ne "NoIsolation"} | Select ID,Name,LogicalNetwork,VMSubnet | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
+\$networks = Get-SCVMNetwork -VMMServer localhost | where {\$_.IsolationType -ne "NoIsolationDBGDBG"} | Select ID,Name,LogicalNetwork,VMSubnet | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
 foreach (\$network in \$networks) {
 	\$logicalNetwork = \$network.LogicalNetwork
 	\$data = New-Object PSObject -property @{
@@ -1659,17 +1660,14 @@ Status=\$job.Status.toString()
                 if (serverDetail.success == true && serverDetail.server) {
                     def ipAddress = serverDetail.server?.internalIp ?: server?.externalIp
                     log.debug "DBGDBG ipAddress found 1: ${ipAddress}"
-//                    ipAddress = ipAddress ?: '127.0.0.1' // DBGDBG
-                    ipAddress = ipAddress ?: '192.168.0.64' // DBGDBG
-                    log.debug "DBGDBG ipAddress found 2: ${ipAddress}"
                     if (ipAddress) {
                         server.internalIp = ipAddress
                     }
 
                     log.error("DBGDBG, waitForIp=${waitForIp}")
-                    log.error("DBGDBG stack trace:\n" +
-                            Thread.currentThread().stackTrace*.toString().join('\n')
-                    )
+//                    log.error("DBGDBG stack trace:\n" +
+//                            Thread.currentThread().stackTrace*.toString().join('\n')
+//                    )
 
                     if (waitForIp && !ipAddress) {
                         // Keep waiting
@@ -2353,18 +2351,15 @@ foreach(\$share in \$shares) {
         commands << "\$ignore = New-SCVirtualScsiAdapter -VMMServer localhost -JobGroup $hardwareGuid -AdapterID 7 -ShareVirtualScsiAdapter \$false -ScsiControllerType DefaultTypeNoType"
         if (networkExternalId) {
             commands << "\$VMNetwork = Get-SCVMNetwork -VMMServer localhost -ID \"${networkExternalId}\""
+            commands << "If (-not ([string]::IsNullOrEmpty(\$MACAddress))) {"
+            commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddress \$MACAddress -MACAddressType \$MACAddressType -VLanEnabled ${vlanEnabled ? "\$true" : "\$false"} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${doStatic && doPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${subnetExternalId ? '-VMSubnet \$VMSubnet' : ''} -VMNetwork \$VMNetwork"
+            commands << "} else {"
+            commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddressType \$MACAddressType -VLanEnabled ${vlanEnabled ? "\$true" : "\$false"} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${doStatic && doPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${subnetExternalId ? '-VMSubnet \$VMSubnet' : ''} -VMNetwork \$VMNetwork"
+            commands << "}"
         }
         if (subnetExternalId) {
             commands << "\$VMSubnet = Get-SCVMSubnet -VMMServer localhost -ID \"${subnetExternalId}\""
         }
-        commands << "If (Test-Path variable:VMNetwork) {"
-        commands << "If (-not ([string]::IsNullOrEmpty(\$MACAddress))) {"
-        commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddress \$MACAddress -MACAddressType \$MACAddressType -VLanEnabled ${vlanEnabled ? "\$true" : "\$false"} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${doStatic && doPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${subnetExternalId ? '-VMSubnet \$VMSubnet' : ''} -VMNetwork \$VMNetwork"
-        commands << "} else {"
-        commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddressType \$MACAddressType -VLanEnabled ${vlanEnabled ? "\$true" : "\$false"} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${doStatic && doPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${subnetExternalId ? '-VMSubnet \$VMSubnet' : ''} -VMNetwork \$VMNetwork"
-        commands << "}"
-        commands << "}"
-
         if (scvmmCapabilityProfile) {
             commands << "\$CapabilityProfile = Get-SCCapabilityProfile -VMMServer localhost | where {\$_.Name -eq \"${scvmmCapabilityProfile?.trim()}\"}"
         }

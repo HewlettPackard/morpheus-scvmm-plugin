@@ -41,10 +41,6 @@ class MorpheusUtil {
             ComputeServer server,
             Boolean fullReload = false
     ) {
-        log.error("DBGDBG saveAndGetMorpheusServer ${server?.id} stack trace:\n" +
-                Thread.currentThread().stackTrace*.toString().join('\n')
-        )
-
         def saveResult = context.async.computeServer.bulkSave([server]).blockingGet()
         def updatedServer
         if (saveResult.success == true) {

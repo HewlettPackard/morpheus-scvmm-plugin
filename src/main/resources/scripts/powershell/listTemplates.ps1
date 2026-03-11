@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $report = @()
+$VMTemplates = Get-SCVMTemplate -VMMServer localhost -All | Where-Object { $_.ID -ne $_.Name -and $_.Status -eq 'Normal' }
 foreach ($Template in $VMTemplates) {
         $data = New-Object PSObject -property @{
                 ID              = $Template.ID

@@ -286,10 +286,8 @@ class VirtualMachineSync {
                             }
 
                             //plan
-                            log.error(">>> DBGDBG")
                             ServicePlan plan = SyncUtils.findServicePlanBySizing(availablePlans, currentServer.maxMemory, currentServer.maxCores,
                                     null, fallbackPlan, currentServer.plan, currentServer.account, [])
-                            log.error("<<< DBGDBG")
                             if (currentServer.plan?.id != plan?.id) {
                                 currentServer.plan = plan
                                 save = true
