@@ -20,15 +20,19 @@ import com.morpheusdata.scvmm.logging.LogInterceptor
 import com.morpheusdata.scvmm.logging.LogWrapper
 
 class ScvmmPlugin extends Plugin {
+    private static final String PLUGIN_CODE = 'morpheus-scvmm-plugin'
+    private static final String PLUGIN_NAME = 'SCVMM'
+    private static final String PLUGIN_DESCRIPTION = 'Plugin for Microsoft SCVMM Integration'
 
     @Override
     String getCode() {
-        return 'morpheus-scvmm-plugin'
+        return PLUGIN_CODE
     }
 
     @Override
     void initialize() {
-        this.setName("SCVMM")
+        this.name = PLUGIN_NAME
+        this.description = PLUGIN_DESCRIPTION
         LogInterceptor.injectIn(ScvmmCloudProvider, LogWrapper.instance)
         LogInterceptor.injectIn(ScvmmProvisionProvider, LogWrapper.instance)
 //        LogInterceptor.injectIn(ScvmmBackupProvider, LogWrapper.instance)

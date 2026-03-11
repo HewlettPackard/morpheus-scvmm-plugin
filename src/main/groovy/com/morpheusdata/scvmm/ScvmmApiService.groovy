@@ -42,7 +42,7 @@ class ScvmmApiService {
         }
 
         if (output.success && output.data) {
-            log.info("PowerShell script response\n${output.data}")
+            log.debug("PowerShell script response\n${output.data}")
         }
 
         return output
@@ -641,7 +641,14 @@ if(\$cloud) {
         def out = wrapExecuteCommand(command, opts)
         log.debug("out: ${out.data}")
         if (out.success) {
-            rtn.templates = out.data
+            // Filter out temporary templates created by SCVMM during provisioning; not intended as user-facing options
+            rtn.templates = (out.data ?: []).findAll { template ->
+                boolean isTemporaryTemplate = (template?.Name ?: '') ==~ ScvmmConstants.TEMPORARY_TEMPLATE_UUID_PATTERN
+                if (isTemporaryTemplate) {
+                    log.debug("Filtered temporary template: ${template?.Name}")
+                }
+                !isTemporaryTemplate
+            }
             rtn.success = true
         }
         return rtn

@@ -311,7 +311,17 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 
         try {
             def results = morpheusContext.services.virtualImage.listIdentityProjections(query.withSort("name", DataQuery.SortOrder.asc))
-            return results.collect { vimage -> [name: vimage.name, value: vimage.id] }
+
+            // Filter out temporary templates created by SCVMM during provisioning; not intended as user-facing options
+            def filteredResults = results.findAll { image ->
+                boolean isTemporaryTemplate = (image.name ?: '') ==~ ScvmmConstants.TEMPORARY_TEMPLATE_UUID_PATTERN
+                if (isTemporaryTemplate) {
+                    log.debug("Filtered temporary template image: name=${image.name}, id=${image.id}")
+                }
+                !isTemporaryTemplate
+            }
+
+            return filteredResults.collect { vimage -> [name: vimage.name, value: vimage.id] }
         } catch (e) {
             log.error("scvmmVirtualImages error: ${e}", e)
             return []
