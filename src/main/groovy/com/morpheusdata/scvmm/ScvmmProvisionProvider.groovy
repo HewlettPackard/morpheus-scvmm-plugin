@@ -550,10 +550,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         ServiceResponse response
 
         // Validate network configuration
-        // response = ValidationUtility.validateNetworkConfig(opts)
-        // if (!response.success) {
-        //     return response
-        // }
+        response = ValidationUtility.validateNetworkConfig(opts)
+        if (!response.success) {
+            return response
+        }
 
         response = ValidationUtility.validateImage(opts)
         if (!response.success) {

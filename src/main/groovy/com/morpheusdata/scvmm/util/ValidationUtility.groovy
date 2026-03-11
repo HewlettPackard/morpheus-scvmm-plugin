@@ -26,11 +26,24 @@ class ValidationUtility {
      */
     static ServiceResponse validateNetworkConfig(Map opts) {
         // Make sure there is a network specified
-        boolean networkFound = opts.networkInterfaces.any { networkInterface ->
-            ((networkInterface as Map)?.network as Map)?.id != null
+        boolean networkFound = opts?.networkInterfaces?.any { networkInterface ->
+            if (!(networkInterface instanceof Map)) {
+                log.warn("networkInterface validation failed: Invalid entry: ${networkInterface}")
+                return false
+            }
+            Map networkInterfaceMap = networkInterface as Map
+
+            if (!(networkInterfaceMap.network instanceof Map)) {
+                log.warn("network validation failed: Invalid entry: ${networkInterfaceMap}")
+                return false
+            }
+            Map networkMap = networkInterfaceMap.network as Map
+
+            return networkMap.id != null
         }
+
         if (!networkFound) {
-            log.warn('Network validation failed: No valid network interfaces found in the configuration')
+            log.error('Network validation failed: No valid network interfaces found in the configuration')
             return ServiceResponse.error(
                     VALIDATION_ERROR,
                     [(FIELD_NAME_NETWORK_INTERFACES): 'At least one network is required']
@@ -49,7 +62,7 @@ class ValidationUtility {
     static ServiceResponse validateImage(Map opts) {
         // Make sure there is a virtual image specified
         if (!(opts?.config as Map)?.template) {
-            log.warn('Image validation failed: No imageId provided in the configuration')
+            log.error('Image validation failed: No imageId provided in the configuration')
             return ServiceResponse.error(
                     VALIDATION_ERROR,
                     [(FIELD_NAME_TEMPLATE): 'A virtual machine image must be selected']
