@@ -547,20 +547,24 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     @Override
     ServiceResponse validateWorkload(Map opts) {
         log.debug "validateWorkload: ${opts}"
-        ServiceResponse response
 
-        // Validate network configuration
-        response = ValidationUtility.validateNetworkConfig(opts)
-        if (!response.success) {
-            return response
+        // Run all validators and gather their responses
+        List<ServiceResponse> responses = [
+                ValidationUtility.validateNetworkConfig(opts),
+                ValidationUtility.validateImage(opts)
+        ]
+
+        // Combine errors from all responses into a single map
+        Map<String, String> combinedErrors = [:]
+        responses.each { ServiceResponse resp ->
+            if (!resp?.success && resp?.errors instanceof Map) {
+                combinedErrors.putAll(resp.errors)
+            }
         }
 
-        response = ValidationUtility.validateImage(opts)
-        if (!response.success) {
-            return response
-        }
-
-        return ServiceResponse.success()
+        return combinedErrors
+                ? ServiceResponse.error(ValidationUtility.VALIDATION_ERROR, combinedErrors)
+                : ServiceResponse.success()
     }
 
     /**
