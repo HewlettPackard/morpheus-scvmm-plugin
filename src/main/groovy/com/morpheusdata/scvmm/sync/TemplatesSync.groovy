@@ -515,6 +515,12 @@ class TemplatesSync {
                 volume.rootVolume = isRootVolume
                 save = true
             }
+            // Ensure removable is set correctly based on rootVolume status
+            def shouldBeRemovable = !isRootVolume
+            if (volume.removable != shouldBeRemovable) {
+                volume.removable = shouldBeRemovable
+                save = true
+            }
             //StorageVolumeType
             if (masterItem?.VHDType && masterItem?.VHDFormat) {
                 def storageVolumeType = getStorageVolumeType("scvmm-${masterItem?.VHDType}-${masterItem?.VHDFormat}".toLowerCase())
