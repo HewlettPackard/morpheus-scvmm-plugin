@@ -11,6 +11,7 @@ import com.morpheusdata.scvmm.logging.LogWrapper
 import groovy.transform.CompileDynamic
 
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 @CompileDynamic
@@ -31,10 +32,10 @@ class MorpheusUtil {
     // Do not declare WATCHDOG_INITIAL_SLEEP_MS as final so that it can be modified by unit tests
     @SuppressWarnings('FieldName')
     @SuppressWarnings('PrivateFieldCouldBeFinal')
-    private static long WATCHDOG_INITIAL_SLEEP_MS = 2000L
-    private static final long WATCHDOG_MAX_SLEEP_MS = 30000L
-    private static final long WATCHDOG_JOIN_TIMEOUT_MS = 5000L
-    private static final long MAX_OPERATION_TIME_MS = 60 * 60000L
+    private static long WATCHDOG_INITIAL_SLEEP_MS = TimeUnit.SECONDS.toMillis(2)
+    private static final long WATCHDOG_MAX_SLEEP_MS = TimeUnit.SECONDS.toMillis(30)
+    private static final long WATCHDOG_JOIN_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(5)
+    private static final long MAX_OPERATION_TIME_NS = TimeUnit.HOURS.toNanos(1)
 
     static ComputeServer saveAndGetMorpheusServer(
             MorpheusContext context,
@@ -64,11 +65,11 @@ class MorpheusUtil {
 
     /**
      * Utility method to copy a file to a ComputeServer with enhanced logging and error handling. This method starts a
-     * watchdog thread that logs the status of the copy operation every 10 seconds if it is still running. It also
-     * measures the elapsed time for the copy operation and logs it upon completion or if an exception occurs. If an
-     * exception is thrown during the copy operation, it is logged with the elapsed time and rethrown to ensure the
-     * caller is aware of the failure. The watchdog thread is set as a daemon so it won't prevent JVM shutdown if
-     * something goes wrong, and it is signaled to stop once the copy operation completes or fails.
+     * watchdog thread that logs the status of the copy operation using exponential backoff (2s to 30s) if it is still
+     * running. It also measures the elapsed time for the copy operation and logs it upon completion or if an exception
+     * occurs. If an exception is thrown during the copy operation, it is logged with the elapsed time and rethrown to
+     * ensure the caller is aware of the failure. The watchdog thread is set as a daemon so it won't prevent JVM
+     * shutdown if something goes wrong, and it is signaled to stop once the copy operation completes or fails.
      *
      * @param morpheusContext The MorpheusContext instance
      * @param server The target server
@@ -89,12 +90,15 @@ class MorpheusUtil {
             InputStream sourceStream,
             Long contentLength
     ) {
-        log.debug("Initiating copyToServer, server=${server?.name}(${server?.id}), fileName=${fileName}, " +
+        // Capture once; reused across log messages for consistent identification
+        String serverLabel = "${server?.name}(${server?.id})"
+        log.debug("Initiating copyToServer, server=${serverLabel}, fileName=${fileName}, " +
                 "filePath=${filePath}, contentLength=${contentLength}")
 
         AtomicBoolean isRunning = new AtomicBoolean(true)
         CountDownLatch watchdogStarted = new CountDownLatch(1)  // Used by tests to verify thread started
-        long startTime = System.currentTimeMillis()
+        long startTime = System.nanoTime()
+        long maxOperationHours = TimeUnit.NANOSECONDS.toHours(MAX_OPERATION_TIME_NS)
 
         // Create watchdog thread to log status periodically if the copy operation is still running
         Thread watchdog = new Thread({
@@ -103,20 +107,20 @@ class MorpheusUtil {
                 // Double the sleep interval each time up to a maximum of 30 seconds
                 for (long sleepTime = WATCHDOG_INITIAL_SLEEP_MS; isRunning.get();
                      sleepTime = Math.min(sleepTime * 2, WATCHDOG_MAX_SLEEP_MS)) {
-                    if (System.currentTimeMillis() - startTime >= MAX_OPERATION_TIME_MS) {
-                        log.debug('copyToServer has been running for over an hour, stopping watchdog to prevent ' +
-                                'continued logging')
+                    if ((System.nanoTime() - startTime) >= MAX_OPERATION_TIME_NS) {
+                        log.debug("copyToServer [${serverLabel}] has been running for over ${maxOperationHours} " +
+                                "hour(s), stopping watchdog to prevent continued logging")
                         return
                     }
                     Thread.sleep(sleepTime)
-                    log.debug("copyToServer still active after ${getElapsedTime(startTime)}")
+                    log.debug("copyToServer [${serverLabel}] still active after ${getElapsedTime(startTime)}")
                 }
             } catch (InterruptedException ignored) {
                 // Thread was interrupted, exit gracefully
             } catch (Exception ex) {
-                log.warn("copyToServer unexpected exception in watchdog thread: ${ex.message}", ex)
+                log.warn("copyToServer [${serverLabel}] unexpected exception in watchdog thread: ${ex.message}", ex)
             }
-        } as Runnable)
+        } as Runnable, "copyToServer-watchdog-${serverLabel}")
 
         // Set as daemon so it won't prevent JVM shutdown if something goes wrong
         watchdog.daemon = true
@@ -133,21 +137,30 @@ class MorpheusUtil {
                     sourceStream,
                     contentLength
             )
-            log.debug("copyToServer completed in ${getElapsedTime(startTime)}, " +
-                    "response=[success=${response?.success}, msg=${response?.msg}, error=${response?.error}]")
+            if (response == null) {
+                log.warn("copyToServer [${serverLabel}] returned a null response after ${getElapsedTime(startTime)}")
+                return ServiceResponse.error('copyToServer returned a null response')
+            }
+            log.debug("copyToServer [${serverLabel}] completed in ${getElapsedTime(startTime)}, " +
+                    "response=[success=${response.success}, msg=${response.msg}, error=${response.error}]")
             return response
         } catch (Exception ex) {
             // Log the exception with elapsed time and rethrow it to ensure the caller is aware of the failure
-            log.error("Exception occurred while in copyToServer, elapsedTime=${getElapsedTime(startTime)}: " +
-                    "${ex.message}", ex)
+            log.error("Exception occurred while in copyToServer [${serverLabel}], " +
+                    "elapsedTime=${getElapsedTime(startTime)}: ${ex.message}", ex)
             throw ex
         } finally {
             // Signal the watchdog thread to stop and wait for it to exit
             isRunning.set(false)
             watchdog.interrupt()
-            watchdog.join(WATCHDOG_JOIN_TIMEOUT_MS)
+            try {
+                watchdog.join(WATCHDOG_JOIN_TIMEOUT_MS)
+            } catch (InterruptedException ignored) {
+                // Restore the interrupt flag so the caller's thread is not silently swallowed
+                Thread.currentThread().interrupt()
+            }
             if (watchdog.alive) {
-                log.warn("copyToServer watchdog thread did not exit within timeout")
+                log.warn("copyToServer [${serverLabel}] watchdog thread did not exit within timeout")
             }
         }
     }
@@ -155,14 +168,13 @@ class MorpheusUtil {
     /**
      * Helper method to calculate and format elapsed time since the provided start time. The format is "MM:SS.mmm"
      * (minutes:seconds.milliseconds).
-     * @param startTime Start time in milliseconds (e.g., from System.currentTimeMillis())
+     * @param startTime Start time in nanoseconds (from System.nanoTime())
      * @return Formatted string representing the elapsed time since startTime in "MM:SS.mmm" format
      */
-    @SuppressWarnings('DuplicateNumberLiteral')
     private static String getElapsedTime(long startTime) {
-        long elapsedMs = System.currentTimeMillis() - startTime
-        long minutes = elapsedMs / 60000 as long
-        long seconds = (elapsedMs % 60000) / 1000 as long
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime)
+        long minutes = TimeUnit.MILLISECONDS.toMinutes(elapsedMs)
+        long seconds = TimeUnit.MILLISECONDS.toSeconds(elapsedMs) % 60
         long milliseconds = elapsedMs % 1000
         return String.format('%02d:%02d.%03d', minutes, seconds, milliseconds)
     }

@@ -2233,6 +2233,23 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         return rtn
     }
 
+    // TODO
+//    @Override
+//    ServiceResponse<ValidateResizeWorkloadResponse> validateResizeWorkload(
+//            Instance instance,
+//            Workload workload,
+//            ResizeRequest resizeRequest,
+//            Map opts
+//    ) {
+//        log.debug("validateResizeWorkload : instance=${instance?.name}(${instance?.id}), " +
+//                "workload=${workload?.name}(${workload?.id}), opts=${opts}")
+//        ValidateResizeWorkloadResponse response = new ValidateResizeWorkloadResponse();
+//        response.allowed = true;
+//        response.hotResize = false;
+//        return ServiceResponse.error('Failed to resize', [volume: 'Your error message here.'])
+//        return new ServiceResponse<>(true, null, null, response);
+//    }
+
     /**
      * Request to scale the size of the Workload. Most likely, the implementation will follow that of resizeServer
      * as the Workload usually references a ComputeServer. It is up to implementations to create the volumes, set the memory, etc
@@ -2363,6 +2380,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                             if (updatedDatastore && newVolume.datastore != updatedDatastore) {
                                 newVolume.datastore = updatedDatastore
                             }
+                            // Ensure removable is set correctly for new volumes (should be true for non-root volumes)
+                            newVolume.removable = newVolume.rootVolume != true
                             context.async.storageVolume.create([newVolume], computeServer).blockingGet()
                             computeServer = getMorpheusServer(computeServer.id)
                             diskCounter++
