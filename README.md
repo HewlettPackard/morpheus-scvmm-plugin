@@ -11,6 +11,7 @@ This plugin integrates Microsoft SCVMM with Morpheus, enabling cloud sync, provi
 - [License](#license)
 - [Installing](#installing)
 - [Detailed Usage Steps](#detailed-usage-steps)
+  - [SCVMM and IsAvailableForPlacement Volumes](#scvmm-and-isavailableforplacement-volumes)
   - [Syncing SCVMM Resources](#syncing-scvmm-resources)
   - [Provisioning Virtual Machines](#provisioning-virtual-machines)
   - [VM Snapshots and Backups](#vm-snapshots-and-backups)
@@ -87,6 +88,39 @@ This project is licensed under the Apache 2.0 License. See the [LICENSE](./LICEN
 ---
 
 ## Detailed Usage Steps
+
+### SCVMM and IsAvailableForPlacement Volumes
+
+The SCVMM plugin uses the `Get-SCStorageVolume` PowerShell cmdlet to retrieve storage volume information. Each storage
+volume is represented as a data store in Morpheus.
+
+You may find some data stores listed that are undesired. They might have an unfamiliar name, or a capacity that is
+unexpectedly small, as in this example:
+
+```
+NAME                                                         CAPACITY
+---------------------------------------------------------    ------------------
+NODE1 : \\?\Volume{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}\    37.4MiB / 200.0MiB
+```
+
+These typically are "EFI System Partition" and "Recovery Partition" volumes that are not intended for use as data
+stores. If you mark these volumes as not available to deploy virtual machines, the SCVMM plugin will honor that and
+not list them as available data stores for provisioning. They will also appear as offline in the Morpheus data stores
+view.
+
+Here is a script to display the volumes and their current `IsAvailableForPlacement` state:
+
+```powershell
+Get-SCStorageVolume | Select-Object Name, VMHost, IsAvailableForPlacement | Format-Table -AutoSize
+```
+
+Here is a script that will mark any volume with a capacity less than 2 GiB as not available for provisioning:
+
+```powershell
+Get-SCStorageVolume | Where-Object { $_.Capacity -lt 2GB } | ForEach-Object { Set-SCStorageVolume -StorageVolume $_ -AvailableForPlacement $false }
+```
+
+You can use finer controls if you want to enable/disable `IsAvailableForPlacement` for specific volumes.
 
 ### Syncing SCVMM Resources
 
