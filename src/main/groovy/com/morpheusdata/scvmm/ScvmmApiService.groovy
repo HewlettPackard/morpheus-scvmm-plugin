@@ -1656,8 +1656,9 @@ Status=\$job.Status.toString()
             def notFoundAttempts = 0
             def serverId = opts.server.id
             def waitForIp = opts.waitForIp
+            waitForIp = false // TODO
             while (pending) {
-                sleep(1000l * 5l)
+                // sleep(1000l * 5l) // TODO
                 log.debug "checkServerReady: ${vmId}"
                 ComputeServer server = morpheusContext.services.computeServer.get(serverId)
                 opts.server = server

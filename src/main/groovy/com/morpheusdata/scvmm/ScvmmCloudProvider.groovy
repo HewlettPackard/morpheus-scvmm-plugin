@@ -86,6 +86,16 @@ class ScvmmCloudProvider implements CloudProvider {
         return new Icon(path: 'scvmm-circular.svg', darkPath: 'scvmm-circular.svg')
     }
 
+    @Override
+    Collection<Datastore> filterDatastores(Cloud cloud, Collection<Datastore> datastores, Collection<CloudPool> resourcePools) {
+        // No pool filter selected -> return all datastores
+        if (!resourcePools) {
+            return datastores
+        }
+
+        final Set<Long> poolIds = resourcePools.collect { CloudPool it -> it.id } as Set<Long>
+        return datastores?.findAll { ds -> poolIds.contains(ds.zonePool?.id as Long) }
+    }
 
     /**
      * Provides a Collection of OptionType inputs that define the required input fields for defining a cloud integration
