@@ -380,7 +380,7 @@ shadowJar {
                 include: 'morpheus-scvmm-plugin-*'
         )
         copy {
-            from "$buildDir/libs/morpheus-scvmm-plugin-1.0.0-SNAPSHOT-all.jar"
+            from shadowJar.archiveFile
             into "${System.getProperty('user.home')}/go/src/github.com/HPE-EMU/morpheus-plugin-core/plugins"
         }
     }
