@@ -9,6 +9,7 @@ import com.morpheusdata.model.CloudPool
 import com.morpheusdata.model.ResourcePermission
 import com.morpheusdata.model.projection.CloudPoolIdentity
 import com.morpheusdata.scvmm.ScvmmApiService
+import com.morpheusdata.scvmm.ScvmmConstants
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
 import io.reactivex.rxjava3.core.Observable
@@ -35,7 +36,17 @@ class ClustersSync {
             log.debug("clusters: {}", listResults)
 
             if (listResults.success == true && listResults.clusters) {
-                def objList = listResults.clusters
+                // >>> MORPH-9119
+                // Default a "Default" resource pool. Any resource that does not belong to a resource pool will be
+                // associated with this default resource pool.
+                def objList = [[
+                        id  : ScvmmConstants.DEFAULT_RESOURCE_POOL_EXTERNAL_ID,
+                        name: ScvmmConstants.DEFAULT_RESOURCE_POOL_NAME,
+                ]]
+
+                // Append cluster maps as list elements (avoid Map.plus coercion on LazyMap).
+                objList.addAll(listResults.clusters as Collection)
+                // <<< MORPH-9119
                 def clusterScope = cloud.getConfigProperty('cluster')
                 if (clusterScope) {
                     objList = objList?.findAll { it.id == clusterScope }
@@ -77,20 +88,26 @@ class ClustersSync {
         List<ResourcePermission> resourcePerms = []
         try {
             addList?.each { Map item ->
+                // >>> MORPH-9119
+                boolean defaultPool = (item.id == ScvmmConstants.DEFAULT_RESOURCE_POOL_EXTERNAL_ID)
+                // <<< MORPH-9119
                 log.debug("add cluster: {}", item)
                 def poolConfig = [
-                        owner     : cloud.owner,
-                        name      : item.name,
-                        externalId: item.id,
-                        internalId: item.name,
-                        refType   : 'ComputeZone',
-                        refId     : cloud.id,
-                        cloud     : cloud,
-                        category  : "scvmm.cluster.${cloud.id}",
-                        code      : "scvmm.cluster.${cloud.id}.${item.id}",
-                        readOnly  : false,
-                        type      : 'Cluster',
-                        active    : cloud.defaultPoolSyncActive
+                        owner      : cloud.owner,
+                        name       : item.name,
+                        externalId : item.id,
+                        internalId : item.name,
+                        refType    : ScvmmConstants.REF_CLOUD,
+                        refId      : cloud.id,
+                        cloud      : cloud,
+                        category   : "scvmm.cluster.${cloud.id}",
+                        code       : "scvmm.cluster.${cloud.id}.${item.id}",
+                        readOnly   : false,
+                        type       : 'Cluster',
+                        // >>> MORPH-9119
+                        active     : defaultPool ? true : cloud.defaultPoolSyncActive,
+                        defaultPool: defaultPool,
+                        // <<< MORPH-9119
                 ]
                 CloudPool clusterAdd = new CloudPool(poolConfig)
                 clusterAdd.setConfigProperty('sharedVolumes', item.sharedVolumes)
@@ -131,6 +148,14 @@ class ClustersSync {
 
                 CloudPool existingItem = updateMap.existingItem
                 def masterItem = updateMap.masterItem
+
+                // >>> MORPH-9119
+                // If this is the default resource pool, there is nothing to update since it is not really a resource
+                // pool in SCVMM.
+                if (existingItem.externalId == ScvmmConstants.DEFAULT_RESOURCE_POOL_EXTERNAL_ID) {
+                    return
+                }
+                // <<< MORPH-9119
 
                 // Sometimes scvmm tells us that the cluster has no shared volumes even when it does! #175290155
                 if (existingItem.getConfigProperty('sharedVolumes') != masterItem.sharedVolumes) {

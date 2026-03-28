@@ -1,6 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
 import com.morpheusdata.core.MorpheusContext
+import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.SyncTask
 import com.morpheusdata.model.Cloud
@@ -11,6 +12,7 @@ import com.morpheusdata.model.StorageVolume
 import com.morpheusdata.model.StorageVolumeType
 import com.morpheusdata.model.projection.DatastoreIdentityProjection
 import com.morpheusdata.scvmm.ScvmmApiService
+import com.morpheusdata.scvmm.ScvmmConstants
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
 import io.reactivex.rxjava3.core.Observable
@@ -127,6 +129,15 @@ class DatastoresSync {
                     existingItem.zonePool = cluster
                     doSave = true
                 }
+
+                // >>> MORPH-9119
+                // Assign to default resource pool if it is not already assigned to one
+                if (!existingItem.zonePool) {
+                    existingItem.zonePool = getDefaultResourcePool()
+                    doSave &= (existingItem.zonePool != null)
+                }
+                // <<< MORPH-9119
+
                 if (doSave) {
                     def savedDataStore = context.async.cloud.datastore.save(existingItem).blockingGet()
                     if (savedDataStore && host) {
@@ -171,6 +182,12 @@ class DatastoresSync {
                         ]
                 log.debug("datastoreConfig: ${datastoreConfig}")
                 Datastore datastore = new Datastore(datastoreConfig)
+
+                // >>> MORPH-9119
+                // Assign to default resource pool if it is not already assigned to one
+                datastore.zonePool = datastore.zonePool ?: this.defaultResourcePool
+                // <<< MORPH-9119
+
                 def savedDataStore = context.async.cloud.datastore.create(datastore).blockingGet()
                 log.debug("savedDataStore?.id: ${savedDataStore?.id}")
                 if (savedDataStore && host) {
@@ -181,6 +198,35 @@ class DatastoresSync {
             log.error "Error in adding Datastores sync ${e}", e
         }
     }
+
+    // >>> MORPH-9119
+    /**
+     * This method is used to get the default resource pool for the cloud.
+     * @return CloudPool object representing the default resource pool, or null if not found or an error occurs.
+     */
+    @SuppressWarnings('CatchException')
+    private CloudPool getDefaultResourcePool() {
+        CloudPool defaultPool = null
+        try {
+            log.debug("getDefaultResourcePool: cloud.id=${cloud.id}")
+            defaultPool = ScvmmConstants.with {
+                context.services.cloud.pool.find(
+                        new DataQuery().withFilters(
+                                new DataFilter(KEY_NAME, DEFAULT_RESOURCE_POOL_NAME),
+                                new DataFilter(KEY_EXTERNAL_ID, DEFAULT_RESOURCE_POOL_EXTERNAL_ID),
+                                new DataFilter(KEY_REF_ID, cloud.id),
+                                new DataFilter(KEY_REF_TYPE, REF_CLOUD),
+                                new DataFilter(KEY_DEFAULT_POOL, true),
+                        )
+                )
+            }
+            log.debug("getDefaultResourcePool: defaultPool=${defaultPool?.name} (${defaultPool?.id})")
+        } catch (e) {
+            log.error("Error in getDefaultResourcePool: ${e}", e)
+        }
+        return defaultPool
+    }
+    // <<< MORPH-9119
 
     private syncVolume(item, ComputeServer host, savedDataStore, volumeType, externalId) {
         try {

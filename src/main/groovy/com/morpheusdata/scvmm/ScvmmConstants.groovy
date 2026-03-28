@@ -20,4 +20,21 @@ class ScvmmConstants {
             '^Temporary (?:Morpheus )?Template\\s*' +
                     '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
     static final Pattern TEMPORARY_TEMPLATE_UUID_PATTERN = Pattern.compile(TEMPORARY_TEMPLATE_UUID_REGEX)
+
+    // >>> MORPH-9119
+    /** Default resource pool values */
+    static final String DEFAULT_RESOURCE_POOL_NAME = 'Default'
+    static final String DEFAULT_RESOURCE_POOL_EXTERNAL_ID = 'DefaultResourcePoolExternalID'
+
+    /** Reference keys; duplicated from {@link com.morpheusdata.model.AccountInvoice} */
+    static final String REF_CLOUD = 'ComputeZone'
+
+    /** Data filter keys */
+    static final String KEY_DEFAULT_POOL = 'defaultPool'
+    static final String KEY_EXTERNAL_ID = 'externalId'
+    static final String KEY_NAME = 'name'
+    static final String KEY_REF_ID = 'refId'
+    static final String KEY_REF_TYPE = 'refType'
+
+    // <<< MORPH-9119
 }
