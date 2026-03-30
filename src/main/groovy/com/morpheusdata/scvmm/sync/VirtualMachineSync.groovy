@@ -483,6 +483,12 @@ class VirtualMachineSync {
                 volume.rootVolume = isRootVolume
                 save = true
             }
+            // Ensure removable is set correctly based on rootVolume status
+            def shouldBeRemovable = !isRootVolume
+            if (volume.removable != shouldBeRemovable) {
+                volume.removable = shouldBeRemovable
+                save = true
+            }
             if (volume.name == null) {
                 volume.name = getVolumeName(masterItem, volume.deviceName, server, index)
                 save = true

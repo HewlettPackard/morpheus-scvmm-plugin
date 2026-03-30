@@ -2312,6 +2312,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                             if (updatedDatastore && newVolume.datastore != updatedDatastore) {
                                 newVolume.datastore = updatedDatastore
                             }
+                            // Ensure removable is set correctly for new volumes (should be true for non-root volumes)
+                            newVolume.removable = newVolume.rootVolume != true
                             context.async.storageVolume.create([newVolume], computeServer).blockingGet()
                             computeServer = getMorpheusServer(computeServer.id)
                             diskCounter++
