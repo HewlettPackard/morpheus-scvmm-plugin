@@ -234,14 +234,20 @@ class ScvmmCloudProvider implements CloudProvider {
 				defaultValue:'c:\\VirtualDisks'
 		)
 		options << new OptionType(
-				name: 'Hide Host Selection From Users',
-				code: 'zoneType.scvmm.hideHostSelection',
-				fieldName: 'HideHostSelectionFromUsers',
+                name: 'Hide Host Selection',
+                code: 'zoneType.scvmm.hideHostSelection',
+                category:'zoneType.scvmm',
+                fieldName: 'hideHostSelection',
+                fieldCode: 'gomorpheus.optiontype.HideHostSelectionFromUsers',
+                fieldLabel:'Hide Host Selection from Users',
+                fieldContext:'config',
+                fieldSize:15,
+                fieldClass:null,
+                defaultValue:'off',
+                custom:false,
 				displayOrder: displayOrder += 10,
-				fieldLabel: 'Hide Host Selection From Users',
 				required: false,
 				inputType: OptionType.InputType.CHECKBOX,
-				fieldContext: 'config',
 		)
 		options << new OptionType(
 				name: 'Inventory Existing Instances',
