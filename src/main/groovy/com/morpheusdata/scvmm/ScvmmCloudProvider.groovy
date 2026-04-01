@@ -425,22 +425,6 @@ class ScvmmCloudProvider implements CloudProvider {
 				provisionTypeCode:'scvmm', computeTypeCode:'docker-host', optionTypes:[hostOptionType]
 		)
 
-		//kubernetes
-		serverTypes << new ComputeServerType(code:'scvmmKubeMaster', name:'SCVMM Kubernetes Master', description:'', platform:PlatformType.linux,
-				nodeType:'kube-master', hasMaintenanceMode: true, reconfigureSupported: true, enabled:true, selectable:false, externalDelete:true, managed:true,
-				controlPower:true, controlSuspend:true, creatable:true, supportsConsoleKeymap: true, computeService:'scvmmComputeService',
-				displayOrder:10, hasAutomation:true, containerHypervisor:true, bareMetalHost:false, vmHypervisor:false, guestVm:true,
-				agentType:ComputeServerType.AgentType.host, containerEngine:'docker', provisionTypeCode:'scvmm', computeTypeCode:'kube-master',
-				optionTypes:[hostOptionType]
-		)
-		serverTypes << new ComputeServerType(code:'scvmmKubeWorker', name:'SCVMM Kubernetes Worker', description:'', platform:PlatformType.linux,
-				nodeType:'kube-worker', hasMaintenanceMode: true, reconfigureSupported: true, enabled:true, selectable:false, externalDelete:true, managed:true,
-				controlPower:true, controlSuspend:true, creatable:true, supportsConsoleKeymap: true, computeService:'scvmmComputeService',
-				displayOrder:10, hasAutomation:true, containerHypervisor:true, bareMetalHost:false, vmHypervisor:false, guestVm:true,
-				agentType:ComputeServerType.AgentType.guest, containerEngine:'docker', provisionTypeCode:'scvmm', computeTypeCode:'kube-worker',
-				optionTypes:[hostOptionType]
-		)
-
 		return serverTypes
 	}
 
