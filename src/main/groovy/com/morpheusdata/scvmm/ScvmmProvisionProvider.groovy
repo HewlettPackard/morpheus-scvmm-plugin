@@ -1978,6 +1978,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                             rootVolume.externalId = serverDisks.diskMetaData[serverDisks.osDisk?.externalId]?.VhdID
                             // Fix up the externalId.. initially set to the VirtualDiskDrive ID.. now setting to VirtualHardDisk ID
                             rootVolume.datastore = loadDatastoreForVolume(cloud, serverDisks.diskMetaData[rootVolume.externalId]?.HostVolumeId, serverDisks.diskMetaData[rootVolume.externalId]?.FileShareId, serverDisks.diskMetaData[rootVolume.externalId]?.PartitionUniqueId) ?: rootVolume.datastore
+                            // Sync the volume changes to the Morpheus DB
+                            log.debug("Root volume updated: " +
+                                    "name=${rootVolume.name} (${rootVolume.id}), " +
+                                    "externalId=${rootVolume.externalId}, " +
+                                    "datastore=${rootVolume.datastore?.name}")
+                            context.services.storageVolume.save(rootVolume)
                             storageVolumes.each { storageVolume ->
                                 def dataDisk = serverDisks.dataDisks.find { it.id == storageVolume.id }
                                 if (dataDisk) {
@@ -1988,6 +1994,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
                                     // Ensure the datastore is set
                                     storageVolume.datastore = loadDatastoreForVolume(cloud, serverDisks.diskMetaData[storageVolume.externalId]?.HostVolumeId, serverDisks.diskMetaData[storageVolume.externalId]?.FileShareId, serverDisks.diskMetaData[storageVolume.externalId]?.PartitionUniqueId) ?: storageVolume.datastore
+                                    // Sync the volume changes to the Morpheus DB
+                                    log.debug("Data volume updated: " +
+                                            "name=${storageVolume.name} (${storageVolume.id}), " +
+                                            "externalId=${storageVolume.externalId}, " +
+                                            "datastore=${storageVolume.datastore?.name}")
+                                    context.services.storageVolume.save(storageVolume)
                                 }
                             }
                         }
