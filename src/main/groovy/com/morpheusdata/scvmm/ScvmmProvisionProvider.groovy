@@ -12,7 +12,29 @@ import com.morpheusdata.core.providers.HostProvisionProvider
 import com.morpheusdata.core.providers.ProvisionProvider
 import com.morpheusdata.core.providers.WorkloadProvisionProvider
 import com.morpheusdata.core.util.ComputeUtility
-import com.morpheusdata.model.*
+import com.morpheusdata.model.Cloud
+import com.morpheusdata.model.ComputeCapacityInfo
+import com.morpheusdata.model.ComputeServer
+import com.morpheusdata.model.ComputeServerInterface
+import com.morpheusdata.model.ComputeServerType
+import com.morpheusdata.model.ComputeTypeSet
+import com.morpheusdata.model.Datastore
+import com.morpheusdata.model.HostType
+import com.morpheusdata.model.Icon
+import com.morpheusdata.model.Instance
+import com.morpheusdata.model.NetAddress
+import com.morpheusdata.model.OptionType
+import com.morpheusdata.model.OsType
+import com.morpheusdata.model.PlatformType
+import com.morpheusdata.model.ProcessEvent
+import com.morpheusdata.model.ResourcePermission
+import com.morpheusdata.model.ServicePlan
+import com.morpheusdata.model.StorageVolume
+import com.morpheusdata.model.StorageVolumeType
+import com.morpheusdata.model.VirtualImage
+import com.morpheusdata.model.VirtualImageLocation
+import com.morpheusdata.model.Workload
+import com.morpheusdata.model.WorkloadType
 import com.morpheusdata.model.provisioning.HostRequest
 import com.morpheusdata.model.provisioning.WorkloadRequest
 import com.morpheusdata.request.ResizeRequest
@@ -1838,6 +1860,18 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     @Override
     ServiceResponse<ProvisionResponse> runHost(ComputeServer server, HostRequest hostRequest, Map opts) {
         log.debug("runHost: ${server} ${hostRequest} ${opts}")
+
+        /**
+         * The internal runHost method is wrapped in a withComputeServerAccessLock to ensure that a background volume
+         * sync does not conflict with the VM creation that occurs during runHost.
+         */
+        return MorpheusUtil.withComputeServerAccessLock(context, server, 'runHost') {
+            return internalRunHost(server, hostRequest, opts)
+        }
+    }
+
+    ServiceResponse<ProvisionResponse> internalRunHost(ComputeServer server, HostRequest hostRequest, Map opts) {
+        log.debug("runHost: ${server} ${hostRequest} ${opts}")
         ProvisionResponse provisionResponse = new ProvisionResponse()
         try {
             def config = server.getConfigMap()
@@ -1978,6 +2012,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                             rootVolume.externalId = serverDisks.diskMetaData[serverDisks.osDisk?.externalId]?.VhdID
                             // Fix up the externalId.. initially set to the VirtualDiskDrive ID.. now setting to VirtualHardDisk ID
                             rootVolume.datastore = loadDatastoreForVolume(cloud, serverDisks.diskMetaData[rootVolume.externalId]?.HostVolumeId, serverDisks.diskMetaData[rootVolume.externalId]?.FileShareId, serverDisks.diskMetaData[rootVolume.externalId]?.PartitionUniqueId) ?: rootVolume.datastore
+                            // Sync the volume changes to the Morpheus DB
+                            log.debug("Root volume updated: name=${rootVolume.name} (${rootVolume.id}), " +
+                                    "externalId=${rootVolume.externalId}, datastore=${rootVolume.datastore?.name}")
+                            context.services.storageVolume.save(rootVolume)
                             storageVolumes.each { storageVolume ->
                                 def dataDisk = serverDisks.dataDisks.find { it.id == storageVolume.id }
                                 if (dataDisk) {
@@ -1988,6 +2026,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
                                     // Ensure the datastore is set
                                     storageVolume.datastore = loadDatastoreForVolume(cloud, serverDisks.diskMetaData[storageVolume.externalId]?.HostVolumeId, serverDisks.diskMetaData[storageVolume.externalId]?.FileShareId, serverDisks.diskMetaData[storageVolume.externalId]?.PartitionUniqueId) ?: storageVolume.datastore
+                                    // Sync the volume changes to the Morpheus DB
+                                    log.debug("Data volume updated: " +
+                                            "name=${storageVolume.name} (${storageVolume.id}), " +
+                                            "externalId=${storageVolume.externalId}, " +
+                                            "datastore=${storageVolume.datastore?.name}")
+                                    context.services.storageVolume.save(storageVolume)
                                 }
                             }
                         }
