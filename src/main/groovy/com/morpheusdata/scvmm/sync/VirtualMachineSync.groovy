@@ -1,5 +1,6 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataQuery
@@ -7,24 +8,14 @@ import com.morpheusdata.core.providers.CloudProvider
 import com.morpheusdata.core.util.ComputeUtility
 import com.morpheusdata.core.util.SyncTask
 import com.morpheusdata.core.util.SyncUtils
-import com.morpheusdata.model.Cloud
-import com.morpheusdata.model.ComputeCapacityInfo
-import com.morpheusdata.model.ComputeServer
-import com.morpheusdata.model.ComputeServerType
-import com.morpheusdata.model.Datastore
-import com.morpheusdata.model.ResourcePermission
-import com.morpheusdata.model.ServicePlan
-import com.morpheusdata.model.StorageVolume
-import com.morpheusdata.model.VirtualImage
-import com.morpheusdata.model.VirtualImageLocation
-import com.morpheusdata.model.Workload
+import com.morpheusdata.model.*
 import com.morpheusdata.model.projection.ComputeServerIdentityProjection
 import com.morpheusdata.model.projection.StorageVolumeIdentityProjection
-import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
-import com.morpheusdata.scvmm.util.MorpheusUtil
+import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Observable
+
 /**
  * @author rahul.ray
  */
@@ -393,23 +384,16 @@ class VirtualMachineSync {
     }
 
     def syncVolumes(server, externalVolumes) {
-        log.debug "syncVolumes: ${server?.name}, ${groovy.json.JsonOutput.prettyPrint(externalVolumes?.encodeAsJSON()?.toString())}"
+        log.debug "syncVolumes: ${server}, ${groovy.json.JsonOutput.prettyPrint(externalVolumes?.encodeAsJSON()?.toString())}"
 
-        (server as ComputeServer)?.volumes?.each { StorageVolume it ->
-            log.debug "Existing Morpheus volume: name=${it.name}, externalId=${it.externalId}, " +
+        // Log existing volumes for debugging
+        server?.volumes?.each { StorageVolume it ->
+            log.debug "Existing Morpheus volume: " +
+                    "name=${it.name} (${it.id}), " +
+                    "externalId=${it.externalId}, " +
                     "maxStorage=${it.maxStorage}"
         }
 
-        /**
-         * The internal syncVolumes method is wrapped in a withComputeServerAccessLock to ensure that it does not
-         * conflict with the VM creation that occurs during ScvmmProvisionProvider runHost.
-         */
-        return MorpheusUtil.withComputeServerAccessLock(context, server as ComputeServer, 'syncVolumes') {
-            return internalSyncVolumes(server, externalVolumes)
-        }
-    }
-
-    def internalSyncVolumes(server, externalVolumes) {
         def changes = false
         try {
             def maxStorage = 0

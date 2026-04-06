@@ -1,5 +1,5 @@
 annotated-types==0.7.0
-black==25.1.0
+black==26.3.1
 charset-normalizer==3.4.2
 httplib2==0.22.0
 idna==3.10
@@ -7,14 +7,14 @@ iniconfig==2.3.0
 flake8==7.3.0
 markupsafe==3.0.2
 packaging==25.0
-pip==25.2
+pip==26.0
 pytest-playwright==0.7.0
 pluggy==1.6.0
 pydantic-core==2.27.2
 pydantic-settings==2.10.1
 python-dotenv==1.1.0
 pytest==8.4.0
-requests==2.32.4
+requests==2.33.0
 typing-extensions==4.12.2
 hpe-pc-automation-lib>=2.202.0
 hpe-glcp-automation-lib>=2.2160.0

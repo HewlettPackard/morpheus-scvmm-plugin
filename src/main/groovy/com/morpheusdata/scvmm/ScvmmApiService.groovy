@@ -1,16 +1,14 @@
 package com.morpheusdata.scvmm
 
+import com.bertramlabs.plugins.karman.CloudFile
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ComputeUtility
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
-import com.morpheusdata.model.KeyPair
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
 import groovy.json.JsonOutput
-import groovy.util.logging.Slf4j
-import com.bertramlabs.plugins.karman.CloudFile
 
 class ScvmmApiService {
     MorpheusContext morpheusContext
@@ -306,6 +304,7 @@ class ScvmmApiService {
             }
         } catch (e) {
             log.error("createServer error: ${e}", e)
+            rtn.errorMsg ?= e.message
         }
         return rtn
     }
@@ -2520,7 +2519,7 @@ For (\$i=0; \$i -le 10; \$i++) {
                 }
 
                 dataDisks?.eachWithIndex { dataDisk, index ->
-                    def fromDisk
+                    def fromDisk = null
                     if (isSyncdImage) {
                         fromDisk = "\$VirtualHardDisk${index}"
                         def diskExternalId = diskExternalIdMappings[1 + index]?.externalId
@@ -2529,8 +2528,16 @@ For (\$i=0; \$i -le 10; \$i++) {
                         }
                     }
                     def busNumber = '0'
-                    def generateResults = generateDataDiskCommand(busNumber, index, diskJobGuid, (int) dataDisk.maxStorage.div(ComputeUtility.ONE_MEGABYTE), dataDisk.volumePath, fromDisk, deployingToCloud)
-                    commands << generateResults.command
+                    def generateResult = generateDataDiskCommandXXX(
+                            generationNumber,
+                            (index as int) + 1,
+                            diskJobGuid,
+                            dataDisk.maxStorage.div(ComputeUtility.ONE_MEGABYTE) as int,
+                            dataDisk.volumePath as String,
+                            fromDisk,
+                            deployingToCloud
+                    )
+                    commands << generateResult
                 }
 
                 // Create the Temporary Template
@@ -2697,6 +2704,54 @@ For (\$i=0; \$i -le 10; \$i++) {
         }
 
         rtn
+    }
+
+    @SuppressWarnings('ParameterCount')
+    String generateDataDiskCommandXXX(
+            String generationNumber,
+            int dataDiskNumber,
+            String diskJobGuid,
+            int sizeMB,
+            String path = null,
+            String fromDisk = null,
+            Boolean deployingToCloud = false
+    ) {
+        log.debug("generateDataDiskCommand called with generationNumber: ${generationNumber}, " +
+                "dataDiskNumber: ${dataDiskNumber}, diskJobGuid: ${diskJobGuid}, sizeMB: ${sizeMB}, " +
+                "path: ${path}, fromDisk: ${fromDisk}, deployingToCloud: ${deployingToCloud}")
+
+        String busType = 'SCSI'
+        int busNumber = 0
+        int luNumber = dataDiskNumber
+
+        if (generationNumber == '1') {
+            if (dataDiskNumber < 1 || dataDiskNumber > 2) {
+                throw new IllegalArgumentException("Data disk number must be between 1 and 2 for IDE controllers")
+            }
+            busType = 'IDE'
+            busNumber = 1
+        }
+
+        String fileName = "data${dataDiskNumber}-${UUID.randomUUID().toString()}.vhd"
+
+        String command = "\$ignore = New-SCVirtualDiskDrive -VMMServer localhost -${busType} -Bus ${busNumber}" +
+                " -LUN ${luNumber} -JobGroup ${diskJobGuid} -CreateDiffDisk \$false -FileName \"$fileName\"" +
+                " -VolumeType None"
+
+        if (fromDisk && !deployingToCloud) {
+            command += " -VirtualHardDisk $fromDisk"
+            if (path) {
+                command += " -Path \"$path\""
+            }
+        } else {
+            command += " -VirtualHardDiskSizeMB ${sizeMB} -Dynamic"
+            if (path && !deployingToCloud) {
+                command += " -Path \"$path\""
+            }
+        }
+
+        log.debug("Generated command for data disk ${dataDiskNumber}: ${command}")
+        return command
     }
 
     def getScvmmZoneOpts(MorpheusContext context, Cloud cloud) {
