@@ -304,7 +304,6 @@ class ScvmmApiService {
             }
         } catch (e) {
             log.error("createServer error: ${e}", e)
-            rtn.errorMsg ?= e.message
         }
         return rtn
     }
@@ -1445,7 +1444,8 @@ foreach (\$network in \$networks) {
     }
 
     def createAndAttachDisk(Map opts, Map diskSpec, Boolean returnDiskDrives=true) {
-        LogWrapper.instance.info("createAndAttachDisk - Adding new Virtual SCSI Disk VHDType:${diskSpec}")
+        LogWrapper.instance.info("createAndAttachDisk - Attaching new Virtual SCSI Disk to VM ID:${opts.externalId} " +
+                "with spec ${diskSpec}")
         String templateCmd = '''
         #Morpheus will replace items in <%   %>
         $vmId = "<%vmid%>"
@@ -1758,7 +1758,6 @@ Status=\$job.Status.toString()
     }
 
     def startServer(opts, vmId) {
-        log.debug("startServer: vmId=${vmId}, opts=${opts}")
         def rtn = [success: false]
         try {
             // Only start if it isn't already running
@@ -1779,7 +1778,6 @@ Status=\$job.Status.toString()
     }
 
     def stopServer(opts, vmId) {
-        log.debug("stopServer: vmId=${vmId}, opts=${opts}")
         def rtn = [success: false]
         try {
             def command = """\$VM = Get-SCVirtualMachine -VMMServer localhost  -ID \"${vmId}\"
@@ -2687,54 +2685,6 @@ For (\$i=0; \$i -le 10; \$i++) {
         }
 
         rtn
-    }
-
-    @SuppressWarnings('ParameterCount')
-    String generateDataDiskCommandXXX(
-            String generationNumber,
-            int dataDiskNumber,
-            String diskJobGuid,
-            int sizeMB,
-            String path = null,
-            String fromDisk = null,
-            Boolean deployingToCloud = false
-    ) {
-        log.debug("generateDataDiskCommand called with generationNumber: ${generationNumber}, " +
-                "dataDiskNumber: ${dataDiskNumber}, diskJobGuid: ${diskJobGuid}, sizeMB: ${sizeMB}, " +
-                "path: ${path}, fromDisk: ${fromDisk}, deployingToCloud: ${deployingToCloud}")
-
-        String busType = 'SCSI'
-        int busNumber = 0
-        int luNumber = dataDiskNumber
-
-        if (generationNumber == '1') {
-            if (dataDiskNumber < 1 || dataDiskNumber > 2) {
-                throw new IllegalArgumentException("Data disk number must be between 1 and 2 for IDE controllers")
-            }
-            busType = 'IDE'
-            busNumber = 1
-        }
-
-        String fileName = "data${dataDiskNumber}-${UUID.randomUUID().toString()}.vhd"
-
-        String command = "\$ignore = New-SCVirtualDiskDrive -VMMServer localhost -${busType} -Bus ${busNumber}" +
-                " -LUN ${luNumber} -JobGroup ${diskJobGuid} -CreateDiffDisk \$false -FileName \"$fileName\"" +
-                " -VolumeType None"
-
-        if (fromDisk && !deployingToCloud) {
-            command += " -VirtualHardDisk $fromDisk"
-            if (path) {
-                command += " -Path \"$path\""
-            }
-        } else {
-            command += " -VirtualHardDiskSizeMB ${sizeMB} -Dynamic"
-            if (path && !deployingToCloud) {
-                command += " -Path \"$path\""
-            }
-        }
-
-        log.debug("Generated command for data disk ${dataDiskNumber}: ${command}")
-        return command
     }
 
     def getScvmmZoneOpts(MorpheusContext context, Cloud cloud) {

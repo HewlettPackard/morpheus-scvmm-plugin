@@ -2010,7 +2010,6 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         }
 
 						server.externalId = instance.id
-                        scvmmOpts.externalId = instance.id
 						server.parentServer = node
 						server.osDevice = '/dev/sda'
 						server.dataDevice = '/dev/sda'
@@ -2019,68 +2018,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 						server.status = 'provisioned'
 						context.async.computeServer.save(server).blockingGet()
 
-                        // Phase 1: boot with root disk only so guest enumerates OS disk first
-                        log.debug("Starting Server with root disk only: ${scvmmOpts.name}")
-                        def phaseOneStart = apiService.startServer(scvmmOpts, scvmmOpts.externalId)
-                        if (!phaseOneStart.success) {
-                            throw new RuntimeException("Failed to start server for phase-one boot: ${scvmmOpts.externalId}")
-                        }
+                        // Add the created VM instance ID to scvmmOpts.externalId
+                        scvmmOpts.externalId = instance.id
 
-                        log.debug("Waiting for server to be running before powering off: ${scvmmOpts.name}")
-                        def phaseOneReady = apiService.checkServerReady(scvmmOpts + [waitForIp: false], scvmmOpts.externalId)
-                        if (!phaseOneReady.success) {
-                            throw new RuntimeException("Server did not reach running state during phase-one boot: ${scvmmOpts.externalId}")
-                        }
+                        createDataDisksPostBookDiskCreation(cloud, server, scvmmOpts)
 
-                        // Phase 2: power off, attach deferred data disks, then continue with normal power on
-                        log.debug("Phase-two deferred data disk attach starting for server: ${scvmmOpts.name}")
-                        def phaseTwoStop = apiService.stopServer(scvmmOpts, scvmmOpts.externalId)
-                        if (!phaseTwoStop.success) {
-                            throw new RuntimeException("Failed to stop server before deferred disk attach: ${scvmmOpts.externalId}")
-                        }
-
-                        log.debug("Waiting for server to be powered off before deferred data disk attach: ${scvmmOpts.name}")
-                        def stopWait = waitForVmPowerState(scvmmOpts, scvmmOpts.externalId, 'PowerOff')
-                        if (!stopWait.success) {
-                            throw new RuntimeException(stopWait.msg ?: "Timed out waiting for VM power off: ${scvmmOpts.externalId}")
-                        }
-
-                        log.debug("Attaching deferred data disks for server: ${scvmmOpts.name}")
-                        def deferredAttach = attachDeferredDataDisks(scvmmOpts, server, cloud)
-                        if (!deferredAttach.success) {
-                            throw new RuntimeException(deferredAttach.msg ?: "Deferred data disk attach failed for VM: ${scvmmOpts.externalId}")
-                        }
-
-                        // Re-enumerate VM disks after deferred attach and then sync data-volume metadata.
-                        log.debug("Re-enumerating VM disks after deferred attach for server: ${scvmmOpts.name}")
-                        def refreshedDiskDrives = apiService.listVirtualDiskDrives(scvmmOpts, scvmmOpts.externalId)
-                        if (!refreshedDiskDrives.success) {
-                            throw new RuntimeException("Unable to re-enumerate VM disk drives after deferred attach: ${scvmmOpts.externalId}")
-                        }
-                        def refreshedDataDisks = refreshedDiskDrives.disks
-                                ?.findAll { it.VolumeType?.toString() != 'BootAndSystem' }
-                                ?.sort { a, b ->
-                                    def busCompare = (a.Bus ?: 0) <=> (b.Bus ?: 0)
-                                    busCompare != 0 ? busCompare : ((a.Lun ?: 0) <=> (b.Lun ?: 0))
-                                } ?: []
-                        def dataVolumes = (storageVolumes ?: server.volumes)
-                                ?.findAll { it.rootVolume != true }
-                                ?.sort { it.id } ?: []
-                        dataVolumes.eachWithIndex { StorageVolume storageVolume, int idx ->
-                            def dataDisk = idx < refreshedDataDisks.size() ? refreshedDataDisks[idx] : null
-                            if (dataDisk?.VhdID) {
-                                storageVolume.externalId = dataDisk.VhdID
-                            }
-                            storageVolume.datastore = loadDatastoreForVolume(cloud, dataDisk?.HostVolumeId, dataDisk?.FileShareId, dataDisk?.PartitionUniqueId) ?: storageVolume.datastore
-                            log.debug("Data volume updated after deferred attach: " +
-                                    "name=${storageVolume.name} (${storageVolume.id}), " +
-                                    "externalId=${storageVolume.externalId}, " +
-                                    "datastore=${storageVolume.datastore?.name}, " +
-                                    "bus=${dataDisk?.Bus}, lun=${dataDisk?.Lun}")
-                            context.services.storageVolume.save(storageVolume)
-                        }
-
-                        log.info("Starting Server ${scvmmOpts.name}")
+                        log.info("Starting Server  ${scvmmOpts.name}")
                         apiService.startServer(scvmmOpts, scvmmOpts.externalId)
 						provisionResponse.success = true
 						log.debug("provisionResponse.success: ${provisionResponse.success}")
@@ -2113,7 +2056,93 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
     }
 
-    private Map waitForVmPowerState(Map scvmmOpts, String vmId, String desiredState, Integer maxAttempts = 60, Long sleepMs = 5000L) {
+    private void createDataDisksPostBookDiskCreation(Cloud cloud, ComputeServer server, Map scvmmOpts) {
+        // Boot with root disk only so guest enumerates OS disk first
+        log.debug("Starting Server with root disk only: name=${scvmmOpts.name}, externalId=${scvmmOpts.externalId}")
+        def startServerStatus = apiService.startServer(scvmmOpts, scvmmOpts.externalId)
+        if (!startServerStatus.success) {
+            String errorMsg = "Failed to start server with root disk only: ${scvmmOpts.externalId}"
+            log.error(errorMsg)
+            throw new RuntimeException(errorMsg)
+        }
+
+        // Wait for the server to be powered up
+        log.debug("Waiting for server to power up: name=${scvmmOpts.name}, externalId=${scvmmOpts.externalId}")
+        def checkReady = apiService.checkServerReady(scvmmOpts + [waitForIp: false], scvmmOpts.externalId)
+        if (!checkReady.success) {
+            String errorMsg = "Server did not power up after root disk start: ${scvmmOpts.externalId}"
+            log.error(errorMsg)
+            throw new RuntimeException(errorMsg)
+        }
+
+        // Now stop the server so we can do the deferred data disk attach
+        def stopServerStatus = apiService.stopServer(scvmmOpts, scvmmOpts.externalId)
+        if (!stopServerStatus.success) {
+            String errorMsg = "Failed to stop server with root disk only: ${scvmmOpts.externalId}"
+            log.error(errorMsg)
+            throw new RuntimeException(errorMsg)
+        }
+
+        // Wait for the server to be powered down
+        log.debug("Waiting for server to power down: name=${scvmmOpts.name}, externalId=${scvmmOpts.externalId}")
+        checkReady = waitForVmPowerState(scvmmOpts, scvmmOpts.externalId as String, 'PowerOff')
+        if (!checkReady.success) {
+            String errorMsg = "Server did not power down after root disk start: ${scvmmOpts.externalId}"
+            log.error(errorMsg)
+            throw new RuntimeException(errorMsg)
+        }
+
+        log.debug("Attaching deferred data disks for server: name=${scvmmOpts.name}, externalId=${scvmmOpts.externalId}")
+        def deferredAttach = attachDeferredDataDisks(cloud, server, scvmmOpts)
+        if (!deferredAttach.success) {
+            String errorMsg = deferredAttach.msg ?: "Deferred data disk attach failed for VM: ${scvmmOpts.externalId}"
+            log.error(errorMsg)
+            throw new RuntimeException(errorMsg)
+        }
+
+        // Re-enumerate VM disks after deferred attach and then sync data-volume metadata.
+        log.debug("Re-enumerating VM disks after deferred attach for server: ${scvmmOpts.name}")
+        def refreshedDiskDrives = apiService.listVirtualDiskDrives(scvmmOpts, scvmmOpts.externalId)
+        if (!refreshedDiskDrives.success) {
+            String errorMsg = "Unable to re-enumerate VM disk drives after deferred attach: ${scvmmOpts.externalId}"
+            log.error(errorMsg)
+            throw new RuntimeException(errorMsg)
+        }
+        def refreshedDataDisks = refreshedDiskDrives.disks
+                ?.findAll { it.VolumeType?.toString() != 'BootAndSystem' }
+                ?.sort { a, b ->
+                    def busCompare = (a.Bus ?: 0) <=> (b.Bus ?: 0)
+                    busCompare != 0 ? busCompare : ((a.Lun ?: 0) <=> (b.Lun ?: 0))
+                } ?: []
+        def dataVolumes = (storageVolumes ?: server.volumes)
+                ?.findAll { it.rootVolume != true }
+                ?.sort { it.id } ?: []
+        dataVolumes.eachWithIndex { StorageVolume storageVolume, int idx ->
+            def dataDisk = idx < refreshedDataDisks.size() ? refreshedDataDisks[idx] : null
+            if (dataDisk?.VhdID) {
+                storageVolume.externalId = dataDisk.VhdID
+            }
+            storageVolume.datastore = loadDatastoreForVolume(cloud, dataDisk?.HostVolumeId, dataDisk?.FileShareId, dataDisk?.PartitionUniqueId) ?: storageVolume.datastore
+            log.debug("Data volume updated after deferred attach: " +
+                    "name=${storageVolume.name} (${storageVolume.id}), " +
+                    "externalId=${storageVolume.externalId}, " +
+                    "datastore=${storageVolume.datastore?.name}, " +
+                    "bus=${dataDisk?.Bus}, lun=${dataDisk?.Lun}")
+            try {
+                context.services.storageVolume.save(storageVolume)
+            } catch (Exception e) {
+                log.error("Failed to save storage volume after deferred attach: ${storageVolume.name} (${storageVolume.id})", e)
+            }
+        }
+    }
+
+    private Map waitForVmPowerState(
+            Map scvmmOpts,
+            String vmId,
+            String desiredState,
+            Integer maxAttempts = 60,
+            Long sleepMs = 5000L
+    ) {
         def rtn = [success: false]
         for (int attempt = 0; attempt < maxAttempts; attempt++) {
             def detail = apiService.getServerDetails(scvmmOpts, vmId)
@@ -2124,10 +2153,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             sleep(sleepMs)
         }
         rtn.msg = "Timed out waiting for VM ${vmId} to reach power state ${desiredState}"
-        rtn
+        return rtn
     }
 
-    private Map attachDeferredDataDisks(Map scvmmOpts, ComputeServer server, Cloud cloud) {
+    private Map attachDeferredDataDisks(Cloud cloud, ComputeServer server, Map scvmmOpts) {
+        log.debug("attachDeferredDataDisks, cloud=${cloud.name} ($cloud.id), server=${server.name} (${server.id}), " +
+                "server.externalId=${server.externalId}, scvmmOpts.externalId=${scvmmOpts.externalId}")
         def rtn = [success: true]
         def dataVolumes = server.volumes?.findAll { it.rootVolume != true } ?: []
         dataVolumes.eachWithIndex { StorageVolume storageVolume, int index ->
@@ -2153,9 +2184,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 storageVolume.externalId = disk.VhdID
             }
             storageVolume.datastore = loadDatastoreForVolume(cloud, disk.HostVolumeId, disk.FileShareId, disk.PartitionUniqueId) ?: storageVolume.datastore
-            context.services.storageVolume.save(storageVolume)
+            try {
+                context.services.storageVolume.save(storageVolume)
+            } catch (Exception e) {
+                log.error("Failed to save storage volume after deferred attach: ${storageVolume.name} (${storageVolume.id})", e)
+            }
         }
-        rtn
+        return rtn
     }
 
     private saveAndGetNetworkInterface(ComputeServer server, privateIp, publicIp, index, macAddress) {
