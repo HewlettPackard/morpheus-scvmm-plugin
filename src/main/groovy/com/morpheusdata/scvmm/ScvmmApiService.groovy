@@ -1605,8 +1605,8 @@ foreach (\$network in \$networks) {
                     // the expected count.. we are good
                     log.debug "serverStatus: ${serverDetail.server?.Status}, opts.dataDisks: ${opts.dataDisks?.size()}, additionalTemplateDisks: ${opts.additionalTemplateDisks?.size()}"
 
-                     if (serverDetail.server?.Status != 'UnderCreation' &&
-                             serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
+                    if (serverDetail.server?.Status != 'UnderCreation' /*&&
+                             serverDetail.server?.VirtualDiskDrives?.size() >= 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))*/) {
                         // additionalTemplateDisks are created after VM creation
                         // data disks are created and attached after vm creation
 
@@ -1758,6 +1758,7 @@ Status=\$job.Status.toString()
     }
 
     def startServer(opts, vmId) {
+        log.debug("startServer: vmId=${vmId}, opts=${opts}")
         def rtn = [success: false]
         try {
             // Only start if it isn't already running
@@ -1778,6 +1779,7 @@ Status=\$job.Status.toString()
     }
 
     def stopServer(opts, vmId) {
+        log.debug("stopServer: vmId=${vmId}, opts=${opts}")
         def rtn = [success: false]
         try {
             def command = """\$VM = Get-SCVirtualMachine -VMMServer localhost  -ID \"${vmId}\"
@@ -2518,27 +2520,8 @@ For (\$i=0; \$i -le 10; \$i++) {
                     commands << "\$ignore = New-SCVirtualDiskDrive -VMMServer localhost ${generationNumber == '1' ? '-IDE' : '-SCSI'} -Bus 0 -LUN 0 -JobGroup $diskJobGuid -CreateDiffDisk \$false -VirtualHardDisk \$VirtualHardDisk -VolumeType BootAndSystem"
                 }
 
-                dataDisks?.eachWithIndex { dataDisk, index ->
-                    def fromDisk = null
-                    if (isSyncdImage) {
-                        fromDisk = "\$VirtualHardDisk${index}"
-                        def diskExternalId = diskExternalIdMappings[1 + index]?.externalId
-                        if(diskExternalId) {
-                            commands << "${fromDisk} = Get-SCVirtualHardDisk -VMMServer localhost -ID \"${diskExternalId}\""
-                        }
-                    }
-                    def busNumber = '0'
-                    def generateResult = generateDataDiskCommandXXX(
-                            generationNumber,
-                            (index as int) + 1,
-                            diskJobGuid,
-                            dataDisk.maxStorage.div(ComputeUtility.ONE_MEGABYTE) as int,
-                            dataDisk.volumePath as String,
-                            fromDisk,
-                            deployingToCloud
-                    )
-                    commands << generateResult
-                }
+                // Data disks are attached later in the host provisioning workflow, after an initial boot/shutdown
+                // cycle to ensure consistent disk enumeration order.
 
                 // Create the Temporary Template
 
