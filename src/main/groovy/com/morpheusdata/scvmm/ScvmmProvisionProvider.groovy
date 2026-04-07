@@ -842,7 +842,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 						server.lvmEnabled = false
 						server.managed = true
 						server.capacityInfo = new ComputeCapacityInfo(maxCores: scvmmOpts.maxCores, maxMemory: scvmmOpts.maxMemory, maxStorage: scvmmOpts.maxTotalStorage)
-						server.status = 'provisioned'
+//						server.status = 'provisioned'
 						MorpheusUtil.saveAndGetMorpheusServer(context, server)
 
 						// start it
@@ -2006,10 +2006,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                                     "externalId=${rootVolume.externalId}, " +
                                     "datastore=${rootVolume.datastore?.name}")
                             context.services.storageVolume.save(rootVolume)
-                            // Data volumes are synchronized after deferred attach and re-enumeration.
+                            if (apiService.isDeferDataDiskAttach(scvmmOpts)) {
+                                syncDataVolumeMetadata(cloud, server, serverDisks)
+                            }
                         }
 
-						server.externalId = instance.id
+                        // Add the created VM instance ID to scvmmOpts.externalId
+                        scvmmOpts.externalId = instance.id
+                        createDataDisksPostBootDiskCreation(cloud, server, scvmmOpts)
+
+                        server.externalId = instance.id
 						server.parentServer = node
 						server.osDevice = '/dev/sda'
 						server.dataDevice = '/dev/sda'
@@ -2018,11 +2024,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 						server.status = 'provisioned'
 						context.async.computeServer.save(server).blockingGet()
 
-                        // Add the created VM instance ID to scvmmOpts.externalId
-                        scvmmOpts.externalId = instance.id
-
-                        createDataDisksPostBookDiskCreation(cloud, server, scvmmOpts)
-
+                        // start it
                         log.info("Starting Server  ${scvmmOpts.name}")
                         apiService.startServer(scvmmOpts, scvmmOpts.externalId)
 						provisionResponse.success = true
@@ -2056,7 +2058,35 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
     }
 
-    private void createDataDisksPostBookDiskCreation(Cloud cloud, ComputeServer server, Map scvmmOpts) {
+    private void syncDataVolumeMetadata(Cloud cloud, ComputeServer server, Map serverDisks) {
+        log.debug("Syncing data volume metadata for server: ${server.name} (${server.id})")
+        List<StorageVolume> storageVolumes = server.volumes ?: []
+        storageVolumes.each { storageVolume ->
+            def dataDisk = serverDisks.dataDisks.find { it.id == storageVolume.id }
+            if (dataDisk) {
+                def newExternalId = serverDisks.diskMetaData[dataDisk.externalId]?.VhdID
+                if (newExternalId) {
+                    storageVolume.externalId = newExternalId
+                }
+
+                // Ensure the datastore is set
+                storageVolume.datastore = loadDatastoreForVolume(cloud, serverDisks.diskMetaData[storageVolume.externalId]?.HostVolumeId, serverDisks.diskMetaData[storageVolume.externalId]?.FileShareId, serverDisks.diskMetaData[storageVolume.externalId]?.PartitionUniqueId) ?: storageVolume.datastore
+                // Sync the volume changes to the Morpheus DB
+                log.debug("Data volume updated: " +
+                        "name=${storageVolume.name} (${storageVolume.id}), " +
+                        "externalId=${storageVolume.externalId}, " +
+                        "datastore=${storageVolume.datastore?.name}")
+                try {
+                    context.services.storageVolume.save(storageVolume)
+                } catch (Exception e) {
+                    log.error("Failed to update storage volume ${storageVolume.name} (${storageVolume.id}): " +
+                            "$e.message", e)
+                }
+            }
+        }
+    }
+
+    private void createDataDisksPostBootDiskCreation(Cloud cloud, ComputeServer server, Map scvmmOpts) {
         // Boot with root disk only so guest enumerates OS disk first
         log.debug("Starting Server with root disk only: name=${scvmmOpts.name}, externalId=${scvmmOpts.externalId}")
         def startServerStatus = apiService.startServer(scvmmOpts, scvmmOpts.externalId)
@@ -2075,7 +2105,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             throw new RuntimeException(errorMsg)
         }
 
-        // Now stop the server so we can do the deferred data disk attach
+        // Now stop the server so we can add the deferred data disk(s)
         def stopServerStatus = apiService.stopServer(scvmmOpts, scvmmOpts.externalId)
         if (!stopServerStatus.success) {
             String errorMsg = "Failed to stop server with root disk only: ${scvmmOpts.externalId}"
@@ -2092,6 +2122,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             throw new RuntimeException(errorMsg)
         }
 
+        // Attach deferred data disks now that the VM is powered down
         log.debug("Attaching deferred data disks for server: name=${scvmmOpts.name}, externalId=${scvmmOpts.externalId}")
         def deferredAttach = attachDeferredDataDisks(cloud, server, scvmmOpts)
         if (!deferredAttach.success) {
@@ -2100,7 +2131,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             throw new RuntimeException(errorMsg)
         }
 
-        // Re-enumerate VM disks after deferred attach and then sync data-volume metadata.
+        // Re-enumerate VM disks after deferred attach and then sync data-volume metadata
         log.debug("Re-enumerating VM disks after deferred attach for server: ${scvmmOpts.name}")
         def refreshedDiskDrives = apiService.listVirtualDiskDrives(scvmmOpts, scvmmOpts.externalId)
         if (!refreshedDiskDrives.success) {
@@ -2108,32 +2139,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             log.error(errorMsg)
             throw new RuntimeException(errorMsg)
         }
-        def refreshedDataDisks = refreshedDiskDrives.disks
-                ?.findAll { it.VolumeType?.toString() != 'BootAndSystem' }
-                ?.sort { a, b ->
-                    def busCompare = (a.Bus ?: 0) <=> (b.Bus ?: 0)
-                    busCompare != 0 ? busCompare : ((a.Lun ?: 0) <=> (b.Lun ?: 0))
-                } ?: []
-        def dataVolumes = (storageVolumes ?: server.volumes)
-                ?.findAll { it.rootVolume != true }
-                ?.sort { it.id } ?: []
-        dataVolumes.eachWithIndex { StorageVolume storageVolume, int idx ->
-            def dataDisk = idx < refreshedDataDisks.size() ? refreshedDataDisks[idx] : null
-            if (dataDisk?.VhdID) {
-                storageVolume.externalId = dataDisk.VhdID
-            }
-            storageVolume.datastore = loadDatastoreForVolume(cloud, dataDisk?.HostVolumeId, dataDisk?.FileShareId, dataDisk?.PartitionUniqueId) ?: storageVolume.datastore
-            log.debug("Data volume updated after deferred attach: " +
-                    "name=${storageVolume.name} (${storageVolume.id}), " +
-                    "externalId=${storageVolume.externalId}, " +
-                    "datastore=${storageVolume.datastore?.name}, " +
-                    "bus=${dataDisk?.Bus}, lun=${dataDisk?.Lun}")
-            try {
-                context.services.storageVolume.save(storageVolume)
-            } catch (Exception e) {
-                log.error("Failed to save storage volume after deferred attach: ${storageVolume.name} (${storageVolume.id})", e)
-            }
-        }
+
+        syncDataVolumeMetadata(cloud, server, refreshedDiskDrives)
     }
 
     private Map waitForVmPowerState(
@@ -2168,7 +2175,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
             def diskSpec = [
                     vhdName  : "data-${UUID.randomUUID().toString()}",
-                    vhdType  : null,
+                    vhdType: 'DynamicallyExpanding', // TODO
                     vhdFormat: null,
                     vhdPath  : storageVolume.volumePath,
                     sizeMb   : requestedSizeMb

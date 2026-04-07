@@ -119,6 +119,9 @@ class ScvmmApiService {
     def createServer(opts) {
         log.debug("createServer: ${opts}")
 
+        // Determine if this create server defers data disk attach until after the VM is created
+        setDeferDataDiskAttach(opts as Map)
+
         def rtn = [success: false]
         try {
             def createCommands
@@ -1444,8 +1447,7 @@ foreach (\$network in \$networks) {
     }
 
     def createAndAttachDisk(Map opts, Map diskSpec, Boolean returnDiskDrives=true) {
-        LogWrapper.instance.info("createAndAttachDisk - Attaching new Virtual SCSI Disk to VM ID:${opts.externalId} " +
-                "with spec ${diskSpec}")
+        LogWrapper.instance.info("createAndAttachDisk - Adding new Virtual SCSI Disk VHDType:${diskSpec}")
         String templateCmd = '''
         #Morpheus will replace items in <%   %>
         $vmId = "<%vmid%>"
@@ -2518,8 +2520,23 @@ For (\$i=0; \$i -le 10; \$i++) {
                     commands << "\$ignore = New-SCVirtualDiskDrive -VMMServer localhost ${generationNumber == '1' ? '-IDE' : '-SCSI'} -Bus 0 -LUN 0 -JobGroup $diskJobGuid -CreateDiffDisk \$false -VirtualHardDisk \$VirtualHardDisk -VolumeType BootAndSystem"
                 }
 
-                // Data disks are attached later in the host provisioning workflow, after an initial boot/shutdown
-                // cycle to ensure consistent disk enumeration order.
+                // If not deferring the data disk attach, then pre-existing logic is used to create/attach the SCSI
+                // data disks.
+                if (!isDeferDataDiskAttach(opts)) {
+                    dataDisks?.eachWithIndex { dataDisk, index ->
+                        def fromDisk
+                        if (isSyncdImage) {
+                            fromDisk = "\$VirtualHardDisk${index}"
+                            def diskExternalId = diskExternalIdMappings[1 + index]?.externalId
+                            if (diskExternalId) {
+                                commands << "${fromDisk} = Get-SCVirtualHardDisk -VMMServer localhost -ID \"${diskExternalId}\""
+                            }
+                        }
+                        def busNumber = '0'
+                        def generateResults = generateDataDiskCommand(busNumber, index, diskJobGuid, (int) dataDisk.maxStorage.div(ComputeUtility.ONE_MEGABYTE), dataDisk.volumePath, fromDisk, deployingToCloud)
+                        commands << generateResults.command
+                    }
+                }
 
                 // Create the Temporary Template
 
@@ -2616,6 +2633,60 @@ For (\$i=0; \$i -le 10; \$i++) {
         rtn.hardwareProfileName = hardwareProfileName
         rtn.templateName = templateName
         rtn
+    }
+
+    void setDeferDataDiskAttach(Map scvmmOpts) {
+        // If scvmmOpts not provided, log a warning and skip setting deferDataDiskAttach
+        if (!scvmmOpts) {
+            log.warn('setDeferScsiDiskAttachment called with null scvmmOpts, skipping deferred disk attach settings')
+            return
+        }
+
+        // If error retrieving the compute server, log a warning and default to setting deferDataDiskAttach to false
+        ComputeServer server
+        try {
+            server = morpheusContext.services.computeServer.get(scvmmOpts.serverId as Long)
+        } catch (e) {
+            log.warn("setDeferScsiDiskAttachment encountered an error fetching the server with id " +
+                    "${scvmmOpts.serverId}: ${e.message}. Skipping deferred disk attach settings.", e)
+            scvmmOpts.deferDataDiskAttach = false
+            return
+        }
+
+        // If returned compute server is null, log a warning and default to setting deferDataDiskAttach to false
+        if (!server) {
+            log.warn('setDeferScsiDiskAttachment could not find server with id ' +
+                    "${scvmmOpts.serverId}. Skipping deferred disk attach settings.")
+            scvmmOpts.deferDataDiskAttach = false
+            return
+        }
+
+        // Does this compute server have any data volumes to attach?
+        Boolean hasDataVolumes = server.volumes?.any { !it.rootVolume }
+
+        // Log relevant information that went into the decision of whether to defer data disk attachment or not
+        log.debug("setDeferDataDiskAttach: " +
+                "serverId=${scvmmOpts.serverId}, " +
+                "generation=${scvmmOpts.scvmmGeneration}, " +
+                "hasDataVolumes=${hasDataVolumes}, " +
+                "cloneVMId=${scvmmOpts.cloneVMId}, " +
+                "isTemplate=${scvmmOpts.isTemplate}, " +
+                "templateId=${scvmmOpts.templateId}")
+
+        String generation = scvmmOpts.scvmmGeneration.toString().toLowerCase()
+        Boolean templateBackedProvisioning = (scvmmOpts.isTemplate == true && scvmmOpts.templateId)
+        scvmmOpts.deferDataDiskAttach = (generation == 'generation1') && hasDataVolumes && !scvmmOpts.cloneVMId &&
+                !templateBackedProvisioning
+    }
+
+    boolean isDeferDataDiskAttach(Map<String, Object> scvmmOpts) {
+        if (!scvmmOpts || scvmmOpts.deferDataDiskAttach == null) {
+            log.warn('isDeferDataDiskAttach called with null or missing deferDataDiskAttach in scvmmOpts, ' +
+                    'defaulting to false')
+            return false
+        }
+        log.debug("isDeferDataDiskAttach: deferDataDiskAttach=${scvmmOpts.deferDataDiskAttach}")
+        return scvmmOpts.deferDataDiskAttach
     }
 
     def findBootDiskIndex(diskDrives) {
