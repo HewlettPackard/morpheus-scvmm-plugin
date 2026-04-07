@@ -842,7 +842,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 						server.lvmEnabled = false
 						server.managed = true
 						server.capacityInfo = new ComputeCapacityInfo(maxCores: scvmmOpts.maxCores, maxMemory: scvmmOpts.maxMemory, maxStorage: scvmmOpts.maxTotalStorage)
-//						server.status = 'provisioned'
+                        server.status = 'provisioned'
 						MorpheusUtil.saveAndGetMorpheusServer(context, server)
 
 						// start it
@@ -2174,11 +2174,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 return
             }
             def diskSpec = [
-                    vhdName  : "data-${UUID.randomUUID().toString()}",
-                    vhdType: 'DynamicallyExpanding', // TODO
+                    vhdName: "data${index + 1}-${UUID.randomUUID().toString()}",
+                    vhdType: 'DynamicallyExpanding',
                     vhdFormat: null,
-                    vhdPath  : storageVolume.volumePath,
-                    sizeMb   : requestedSizeMb
+                    vhdPath: storageVolume.volumePath,
+                    sizeMb : requestedSizeMb
             ]
             def attachResult = apiService.createAndAttachDisk(scvmmOpts, diskSpec, true)
             if (!attachResult.success || !attachResult.disk) {

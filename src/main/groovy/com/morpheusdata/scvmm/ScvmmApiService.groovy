@@ -1605,10 +1605,13 @@ foreach (\$network in \$networks) {
                 if (serverDetail.success == true) {
                     // There isn't a state on the VM to tell us it is created.. but, if the disk size matches
                     // the expected count.. we are good
-                    log.debug "serverStatus: ${serverDetail.server?.Status}, opts.dataDisks: ${opts.dataDisks?.size()}, additionalTemplateDisks: ${opts.additionalTemplateDisks?.size()}"
+                    def expectedDataDiskCount = opts.deferDataDiskAttach ? 0 : (opts.dataDisks?.size() ?: 0)
+                    def additionalTemplateDiskCount = opts.deferDataDiskAttach ? 0 : (opts.additionalTemplateDisks?.size() ?: 0)
+                    def expectedDiskCount = 1 + (expectedDataDiskCount - additionalTemplateDiskCount)
+                    log.debug "serverStatus: ${serverDetail.server?.Status}, expectedDiskCount: ${expectedDiskCount}, opts.dataDisks: ${opts.dataDisks?.size()}, additionalTemplateDisks: ${opts.additionalTemplateDisks?.size()}, deferDataDiskAttach: ${opts.deferDataDiskAttach}"
 
-                    if (serverDetail.server?.Status != 'UnderCreation' /*&&
-                             serverDetail.server?.VirtualDiskDrives?.size() >= 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))*/) {
+                    if (serverDetail.server?.Status != 'UnderCreation' &&
+                            serverDetail.server?.VirtualDiskDrives?.size() == expectedDiskCount) {
                         // additionalTemplateDisks are created after VM creation
                         // data disks are created and attached after vm creation
 
@@ -2680,9 +2683,12 @@ For (\$i=0; \$i -le 10; \$i++) {
     }
 
     boolean isDeferDataDiskAttach(Map<String, Object> scvmmOpts) {
-        if (!scvmmOpts || scvmmOpts.deferDataDiskAttach == null) {
-            log.warn('isDeferDataDiskAttach called with null or missing deferDataDiskAttach in scvmmOpts, ' +
-                    'defaulting to false')
+        if (!scvmmOpts) {
+            log.debug('isDeferDataDiskAttach called with null scvmmOpts, defaulting to false')
+            return false
+        }
+        if (scvmmOpts.deferDataDiskAttach == null) {
+            log.debug('isDeferDataDiskAttach called without deferDataDiskAttach in scvmmOpts, defaulting to false')
             return false
         }
         log.debug("isDeferDataDiskAttach: deferDataDiskAttach=${scvmmOpts.deferDataDiskAttach}")
