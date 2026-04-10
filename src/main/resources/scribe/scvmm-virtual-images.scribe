@@ -3,7 +3,7 @@ resource "virtual-image" "scvmm-image-morpheus-ubuntu-24-04" {
   category           = "hyperv.image.morpheus.ubuntu"
   sshUsername        = null
   sshPassword        = null
-  name               = "Morpheus Ubuntu 24.04"
+  name               = "Morpheus Ubuntu 24.04 20260115"
   imageType          = "vhd"
   remotePath         = "https://s3-us-west-1.amazonaws.com/morpheus-images/hyperv/20260115/ubuntu-24/morpheus-ubuntu-24_04-amd64-20260115.vhd.tar.gz"
   imagePath          = "hyperv/20260115/ubuntu-24"
