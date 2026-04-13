@@ -452,7 +452,7 @@ resource "os-type-image" "scvmm-morpheus-debian-12" {
 }
 
 resource "virtual-image" "scvmm-image-morpheus-debian-13-20260120" {
-  code               = "scvmm.image.morpheus.debian.13.20250218"
+  code               = "scvmm.image.morpheus.debian.13.20260120"
   category           = "scvmm.image.morpheus.debian"
   sshUsername        = null
   sshPassword        = null
