@@ -169,7 +169,7 @@ resource "virtual-image" "scvmm-image-morpheus-ubuntu-14-04" {
   category           = "scvmm.image.morpheus.ubuntu.14.04"
   sshUsername        = "ubuntu"
   sshPassword        = null
-  name               = "morpheus ubuntu 14.04"
+  name               = "Morpheus Ubuntu 14.04"
   imageType          = "vhd"
   remotePath         = ""
   imagePath          = "vhd/ubuntu/ubuntu-14_04"
