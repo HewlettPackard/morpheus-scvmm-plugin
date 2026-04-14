@@ -309,6 +309,12 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 			zoneRegionOrFilters << new DataFilter("userUploaded", true)
 		}
 
+		// Always include SCVMM system images regardless of zone sync status
+		zoneRegionOrFilters << new DataAndFilter([
+			new DataFilter("systemImage", true),
+			new DataFilter("zoneType", "scvmm")
+		])
+
 		query.withFilter(new DataOrFilter(zoneRegionOrFilters))
 
 		try {
