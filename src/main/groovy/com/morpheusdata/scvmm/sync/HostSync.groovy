@@ -95,15 +95,32 @@ class HostSync {
             for (updateItem in updateList) {
                 def existingItem = updateItem.existingItem
                 def masterItem = updateItem.masterItem
+                log.debug("HostSync: updateMatchedHosts: server: {} (id:{}), current serverOs: {}, SCVMM reported os: {}",
+                        existingItem.name, existingItem.id, existingItem.serverOs?.code, masterItem.os)
+                def save = false
                 def cluster = clusters.find { it.internalId == masterItem.cluster }
                 // May be null if Host not in a cluster
                 if (existingItem.resourcePool != cluster) {
                     existingItem.resourcePool = cluster
+                    save = true
+                }
+                // Detect and fix OS mismatch
+                def expectedOs = getHypervisorOs(masterItem.os)
+                if (expectedOs && existingItem.serverOs?.code != expectedOs.code) {
+                    log.debug("HostSync: updateMatchedHosts: OS mismatch for server {} - changing from {} to {}",
+                            existingItem.name, existingItem.serverOs?.code, expectedOs.code)
+                    existingItem.serverOs = expectedOs
+                    existingItem.osType = 'windows'
+                    save = true
+                }
+                if (save) {
                     def savedServer = context.async.computeServer.save(existingItem).blockingGet()
-                    log.debug("savedServer?.id: ${savedServer?.id}")
+                    log.debug(" savedServer?.id:${savedServer?.id}")
                     if (savedServer) {
                         updateHostStats(savedServer, masterItem)
                     }
+                } else {
+                    updateHostStats(existingItem, masterItem)
                 }
             }
         } catch (e) {
@@ -116,7 +133,9 @@ class HostSync {
         try {
             def serverType = context.async.cloud.findComputeServerTypeByCode("scvmmHypervisor").blockingGet()
             for (cloudItem in addList) {
+                log.debug("HostSync: addMissingHosts: calling getHypervisorOs with os: {}", cloudItem.os)
                 def serverOs = getHypervisorOs(cloudItem.os)
+                log.debug("HostSync: addMissingHosts: getHypervisorOs returned: {}", serverOs?.code)
                 def cluster = clusters.find { it.internalId == cloudItem.cluster }
                 // May be null if Host not in a cluster
                 def serverConfig =
@@ -180,12 +199,16 @@ class HostSync {
     }
 
     def getHypervisorOs(name) {
-        def rtn
-        if (name?.indexOf('2016') > -1)
-            rtn = new OsType(code: 'windows.server.2016')
-        else
-            rtn = new OsType(code: 'windows.server.2012')
-        return rtn
+        log.debug("HostSync: getHypervisorOs: name: {}", name)
+        def versionCode = apiService.extractWindowsServerVersion(name ?: '')
+        log.debug("HostSync: getHypervisorOs: extractWindowsServerVersion returned: {}", versionCode)
+        def osType = context.services.osType.find(new DataQuery().withFilter('code', versionCode))
+        if (!osType) {
+            log.debug("HostSync: getHypervisorOs: OsType not found in DB for code: {}, using new OsType", versionCode)
+            osType = new OsType(code: versionCode)
+        }
+        log.debug("HostSync: getHypervisorOs: returning OsType: {}", osType?.code)
+        return osType
     }
 
     def updateHostStats(ComputeServer server, hostMap) {

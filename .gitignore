@@ -10,3 +10,4 @@ build/
 out/
 .assetcache
 lib/
+.vscode/
