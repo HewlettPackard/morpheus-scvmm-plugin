@@ -2571,27 +2571,24 @@ For (\$i=0; \$i -le 10; \$i++) {
             }
 
             // OS Disk configured in Template: Prepare to deploy VM
-            if (deployingToCloud) {
-                // deployingToCloud - then assign cloud Only - no need to pin Storage paths
-                // Deploying to a Cloud $cloud should be available
+            if (hostExternalId) {
+                // Host explicitly selected — use VMHost parameter set regardless of cloud scope
+                commands << "\$vmHost = Get-SCVMHost -ID \"$hostExternalId\""
+                commands << "\$ignore = Set-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration -VMHost \$vmHost"
+                commands << "\$ignore = Update-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration"
+                def newVMString = "\$createdVm = New-SCVirtualMachine -Name \"$vmId\" -VMConfiguration \$virtualMachineConfiguration ${isSysprep ? "-AnswerFile \$AnswerFile" : ""} ${isTemplate ? "-HardwareProfile \$HardwareProfile" : ""} -JobGroup \"$diskJobGuid\" -StartAction \"TurnOnVMIfRunningWhenVSStopped\" -RunAsynchronously -StopAction \"SaveVM\""
+                newVMString = appendOSCustomization(newVMString, opts)
+                commands << newVMString
+            } else if (deployingToCloud) {
+                // No host selected — let SCVMM cloud placement decide
                 commands << "\$ignore = Set-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration -CapabilityProfile \$CapabilityProfile -cloud \$cloud"
                 commands << "\$ignore = Update-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration"
                 def newVMString = "\$createdVm = New-SCVirtualMachine -Name \"$vmId\" -VMConfiguration \$virtualMachineConfiguration ${isSysprep ? "-AnswerFile \$AnswerFile" : ""} -HardwareProfile \$HardwareProfile -JobGroup \"$diskJobGuid\" -StartAction \"TurnOnVMIfRunningWhenVSStopped\" -RunAsynchronously -StopAction \"SaveVM\""
                 newVMString = appendOSCustomization(newVMString, opts)
                 commands << newVMString
             } else {
-                //HostGroup deployment NOT TO CLOUD
-                if(hostExternalId) {
-                    commands << "\$vmHost = Get-SCVMHost -ID \"$hostExternalId\""
-                    commands << "\$ignore = Set-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration -VMHost \$vmHost"
-                    commands << "\$ignore = Update-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration"
-                    //Do Not map Additional volumes here - done later
-                    def newVMString = "\$createdVm = New-SCVirtualMachine -Name \"$vmId\" -VMConfiguration \$virtualMachineConfiguration ${isSysprep ? "-AnswerFile \$AnswerFile" : ""} ${isTemplate ? "-HardwareProfile \$HardwareProfile" : ""} -JobGroup \"$diskJobGuid\" -StartAction \"TurnOnVMIfRunningWhenVSStopped\" -RunAsynchronously -StopAction \"SaveVM\""
-                    newVMString = appendOSCustomization(newVMString, opts)
-                    commands << newVMString
-                } else {
-                    log.error("buildCreateServerCommands : No Host provided")
-                }
+                //HostGroup deployment NOT TO CLOUD — host is required
+                log.error("buildCreateServerCommands : No Host provided")
             }
         } else {
             //Clone request
@@ -2613,18 +2610,13 @@ For (\$i=0; \$i -le 10; \$i++) {
             commands << "}"
             if (hostExternalId) {
                 commands << "\$vmHost = Get-SCVMHost -ID \"$hostExternalId\""
-                def newVMString
-                if (deployingToCloud) {
-                    newVMString = "\$createdVm = New-SCVirtualMachine -VM \$VM -Name \"$vmId\" -JobGroup $virtualNetworkGuid -UseDiffDiskOptimization -RunAsynchronously -Cloud \$cloud -HardwareProfile \$HardwareProfile -StartAction TurnOnVMIfRunningWhenVSStopped -StopAction SaveVM"
-                } else {
-                    newVMString = "\$createdVm = New-SCVirtualMachine -VM \$VM -Name \"$vmId\" -JobGroup $virtualNetworkGuid -UseDiffDiskOptimization -RunAsynchronously -VMHost \$vmHost -Path \"$volumePath\" -HardwareProfile \$HardwareProfile -StartAction TurnOnVMIfRunningWhenVSStopped -StopAction SaveVM"
-                }
+                def newVMString = "\$createdVm = New-SCVirtualMachine -VM \$VM -Name \"$vmId\" -JobGroup $virtualNetworkGuid -UseDiffDiskOptimization -RunAsynchronously -VMHost \$vmHost -Path \"$volumePath\" -HardwareProfile \$HardwareProfile -StartAction TurnOnVMIfRunningWhenVSStopped -StopAction SaveVM"
 
                 newVMString = appendOSCustomization(newVMString, opts)
                 commands << newVMString
 
-            } else {
-                def newVMString = "\$createdVm = New-SCVirtualMachine -VM \$VM -Name \"$vmId\" ${deployingToCloud ? "-Cloud \$cloud" : ""} -JobGroup $virtualNetworkGuid -UseDiffDiskOptimization -RunAsynchronously -Cloud \$cloud -HardwareProfile \$HardwareProfile -StartAction TurnOnVMIfRunningWhenVSStopped -StopAction SaveVM"
+            } else if (deployingToCloud) {
+                def newVMString = "\$createdVm = New-SCVirtualMachine -VM \$VM -Name \"$vmId\" -Cloud \$cloud -JobGroup $virtualNetworkGuid -UseDiffDiskOptimization -RunAsynchronously -HardwareProfile \$HardwareProfile -StartAction TurnOnVMIfRunningWhenVSStopped -StopAction SaveVM"
                 newVMString = appendOSCustomization(newVMString, opts)
                 commands << newVMString
             }
