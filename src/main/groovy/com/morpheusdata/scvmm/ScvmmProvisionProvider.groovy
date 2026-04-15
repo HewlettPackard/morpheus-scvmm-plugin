@@ -1892,7 +1892,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
 
             scvmmOpts += apiService.getScvmmControllerOpts(cloud, controllerNode)
-            def imageId
+            def imageId = null
             if (layout && typeSet) {
                 virtualImage = typeSet.workloadType.virtualImage
                 imageId = virtualImage.externalId
@@ -1904,6 +1904,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		virtualImage = new VirtualImage(code: 'scvmm.image.morpheus.ubuntu.22.04.20250218.amd64')
                 //better this later
             }
+
+            log.debug("runHost virtual image: name=${virtualImage?.name} (${virtualImage?.id}), " +
+                    "code=${virtualImage?.code}, remotePath=${virtualImage?.remotePath}, imageId=${imageId}")
 
             if (!imageId) { //If its userUploaded and still needs uploaded
                 def cloudFiles = context.async.virtualImage.getVirtualImageFiles(virtualImage).blockingGet()
