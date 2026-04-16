@@ -128,7 +128,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 			optionList << [name: "Select a Cloud", value: ""]
 			optionList += results.clouds?.collect { [name: it.Name, value: it.ID] }
 		} else {
-			optionList = [[name:"No Clouds Found: verify credentials above", value:""]]
+			optionList = [[name:"No Clouds found: verify credentials above", value:""]]
 		}
 		return optionList
 	}

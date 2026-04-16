@@ -257,8 +257,8 @@ class ScvmmCloudProvider implements CloudProvider {
 		)
 		options << new OptionType(
 				name: 'Enable Hypervisor Console',
-				code: 'zoneType.scvmm.enableHypervisorConsole',
-				fieldName: 'enableHypervisorConsole',
+				code: 'zoneType.scvmm.enableVnc',
+				fieldName: 'enableVnc',
 				displayOrder: displayOrder += 10,
 				fieldLabel: 'Enable Hypervisor Console',
 				required: false,
@@ -796,6 +796,17 @@ class ScvmmCloudProvider implements CloudProvider {
 	 */
 	@Override
 	Boolean hasDatastores() {
+		return true
+	}
+
+	/**
+	 * Returns whether a cloud supports security groups. Matches the embedded SCVMM
+	 * seed (hasSecurityGroups:true) so the "Security Group Active" checkbox renders
+	 * in the Inventory Options section of the Add Cloud modal.
+	 * @return Boolean
+	 */
+    @Override
+	Boolean hasSecurityGroups() {
 		return true
 	}
 
