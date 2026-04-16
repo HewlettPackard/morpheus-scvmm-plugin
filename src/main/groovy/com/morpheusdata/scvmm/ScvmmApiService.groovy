@@ -1993,11 +1993,18 @@ For (\$i=0; \$i -le 10; \$i++) {
         log.debug("validateServerConfig: ${opts}")
         def rtn = [success: false, errors: []]
         try {
-            if (!opts.scvmmCapabilityProfile) {
-                rtn.errors += [field: 'scvmmCapabilityProfile', msg: 'You must select a capability profile']
+            // When creating an instance, the capability profile is required. When creating a Docker Cluster, there is
+            // not capability profile option. We need to check if the field is present before validating it.
+            if (opts.containsKey(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE) && !opts.(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE)) {
+                rtn.errors += [field: ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE, msg: 'You must select a capability profile']
+            }
+            // When creating an instance, the template (i.e. virtual image) is required. When creating a Docker Cluster,
+            // there is no user specified virtual image. We need to check if the field is present before validating it.
+            if (opts.containsKey(ScvmmConstants.CFG_TEMPLATE) && !opts.(ScvmmConstants.CFG_TEMPLATE)) {
+                rtn.errors += [field: ScvmmConstants.CFG_TEMPLATE, msg: 'Virtual image is required']
             }
             // if(!opts.networkId && opts.networkInterfaces?.size() == 0) {
-            // 	rtn.errors += [field: 'networkInterface', msg: 'You must choose a network']
+            // 	rtn.errors += [field: ScvmmConstants.CFG_NETWORK_INTERFACE, msg: 'You must choose a network']
             // }
             if (opts.networkId) {
                 // great
@@ -2008,29 +2015,29 @@ For (\$i=0; \$i -le 10; \$i++) {
                     def networkId = nic.network?.id ?: nic.network.group
                     log.debug("network.id: ${networkId}")
                     if (!networkId) {
-                        rtn.errors << [field: 'networkInterface', msg: 'Network is required']
+                        rtn.errors << [field: ScvmmConstants.CFG_NETWORK_INTERFACE, msg: 'Network is required']
                     }
                     if (nic.ipMode == 'static' && !nic.ipAddress) {
-                        rtn.errors = [field: 'networkInterface', msg: 'You must enter an ip address']
+                        rtn.errors = [field: ScvmmConstants.CFG_NETWORK_INTERFACE, msg: 'You must enter an ip address']
                     }
                 }
-            } else if (opts?.networkInterface) {
+            } else if (opts?.containsKey(ScvmmConstants.CFG_NETWORK_INTERFACE)) {
                 // UI params
-                log.debug("validateServerConfig networkInterface: ${opts.networkInterface}")
-                toList(opts?.networkInterface?.network?.id)?.eachWithIndex { networkId, index ->
+                log.debug("validateServerConfig networkInterface: ${opts.(ScvmmConstants.CFG_NETWORK_INTERFACE)}")
+                toList(opts?.(ScvmmConstants.CFG_NETWORK_INTERFACE)?.network?.id)?.eachWithIndex { networkId, index ->
                     log.debug("network.id: ${networkId}")
                     if (networkId?.length() < 1) {
-                        rtn.errors << [field: 'networkInterface', msg: 'Network is required']
+                        rtn.errors << [field: ScvmmConstants.CFG_NETWORK_INTERFACE, msg: 'Network is required']
                     }
-                    if (networkInterface[index].ipMode == 'static' && !networkInterface[index].ipAddress) {
-                        rtn.errors = [field: 'networkInterface', msg: 'You must enter an ip address']
+                    if (opts.(ScvmmConstants.CFG_NETWORK_INTERFACE)[index].ipMode == 'static' && !opts.(ScvmmConstants.CFG_NETWORK_INTERFACE)[index].ipAddress) {
+                        rtn.errors = [field: ScvmmConstants.CFG_NETWORK_INTERFACE, msg: 'You must enter an ip address']
                     }
                 }
             } else {
-                rtn.errors << [field: 'networkId', msg: 'Network is required']
+                rtn.errors << [field: ScvmmConstants.CFG_NETWORK_ID, msg: 'Network is required']
             }
-            if (opts.containsKey('nodeCount') && opts.nodeCount == '') {
-                rtn.errors += [field: 'nodeCount', msg: 'You must indicate number of hosts']
+            if (opts.containsKey(ScvmmConstants.CFG_NODE_COUNT) && opts.(ScvmmConstants.CFG_NODE_COUNT) == '') {
+                rtn.errors += [field: ScvmmConstants.CFG_NODE_COUNT, msg: 'You must indicate number of hosts']
             }
             rtn.success = (rtn.errors.size() == 0)
             log.debug "validateServer results: ${rtn}"
@@ -2358,7 +2365,7 @@ For (\$i=0; \$i -le 10; \$i++) {
 
         def hardwareGuid = UUID.randomUUID().toString()
         def networkConfig = opts.networkConfig
-        def scvmmCapabilityProfile = opts.scvmmCapabilityProfile
+        def scvmmCapabilityProfile = opts.(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE)
         def scvmmGeneration = opts.scvmmGeneration ?: 'generation1'
         def hardwareProfileName = "Profile${UUID.randomUUID().toString()}"
         def maxCores = opts.maxCores

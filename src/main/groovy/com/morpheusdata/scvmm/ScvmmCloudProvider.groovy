@@ -1,16 +1,7 @@
+// Copyright 2026 Hewlett Packard Enterprise Development LP
+
 package com.morpheusdata.scvmm
 
-import com.morpheusdata.scvmm.helper.morpheus.types.StorageVolumeTypeHelper
-import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
-import com.morpheusdata.scvmm.sync.CloudCapabilityProfilesSync
-import com.morpheusdata.scvmm.sync.ClustersSync
-import com.morpheusdata.scvmm.sync.DatastoresSync
-import com.morpheusdata.scvmm.sync.HostSync
-import com.morpheusdata.scvmm.sync.IpPoolsSync
-import com.morpheusdata.scvmm.sync.IsolationNetworkSync
-import com.morpheusdata.scvmm.sync.RegisteredStorageFileSharesSync
-import com.morpheusdata.scvmm.sync.NetworkSync
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.Plugin
 import com.morpheusdata.core.data.DataFilter
@@ -20,12 +11,37 @@ import com.morpheusdata.core.providers.CloudProvider
 import com.morpheusdata.core.providers.ProvisionProvider
 import com.morpheusdata.core.util.ConnectionUtils
 import com.morpheusdata.core.util.MorpheusUtils
-import com.morpheusdata.model.*
+import com.morpheusdata.model.BackupProvider
+import com.morpheusdata.model.Cloud
+import com.morpheusdata.model.CloudFolder
+import com.morpheusdata.model.CloudPool
+import com.morpheusdata.model.ComputeServer
+import com.morpheusdata.model.ComputeServerType
+import com.morpheusdata.model.Datastore
+import com.morpheusdata.model.Icon
+import com.morpheusdata.model.Network
+import com.morpheusdata.model.NetworkSubnetType
+import com.morpheusdata.model.NetworkType
+import com.morpheusdata.model.OptionType
+import com.morpheusdata.model.OsType
+import com.morpheusdata.model.PlatformType
+import com.morpheusdata.model.StorageControllerType
+import com.morpheusdata.model.StorageVolumeType
 import com.morpheusdata.request.ValidateCloudRequest
 import com.morpheusdata.response.ServiceResponse
+import com.morpheusdata.scvmm.helper.morpheus.types.StorageVolumeTypeHelper
+import com.morpheusdata.scvmm.logging.LogInterface
+import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.sync.CloudCapabilityProfilesSync
+import com.morpheusdata.scvmm.sync.ClustersSync
+import com.morpheusdata.scvmm.sync.DatastoresSync
+import com.morpheusdata.scvmm.sync.HostSync
+import com.morpheusdata.scvmm.sync.IpPoolsSync
+import com.morpheusdata.scvmm.sync.IsolationNetworkSync
+import com.morpheusdata.scvmm.sync.NetworkSync
+import com.morpheusdata.scvmm.sync.RegisteredStorageFileSharesSync
 import com.morpheusdata.scvmm.sync.TemplatesSync
 import com.morpheusdata.scvmm.sync.VirtualMachineSync
-import groovy.util.logging.Slf4j
 
 class ScvmmCloudProvider implements CloudProvider {
 	public static final String CLOUD_PROVIDER_CODE = 'scvmm'
@@ -368,9 +384,9 @@ class ScvmmCloudProvider implements CloudProvider {
 
 		// Host option type is used by multiple compute server types.
 		OptionType hostOptionType = new OptionType(code:'computeServerType.scvmm.capabilityProfile', inputType: OptionType.InputType.SELECT,
-				name:'capability profile', category:'provisionType.scvmm', optionSourceType:'scvmm', fieldName:'scvmmCapabilityProfile',
+				name: 'capability profile', category: 'provisionType.scvmm', optionSourceType: 'scvmm', fieldName: ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE,
 				fieldCode: 'gomorpheus.optiontype.CapabilityProfile', fieldLabel:'Capability Profile', fieldContext:'config', fieldGroup:'Options',
-				required:true, enabled:true, optionSource:'scvmmCapabilityProfile', editable:true, global:false, placeHolder:null, helpBlock:'',
+				required: true, enabled: true, optionSource: ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE, editable: true, global: false, placeHolder: null, helpBlock: '',
 				defaultValue:null, custom:false, displayOrder:10, fieldClass:null
 		)
 

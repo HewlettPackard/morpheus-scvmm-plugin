@@ -8,6 +8,19 @@ import java.util.regex.Pattern
 
 @CompileStatic
 class ScvmmConstants {
+
+    // -------------------------------------------------------------------------
+    // Config / option-source map key constants.
+    // These strings are used as map keys, fieldNames, and optionSource references
+    // across multiple providers and services. Centralized here to prevent typos
+    // and make rename-refactors a one-line change.
+    // -------------------------------------------------------------------------
+    static final String CFG_SCVMM_CAPABILITY_PROFILE = 'scvmmCapabilityProfile'
+    static final String CFG_NETWORK_INTERFACE = 'networkInterface'
+    static final String CFG_NETWORK_ID = 'networkId'
+    static final String CFG_NODE_COUNT = 'nodeCount'
+    static final String CFG_TEMPLATE = 'template'
+
     /**
      * SCVMM can create temporary VM templates with names like "Temporary Template{UUID}" while the SCVMM plugin can
      * create temporary VM templates with names like "Temporary Morpheus Template{UUID}". These occur during
