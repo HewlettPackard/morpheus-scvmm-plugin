@@ -805,6 +805,7 @@ class ScvmmCloudProvider implements CloudProvider {
 	 * in the Inventory Options section of the Add Cloud modal.
 	 * @return Boolean
 	 */
+    @Override
 	Boolean hasSecurityGroups() {
 		return true
 	}
