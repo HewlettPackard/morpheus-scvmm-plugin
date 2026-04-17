@@ -14,29 +14,7 @@ import com.morpheusdata.core.providers.HostProvisionProvider
 import com.morpheusdata.core.providers.ProvisionProvider
 import com.morpheusdata.core.providers.WorkloadProvisionProvider
 import com.morpheusdata.core.util.ComputeUtility
-import com.morpheusdata.model.Cloud
-import com.morpheusdata.model.ComputeCapacityInfo
-import com.morpheusdata.model.ComputeServer
-import com.morpheusdata.model.ComputeServerInterface
-import com.morpheusdata.model.ComputeServerType
-import com.morpheusdata.model.ComputeTypeSet
-import com.morpheusdata.model.Datastore
-import com.morpheusdata.model.HostType
-import com.morpheusdata.model.Icon
-import com.morpheusdata.model.Instance
-import com.morpheusdata.model.NetAddress
-import com.morpheusdata.model.OptionType
-import com.morpheusdata.model.OsType
-import com.morpheusdata.model.PlatformType
-import com.morpheusdata.model.ProcessEvent
-import com.morpheusdata.model.ResourcePermission
-import com.morpheusdata.model.ServicePlan
-import com.morpheusdata.model.StorageVolume
-import com.morpheusdata.model.StorageVolumeType
-import com.morpheusdata.model.VirtualImage
-import com.morpheusdata.model.VirtualImageLocation
-import com.morpheusdata.model.Workload
-import com.morpheusdata.model.WorkloadType
+import com.morpheusdata.model.*
 import com.morpheusdata.model.provisioning.HostRequest
 import com.morpheusdata.model.provisioning.WorkloadRequest
 import com.morpheusdata.request.ResizeRequest
@@ -194,7 +172,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 code: 'provisionType.scvmm.capabilityProfile',
                 category: 'provisionType.scvmm',
                 inputType: OptionType.InputType.SELECT,
-                fieldName: ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE,
+                fieldName: 'scvmmCapabilityProfile',
                 fieldContext: 'config',
                 fieldCode: 'gomorpheus.optiontype.CapabilityProfile',
                 fieldLabel: 'Capability Profile',
@@ -207,7 +185,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 defaultValue: null,
                 custom: false,
                 fieldClass: null,
-                optionSource: ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE,
+                optionSource: 'scvmmCapabilityProfile',
                 optionSourceType: 'scvmm'
         )
 
@@ -545,7 +523,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         log.debug "validateWorkload: ${opts}"
         def rtn = ServiceResponse.success()
         try {
-            Map validationOpts = getValidateServerConfigOptions(opts)
+            def validationOpts = getValidateServerConfigOptions(opts)
             def validationResults = apiService.validateServerConfig(validationOpts)
             if (!validationResults.success) {
                 rtn.success = false
@@ -658,10 +636,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
 
             scvmmOpts += apiService.getScvmmControllerOpts(cloud, controllerNode)
-            if (containerConfig.(ScvmmConstants.CFG_TEMPLATE) || virtualImage?.id) {
-                if (containerConfig.(ScvmmConstants.CFG_TEMPLATE)) {
-                    virtualImage = context.services.virtualImage.get(containerConfig.(ScvmmConstants.CFG_TEMPLATE)?.toLong())
-                }
+            if (containerConfig.template || virtualImage?.id) {
+				if(containerConfig.template) {
+					virtualImage = context.services.virtualImage.get(containerConfig.template?.toLong())
+				}
 
                 scvmmOpts.scvmmGeneration = virtualImage?.getConfigProperty('generation') ?: 'generation1'
                 scvmmOpts.isSyncdImage = virtualImage?.refType == 'ComputeZone'
@@ -1216,10 +1194,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 network               : network, networkId: network?.id, platform: platform, externalId: container.server.externalId, networkType: containerConfig.networkType,
                 containerConfig       : containerConfig, resourcePool: resourcePool?.externalId, hostId: containerConfig.hostId,
                 osDiskSize            : maxStorage, maxTotalStorage: maxTotalStorage, dataDisks: dataDisks,
-                (ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE): (
-                        containerConfig.(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE)?.toString() != '-1' ?
-                                containerConfig.(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE) : null
-                ),
+                scvmmCapabilityProfile: (containerConfig.scvmmCapabilityProfile?.toString() != '-1' ? containerConfig.scvmmCapabilityProfile : null),
                 accountId             : container.account?.id
         ]
     }
@@ -1447,11 +1422,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         def serverFolder = "morpheus\\morpheus_server_${server.id}"
         return [name     : serverName, vmId: server.externalId, config: serverConfig, server: server, serverId: server.id, memory: maxMemory, osDiskSize: maxStorage, externalId: server.externalId, maxCpu: maxCpu,
                 maxCores : maxCores, serverFolder: serverFolder, hostname: server.getExternalHostname(), network: network, networkId: network?.id, maxTotalStorage: maxTotalStorage,
-                dataDisks                                    : dataDisks,
-                (ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE): (
-                        serverConfig.(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE)?.toString() != '-1' ?
-                                serverConfig.(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE) : null
-                ),
+                dataDisks: dataDisks, scvmmCapabilityProfile: serverConfig.scvmmCapabilityProfile?.toString() != '-1' ? serverConfig.scvmmCapabilityProfile : null,
                 accountId: server.account?.id]
     }
 
@@ -1650,7 +1621,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             if (server.computeServerType?.vmHypervisor == true) {
                 rtn = ServiceResponse.success()
             } else {
-                Map validationOpts = getValidateServerConfigOptions(opts)
+                def validationOpts = getValidateServerConfigOptions(opts)
                 def validationResults = apiService.validateServerConfig(validationOpts)
                 if (!validationResults.success) {
                     rtn.success = false
@@ -1674,31 +1645,30 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      *         node count, and template if available
      */
     static protected Map getValidateServerConfigOptions(Map opts = [:]) {
-        // Build the options map for validating the server config. This is used in both validateHost and runWorkload,
-        // so we want to make sure we are checking all possible locations for these values (top level opts, opts.config,
-        // and nested config for network interfaces).
+        // Build the options map for validating the server config. This is used in both validateHost and
+        // validateWorkload,  so we want to make sure we are checking all possible locations for these
+        // values (top level opts, opts.config, and nested config for network interfaces).
         Map validationOpts = [
-                networkId: opts?.(ScvmmConstants.CFG_NETWORK_INTERFACE)?.network?.id ?:
-                        opts?.config?.(ScvmmConstants.CFG_NETWORK_INTERFACE)?.network?.id ?:
+                networkId: opts?.networkInterface?.network?.id ?:
+                        opts?.config?.networkInterface?.network?.id ?:
                                 opts.networkInterfaces.getAt(0)?.network?.id,
         ]
 
         // Check all possible locations for optional capability profile
-        if (opts?.config?.containsKey(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE)) {
-            validationOpts.(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE) =
-                    opts.config.(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE)
-        } else if (opts?.containsKey(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE)) {
-            validationOpts.(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE) = opts.(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE)
+        if (opts?.config?.containsKey('scvmmCapabilityProfile')) {
+            validationOpts.scvmmCapabilityProfile = opts.config.scvmmCapabilityProfile
+        } else if (opts?.containsKey('scvmmCapabilityProfile')) {
+            validationOpts.scvmmCapabilityProfile = opts.scvmmCapabilityProfile
         }
 
         // Check all possible locations for optional node count (for validating cluster configs)
-        if (opts?.config?.containsKey(ScvmmConstants.CFG_NODE_COUNT)) {
-            validationOpts.(ScvmmConstants.CFG_NODE_COUNT) = opts.config.(ScvmmConstants.CFG_NODE_COUNT)
+        if (opts?.config?.containsKey('nodeCount')) {
+            validationOpts.nodeCount = opts.config.nodeCount
         }
 
         // Check all possible locations for optional template (for validating virtual image configs)
-        if (opts?.config?.containsKey(ScvmmConstants.CFG_TEMPLATE)) {
-            validationOpts.(ScvmmConstants.CFG_TEMPLATE) = opts.config.(ScvmmConstants.CFG_TEMPLATE)
+        if (opts?.config?.containsKey('template')) {
+            validationOpts.template = opts.config.template
         }
 
         return validationOpts
@@ -1979,8 +1949,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             if (layout && typeSet) {
                 virtualImage = typeSet.workloadType.virtualImage
                 imageId = virtualImage.externalId
-            } else if (imageType == 'custom' && config.(ScvmmConstants.CFG_TEMPLATE)) {
-                def virtualImageId = config.(ScvmmConstants.CFG_TEMPLATE)?.toLong()
+            } else if (imageType == 'custom' && config.template) {
+                def virtualImageId = config.template?.toLong()
                 virtualImage = context.services.virtualImage.get(virtualImageId)
                 imageId = virtualImage.externalId
             } else {

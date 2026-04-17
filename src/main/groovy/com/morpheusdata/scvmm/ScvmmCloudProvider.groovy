@@ -2,33 +2,6 @@
 
 package com.morpheusdata.scvmm
 
-import com.morpheusdata.core.MorpheusContext
-import com.morpheusdata.core.Plugin
-import com.morpheusdata.core.data.DataFilter
-import com.morpheusdata.core.data.DataOrFilter
-import com.morpheusdata.core.data.DataQuery
-import com.morpheusdata.core.providers.CloudProvider
-import com.morpheusdata.core.providers.ProvisionProvider
-import com.morpheusdata.core.util.ConnectionUtils
-import com.morpheusdata.core.util.MorpheusUtils
-import com.morpheusdata.model.BackupProvider
-import com.morpheusdata.model.Cloud
-import com.morpheusdata.model.CloudFolder
-import com.morpheusdata.model.CloudPool
-import com.morpheusdata.model.ComputeServer
-import com.morpheusdata.model.ComputeServerType
-import com.morpheusdata.model.Datastore
-import com.morpheusdata.model.Icon
-import com.morpheusdata.model.Network
-import com.morpheusdata.model.NetworkSubnetType
-import com.morpheusdata.model.NetworkType
-import com.morpheusdata.model.OptionType
-import com.morpheusdata.model.OsType
-import com.morpheusdata.model.PlatformType
-import com.morpheusdata.model.StorageControllerType
-import com.morpheusdata.model.StorageVolumeType
-import com.morpheusdata.request.ValidateCloudRequest
-import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.scvmm.helper.morpheus.types.StorageVolumeTypeHelper
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
@@ -38,10 +11,23 @@ import com.morpheusdata.scvmm.sync.DatastoresSync
 import com.morpheusdata.scvmm.sync.HostSync
 import com.morpheusdata.scvmm.sync.IpPoolsSync
 import com.morpheusdata.scvmm.sync.IsolationNetworkSync
-import com.morpheusdata.scvmm.sync.NetworkSync
 import com.morpheusdata.scvmm.sync.RegisteredStorageFileSharesSync
+import com.morpheusdata.scvmm.sync.NetworkSync
+import com.morpheusdata.core.MorpheusContext
+import com.morpheusdata.core.Plugin
+import com.morpheusdata.core.data.DataFilter
+import com.morpheusdata.core.data.DataOrFilter
+import com.morpheusdata.core.data.DataQuery
+import com.morpheusdata.core.providers.CloudProvider
+import com.morpheusdata.core.providers.ProvisionProvider
+import com.morpheusdata.core.util.ConnectionUtils
+import com.morpheusdata.core.util.MorpheusUtils
+import com.morpheusdata.model.*
+import com.morpheusdata.request.ValidateCloudRequest
+import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.scvmm.sync.TemplatesSync
 import com.morpheusdata.scvmm.sync.VirtualMachineSync
+import groovy.util.logging.Slf4j
 
 class ScvmmCloudProvider implements CloudProvider {
 	public static final String CLOUD_PROVIDER_CODE = 'scvmm'
@@ -384,9 +370,9 @@ class ScvmmCloudProvider implements CloudProvider {
 
 		// Host option type is used by multiple compute server types.
 		OptionType hostOptionType = new OptionType(code:'computeServerType.scvmm.capabilityProfile', inputType: OptionType.InputType.SELECT,
-				name: 'capability profile', category: 'provisionType.scvmm', optionSourceType: 'scvmm', fieldName: ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE,
+				name:'capability profile', category:'provisionType.scvmm', optionSourceType:'scvmm', fieldName:'scvmmCapabilityProfile',
 				fieldCode: 'gomorpheus.optiontype.CapabilityProfile', fieldLabel:'Capability Profile', fieldContext:'config', fieldGroup:'Options',
-				required: true, enabled: true, optionSource: ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE, editable: true, global: false, placeHolder: null, helpBlock: '',
+				required:true, enabled:true, optionSource:'scvmmCapabilityProfile', editable:true, global:false, placeHolder:null, helpBlock:'',
 				defaultValue:null, custom:false, displayOrder:10, fieldClass:null
 		)
 
@@ -441,6 +427,15 @@ class ScvmmCloudProvider implements CloudProvider {
 				creatable:false, computeService:'scvmmComputeService', displayOrder: 6, hasAutomation:true, reconfigureSupported:true, guestVm:true,
 				containerHypervisor:true, bareMetalHost:false, vmHypervisor:false, agentType:ComputeServerType.AgentType.node, containerEngine:'docker',
 				provisionTypeCode:'scvmm', computeTypeCode:'docker-host', optionTypes:[hostOptionType]
+		)
+
+		//mvm
+		serverTypes << new ComputeServerType(code: 'mvmDockerHost', name: 'MVM Docker Host', description: '', platform: PlatformType.linux, nodeType: 'morpheus-node',
+				enabled: true, selectable: false, externalDelete: true, managed: true, controlPower: true, controlSuspend: true, creatable: false, computeService: 'kvmComputeService',
+				displayOrder: 17, hasAutomation: true,
+				containerHypervisor: true, bareMetalHost: false, hasDevices: true, supportsDeviceAttachment: true, vmHypervisor: false, agentType: ComputeServerType.AgentType.node, containerEngine: 'docker',
+				provisionTypeCode: 'mvm', computeTypeCode: 'docker-host',
+				reconfigureSupported: false, guestVm: false, hasMaintenanceMode: false,
 		)
 
 		return serverTypes

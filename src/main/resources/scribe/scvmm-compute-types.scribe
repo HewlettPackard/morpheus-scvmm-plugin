@@ -96,6 +96,21 @@ resource "compute-type-set" "docker-scvmm-ubuntu-22_04-set" {
   installStorageRuntime   = true
 }
 
+resource "compute-type-set" "docker_ubuntu_22_04_mvm_amd64_set" {
+  code                    = "docker-ubuntu-22.04-mvm-amd64-set"
+  name                    = "Morpheus MVM Docker Host"
+  workloadType            = "docker-ubuntu-22.04-mvm-amd64"
+  computeServerType       = "mvmDockerHost"
+  category                = "ubuntu"
+  priorityOrder           = 0
+  dynamicCount            = true
+  nodeCount               = 1
+  nodeType                = "worker"
+  canAddNodes             = true
+  installContainerRuntime = true
+  installStorageRuntime   = true
+}
+
 resource "compute-type-layout" "docker-scvmm-ubuntu-22_04-single" {
   code              = "docker-scvmm-ubuntu-22.04-single"
   name              = "SCVMM Docker Host"
@@ -111,6 +126,23 @@ resource "compute-type-layout" "docker-scvmm-ubuntu-22_04-single" {
     compute-type-set.docker-scvmm-ubuntu-22_04-set
   ]
   provisionType = "scvmm"
+}
+
+resource "compute-type-layout" "docker-ubuntu-22.04-mvm-amd64-single" {
+  code              = "docker-ubuntu-22.04-mvm-amd64-single"
+  name              = "Docker on MVM"
+  sortOrder         = 4
+  computeVersion    = "22.04"
+  description       = "This will provision a single Ubuntu 22.04 docker host vm in MVM"
+  type              = "mvmDockerHost"
+  serverCount       = 1
+  memoryRequirement = 1024 * 1024 * 1024
+  hasAutoScale      = false
+  groupType         = "docker-cluster"
+  computeServers    = [
+    compute-type-set.docker-ubuntu-22.04-mvm-amd64-set
+  ]
+  provisionType     = "kvm"
 }
 
 resource "compute-type-set" "kubernetes-scvmm-ha-master-ubuntu-16_04-set" {
