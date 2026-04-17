@@ -10,7 +10,7 @@ resource "option-type" "provisionType-scvmm-virtual-image" {
   fieldLabel   = "Virtual Image"
   fieldContext = "config"
   fieldGroup   = "SCVMM Options"
-  required     = false
+  required     = true
   enabled      = true
   editable     = true
   global       = false

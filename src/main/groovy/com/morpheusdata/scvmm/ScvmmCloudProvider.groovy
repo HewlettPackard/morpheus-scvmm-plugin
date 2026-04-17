@@ -1,3 +1,5 @@
+// Copyright 2026 Hewlett Packard Enterprise Development LP
+
 package com.morpheusdata.scvmm
 
 import com.morpheusdata.scvmm.helper.morpheus.types.StorageVolumeTypeHelper
@@ -425,6 +427,15 @@ class ScvmmCloudProvider implements CloudProvider {
 				creatable:false, computeService:'scvmmComputeService', displayOrder: 6, hasAutomation:true, reconfigureSupported:true, guestVm:true,
 				containerHypervisor:true, bareMetalHost:false, vmHypervisor:false, agentType:ComputeServerType.AgentType.node, containerEngine:'docker',
 				provisionTypeCode:'scvmm', computeTypeCode:'docker-host', optionTypes:[hostOptionType]
+		)
+
+		//mvm
+		serverTypes << new ComputeServerType(code: 'mvmDockerHost', name: 'MVM Docker Host', description: '', platform: PlatformType.linux, nodeType: 'morpheus-node',
+				enabled: true, selectable: false, externalDelete: true, managed: true, controlPower: true, controlSuspend: true, creatable: false, computeService: 'kvmComputeService',
+				displayOrder: 17, hasAutomation: true,
+				containerHypervisor: true, bareMetalHost: false, hasDevices: true, supportsDeviceAttachment: true, vmHypervisor: false, agentType: ComputeServerType.AgentType.node, containerEngine: 'docker',
+				provisionTypeCode: 'mvm', computeTypeCode: 'docker-host',
+				reconfigureSupported: false, guestVm: false, hasMaintenanceMode: false,
 		)
 
 		return serverTypes

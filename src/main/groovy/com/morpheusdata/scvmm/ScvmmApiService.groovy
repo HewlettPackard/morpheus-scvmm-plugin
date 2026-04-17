@@ -1993,8 +1993,15 @@ For (\$i=0; \$i -le 10; \$i++) {
         log.debug("validateServerConfig: ${opts}")
         def rtn = [success: false, errors: []]
         try {
-            if (!opts.scvmmCapabilityProfile) {
+            // When creating an instance, the capability profile is required. When creating a Docker Cluster, there is
+            // no capability profile option. We need to check if the field is present before validating it.
+            if (opts.containsKey('scvmmCapabilityProfile') && !opts.scvmmCapabilityProfile) {
                 rtn.errors += [field: 'scvmmCapabilityProfile', msg: 'You must select a capability profile']
+            }
+            // When creating an instance, the template (i.e. virtual image) is required. When creating a Docker Cluster,
+            // there is no user specified virtual image. We need to check if the field is present before validating it.
+            if (opts.containsKey('template') && !opts.template) {
+                rtn.errors += [field: 'template', msg: 'Virtual image is required']
             }
             // if(!opts.networkId && opts.networkInterfaces?.size() == 0) {
             // 	rtn.errors += [field: 'networkInterface', msg: 'You must choose a network']

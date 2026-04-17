@@ -1,3 +1,5 @@
+// Copyright 2026 Hewlett Packard Enterprise Development LP
+
 package com.morpheusdata.scvmm
 
 import com.morpheusdata.PrepareHostResponse
@@ -518,7 +520,21 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse validateWorkload(Map opts) {
-        return ServiceResponse.success()
+        log.debug "validateWorkload: ${opts}"
+        def rtn = ServiceResponse.success()
+        try {
+            def validationOpts = getValidateServerConfigOptions(opts)
+            def validationResults = apiService.validateServerConfig(validationOpts)
+            if (!validationResults.success) {
+                rtn.success = false
+                validationResults.errors.each { error ->
+                    rtn.errors[error.field as String] = error.msg as String
+                }
+            }
+        } catch (e) {
+            log.error("error in validateWorkload: ${e.message}", e)
+        }
+        return rtn
     }
 
     /**
@@ -1605,15 +1621,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             if (server.computeServerType?.vmHypervisor == true) {
                 rtn = ServiceResponse.success()
             } else {
-                def validationOpts = [
-                        networkId             : opts?.networkInterface?.network?.id ?: opts?.config?.networkInterface?.network?.id ?: opts.networkInterfaces.getAt(0)?.network?.id,
-                        scvmmCapabilityProfile: opts?.config?.scvmmCapabilityProfile ?: opts?.scvmmCapabilityProfile,
-                        nodeCount             : opts?.config?.nodeCount
-                ]
+                def validationOpts = getValidateServerConfigOptions(opts)
                 def validationResults = apiService.validateServerConfig(validationOpts)
                 if (!validationResults.success) {
                     rtn.success = false
-                    rtn.errors += validationResults.errors
+                    validationResults.errors.each { error ->
+                        rtn.errors[error.field as String] = error.msg as String
+                    }
                 }
             }
         } catch (e) {
@@ -1621,6 +1635,45 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
         return rtn
     }
+
+    /**
+     * Builds the options map for validating the server config. This is used in both validateHost and runWorkload,
+     * so we want to make sure we are checking all possible locations for these values (top level opts, opts.config,
+     * and nested config for network interfaces).
+     * @param opts the options map that may contain various configurations for the server and network interfaces
+     * @return a map of options to be used for validating the server config, including networkId, capability profile,
+     *         node count, and template if available
+     */
+    static protected Map getValidateServerConfigOptions(Map opts = [:]) {
+        // Build the options map for validating the server config. This is used in both validateHost and
+        // validateWorkload,  so we want to make sure we are checking all possible locations for these
+        // values (top level opts, opts.config, and nested config for network interfaces).
+        Map validationOpts = [
+                networkId: opts?.networkInterface?.network?.id ?:
+                        opts?.config?.networkInterface?.network?.id ?:
+                                opts.networkInterfaces.getAt(0)?.network?.id,
+        ]
+
+        // Check all possible locations for optional capability profile
+        if (opts?.config?.containsKey('scvmmCapabilityProfile')) {
+            validationOpts.scvmmCapabilityProfile = opts.config.scvmmCapabilityProfile
+        } else if (opts?.containsKey('scvmmCapabilityProfile')) {
+            validationOpts.scvmmCapabilityProfile = opts.scvmmCapabilityProfile
+        }
+
+        // Check all possible locations for optional node count (for validating cluster configs)
+        if (opts?.config?.containsKey('nodeCount')) {
+            validationOpts.nodeCount = opts.config.nodeCount
+        }
+
+        // Check all possible locations for optional template (for validating virtual image configs)
+        if (opts?.config?.containsKey('template')) {
+            validationOpts.template = opts.config.template
+        }
+
+        return validationOpts
+    }
+
 
     protected ComputeServer saveAndGet(ComputeServer server) {
         def saveResult = context.async.computeServer.bulkSave([server]).blockingGet()
