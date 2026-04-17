@@ -1994,7 +1994,7 @@ For (\$i=0; \$i -le 10; \$i++) {
         def rtn = [success: false, errors: []]
         try {
             // When creating an instance, the capability profile is required. When creating a Docker Cluster, there is
-            // not capability profile option. We need to check if the field is present before validating it.
+            // no capability profile option. We need to check if the field is present before validating it.
             if (opts.containsKey(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE) && !opts.(ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE)) {
                 rtn.errors += [field: ScvmmConstants.CFG_SCVMM_CAPABILITY_PROFILE, msg: 'You must select a capability profile']
             }
