@@ -15,7 +15,7 @@ buildscript {
     dependencies {
         classpath "com.morpheusdata:morpheus-plugin-gradle:$morpheusGradleVersion"
         classpath "com.bertramlabs.plugins:asset-pipeline-gradle:$assetPipelineVersion"
-        // classpath "org.codehaus.groovy:groovy-xml:$groovyVersion"
+        // classpath "org.apache.groovy:groovy-xml:$groovyVersion"
     }
 }
 
@@ -24,7 +24,7 @@ plugins {
     id 'groovy'
     id 'jvm-test-suite'
     id 'idea'
-    id 'com.github.johnrengelman.shadow' version '8.1.1'
+    id 'com.gradleup.shadow' version '9.4.1'
     id 'com.jfrog.artifactory' version "5.+"
     id 'maven-publish'
     id 'jacoco'
@@ -59,8 +59,8 @@ ext.isReleaseVersion = !version.endsWith("SNAPSHOT")
 
 ext.minLineCoverage = (project.findProperty('minLineCoverage') ?: 80).toString().toBigDecimal().scaleByPowerOfTen(-2)
 java {
-    sourceCompatibility = JavaVersion.toVersion('1.11')
-    targetCompatibility = JavaVersion.toVersion('1.11')
+    sourceCompatibility = JavaVersion.toVersion('25')
+    targetCompatibility = JavaVersion.toVersion('25')
 }
 
 repositories {
@@ -77,8 +77,10 @@ configurations {
 }
 
 dependencies {
-    provided "com.morpheusdata:morpheus-plugin-api:$morpheusApiVersion"
-    provided "org.codehaus.groovy:groovy-all:$groovyVersion"
+    provided("com.morpheusdata:morpheus-plugin-api:$morpheusApiVersion") {
+        exclude group: 'org.codehaus.groovy'
+    }
+    provided "org.apache.groovy:groovy-all:$groovyVersion"
     implementation 'commons-beanutils:commons-beanutils:1.11.0'
     implementation "org.slf4j:slf4j-api:$slf4jVersion"
     implementation "org.slf4j:slf4j-parent:$slf4jVersion"
@@ -88,8 +90,10 @@ dependencies {
     }
 
     // Include morpheus-core and it's dependencies
-    testImplementation "org.codehaus.groovy:groovy-all:$groovyVersion"
-    testImplementation "com.morpheusdata:morpheus-plugin-api:$morpheusApiVersion"
+    testImplementation "org.apache.groovy:groovy-all:$groovyVersion"
+    testImplementation("com.morpheusdata:morpheus-plugin-api:$morpheusApiVersion") {
+        exclude group: 'org.codehaus.groovy'
+    }
     testImplementation 'io.reactivex.rxjava3:rxjava:3.1.7'
     testImplementation 'org.apache.httpcomponents:httpclient:4.5.13'
     testImplementation 'org.apache.httpcomponents:httpcore:4.4.5'
@@ -97,12 +101,12 @@ dependencies {
     // Add SLF4J implementation for tests to enable logging in coverage testing
     testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.9'
 
-    testImplementation 'net.bytebuddy:byte-buddy:1.9.3'
-    testImplementation 'org.objenesis:objenesis:2.6'
+    testImplementation 'net.bytebuddy:byte-buddy:1.15.11'
+    testImplementation 'org.objenesis:objenesis:3.4'
     testImplementation platform("org.spockframework:spock-bom:$spockVersion")
     testImplementation "org.spockframework:spock-core:$spockVersion"
     testImplementation "org.spockframework:spock-junit4"  // you can remove this if your code does not rely on old JUnit 4 rules
-    testImplementation 'cglib:cglib-nodep:3.2.12'
+    testImplementation 'cglib:cglib-nodep:3.3.0'
     
     // Add Jackson dependencies for Spock framework
     testImplementation 'com.fasterxml.jackson.core:jackson-core:2.15.2'
@@ -123,7 +127,7 @@ sourceSets {
 
 // ===== STATIC ANALYSIS =====
 codenarc {
-    toolVersion = '3.5.0'
+    toolVersion = '3.7.0-groovy-4.0'
     configFile = file('config/codenarc/codenarc.groovy')
     reportFormat = 'html'
     sourceSets = [sourceSets.main]
@@ -131,6 +135,15 @@ codenarc {
     maxPriority1Violations = -1  // No limit on P1 violations (handled in our custom reporting)
     maxPriority2Violations = -1  // No limit on P2 violations (handled in our custom reporting)
     maxPriority3Violations = -1  // No limit on P3 violations (handled in our custom reporting)
+}
+
+// Force CodeNarc to use Groovy 4.0.29 which has ASM support for Java 25 class files
+configurations.codenarc {
+    resolutionStrategy.eachDependency { details ->
+        if (details.requested.group == 'org.apache.groovy') {
+            details.useVersion "$groovyVersion"
+        }
+    }
 }
 
 codenarcMain {
@@ -268,7 +281,7 @@ def displayTestResultsSummary(unitTestResults, integrationTestResults) {
     return [total: totalTests, passed: totalPassed, failed: totalFailed, skipped: totalSkipped, time: totalTime]
 }
 
-import groovy.util.XmlSlurper
+import groovy.xml.XmlSlurper
 import org.gradle.api.GradleException
 import org.gradle.api.tasks.testing.Test
 import org.gradle.testing.jacoco.tasks.JacocoReport
@@ -319,8 +332,10 @@ testing {
     suites {
         configureEach {
             dependencies {
-                implementation "com.morpheusdata:morpheus-plugin-api:$morpheusApiVersion"
-                implementation "org.codehaus.groovy:groovy-all:$groovyVersion"
+                implementation("com.morpheusdata:morpheus-plugin-api:$morpheusApiVersion") {
+                    exclude group: 'org.codehaus.groovy'
+                }
+                implementation "org.apache.groovy:groovy-all:$groovyVersion"
                 implementation 'com.fasterxml.jackson.core:jackson-core:2.15.0'
             }
         }
