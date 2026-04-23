@@ -1635,36 +1635,33 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      *         node count, and template if available
      */
     static protected Map getValidateServerConfigOptions(Map opts = [:]) {
-        // Build the options map for validating the server config. This is used in both validateHost and
-        // validateWorkload,  so we want to make sure we are checking all possible locations for these
-        // values (top level opts, opts.config, and nested config for network interfaces).
+        // Check all possible locations for network selection
         Map validationOpts = [
                 networkId: opts?.networkInterface?.network?.id ?:
                         opts?.config?.networkInterface?.network?.id ?:
                                 opts.networkInterfaces.getAt(0)?.network?.id,
         ]
 
-        // Check all possible locations for optional capability profile
+        // Check all possible locations for capability profile
         if (opts?.config?.containsKey('scvmmCapabilityProfile')) {
             validationOpts.scvmmCapabilityProfile = opts.config.scvmmCapabilityProfile
         } else if (opts?.containsKey('scvmmCapabilityProfile')) {
             validationOpts.scvmmCapabilityProfile = opts.scvmmCapabilityProfile
         }
 
-        // Check all possible locations for optional node count (for validating cluster configs)
+        // Check all possible locations for node count (for validating cluster configs)
         if (opts?.config?.containsKey('nodeCount')) {
             validationOpts.nodeCount = opts.config.nodeCount
         }
 
-        // Check all possible locations for optional template (for validating virtual image configs)
+        // Check all possible locations for template (for validating virtual image configs)
         if (opts?.config?.containsKey('template')) {
             validationOpts.template = opts.config.template
         }
 
         return validationOpts
     }
-
-
+    
     protected ComputeServer saveAndGet(ComputeServer server) {
         def saveResult = context.async.computeServer.bulkSave([server]).blockingGet()
         def updatedServer
