@@ -95,27 +95,24 @@ class HostSync {
             for (updateItem in updateList) {
                 def existingItem = updateItem.existingItem
                 def masterItem = updateItem.masterItem
-                def save = false
                 def cluster = clusters.find { it.internalId == masterItem.cluster }
+                def fetchedOs = getHypervisorOs(masterItem.os)
                 // May be null if Host not in a cluster
-                if (existingItem.resourcePool != cluster) {
+                def clusterChanged = existingItem.resourcePool != cluster
+                def osChanged = fetchedOs && existingItem.serverOs?.code != fetchedOs.code
+                if (clusterChanged) {
                     existingItem.resourcePool = cluster
-                    save = true
                 }
                 // Detect and fix OS mismatch
-                def expectedOs = getHypervisorOs(masterItem.os)
-                if (expectedOs && existingItem.serverOs?.code != expectedOs.code) {
-                    existingItem.serverOs = expectedOs
-                    existingItem.osType = 'windows'
-                    save = true
+                if (osChanged) {
+                    existingItem.serverOs = fetchedOs
+                    existingItem.osType = fetchedOs.platform?.toString() ?: 'windows'
                 }
-                if (save) {
+                if (clusterChanged || osChanged) {
                     def savedServer = context.async.computeServer.save(existingItem).blockingGet()
                     if (savedServer) {
                         updateHostStats(savedServer, masterItem)
                     }
-                } else {
-                    updateHostStats(existingItem, masterItem)
                 }
             }
         } catch (e) {
@@ -152,6 +149,7 @@ class HostSync {
                                 osType           : 'windows',
                                 hostname         : cloudItem.name
                         ]
+                log.debug("serverConfig: ${serverConfig}")      
                 def newServer = new ComputeServer(serverConfig)
                 newServer.maxMemory = cloudItem.totalMemory?.toLong() ?: 0
                 newServer.maxStorage = cloudItem.totalStorage?.toLong() ?: 0
@@ -160,6 +158,7 @@ class HostSync {
                 newServer.capacityInfo = new ComputeCapacityInfo(maxMemory: newServer.maxMemory, maxStorage: newServer.maxStorage, maxCores: newServer.maxCores)
                 newServer.setConfigProperty('rawData', cloudItem.encodeAsJSON().toString())
                 def savedServer = context.async.computeServer.create(newServer).blockingGet()
+                log.debug("savedServer?.id: ${savedServer?.id}")
                 if (savedServer) {
                     updateHostStats(savedServer, cloudItem)
                 }
