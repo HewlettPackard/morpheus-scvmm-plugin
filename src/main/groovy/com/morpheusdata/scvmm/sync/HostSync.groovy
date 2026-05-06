@@ -110,9 +110,11 @@ class HostSync {
                 }
                 if (clusterChanged || osChanged) {
                     def savedServer = context.async.computeServer.save(existingItem).blockingGet()
+                    log.debug("savedServer?.id: ${savedServer?.id}")
                     if (savedServer) {
                         updateHostStats(savedServer, masterItem)
                     }
+                    log.debug("updated host")
                 }
             }
         } catch (e) {
@@ -149,7 +151,7 @@ class HostSync {
                                 osType           : 'windows',
                                 hostname         : cloudItem.name
                         ]
-                log.debug("serverConfig: ${serverConfig}")      
+                log.debug("serverConfig: ${serverConfig}")
                 def newServer = new ComputeServer(serverConfig)
                 newServer.maxMemory = cloudItem.totalMemory?.toLong() ?: 0
                 newServer.maxStorage = cloudItem.totalStorage?.toLong() ?: 0
