@@ -7,13 +7,13 @@ iniconfig==2.3.0
 flake8==7.3.0
 markupsafe==3.0.2
 packaging==25.0
-pip==26.0
+pip==26.1.1
 pytest-playwright==0.7.2
 pluggy==1.6.0
 pydantic-core==2.27.2
 pydantic-settings==2.10.1
 python-dotenv==1.2.2
-pytest==9.0.3
+pytest==8.4.2
 requests==2.33.0
 typing-extensions==4.12.2
 hpe-pc-automation-lib>=2.202.0
