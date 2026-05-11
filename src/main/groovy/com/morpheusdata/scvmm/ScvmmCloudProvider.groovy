@@ -374,6 +374,29 @@ class ScvmmCloudProvider implements CloudProvider {
 				defaultValue:null, custom:false, displayOrder:10, fieldClass:null
 		)
 
+		OptionType consoleSessionModeOptionType = new OptionType(
+			code: 'computeServerType.scvmm.vmrdpConsoleSessionMode',
+			inputType: OptionType.InputType.SELECT,
+			name: 'console session mode',
+			category: 'provisionType.scvmm',
+			optionSourceType: 'scvmm',
+			fieldName: 'vmrdpConsoleSessionMode',
+			fieldCode: 'gomorpheus.optiontype.vmrdpConsoleSessionMode',
+			fieldLabel: 'Console Session Mode',
+			fieldContext: 'config',
+			fieldGroup: 'Advanced Options',
+			required: false,
+			enabled: true,
+			optionSource: 'consoleSessionMode',
+			editable: true,
+			global: false,
+			helpBlock: 'The session mode to use when connecting to the hypervisor console',
+			defaultValue: 'auto',
+			custom: false,
+			displayOrder: 11,
+			fieldClass: null
+		)
+
 		serverTypes << new ComputeServerType( code: 'unmanaged', name: 'Linux VM', description: 'vm', platform: PlatformType.linux, nodeType: 'unmanaged',
 				enabled: true, selectable: false, externalDelete: false, managed: false, controlPower: false, controlSuspend: false, creatable: true,
 				computeService: 'unmanagedComputeService', displayOrder: 100, hasAutomation: false, containerHypervisor: false, bareMetalHost: false,
@@ -397,26 +420,26 @@ class ScvmmCloudProvider implements CloudProvider {
 				nodeType:'morpheus-windows-node', enabled:true, selectable:false, externalDelete:true, managed:true, controlPower:true,
 				controlSuspend:false, creatable:false, computeService:'scvmmComputeService', displayOrder:7, hasAutomation:true, reconfigureSupported:true,
 				containerHypervisor:false, bareMetalHost:false, vmHypervisor:false, agentType:ComputeServerType.AgentType.node, guestVm:true,
-				provisionTypeCode:'scvmm'
+				provisionTypeCode:'scvmm', optionTypes:[consoleSessionModeOptionType]
 		)
 		serverTypes << new ComputeServerType(code:'scvmmVm', name:'SCVMM Instance', description:'', platform:PlatformType.linux,
 				nodeType:'morpheus-vm-node', enabled:true, selectable:false, externalDelete:true, managed:true, controlPower:true, controlSuspend:false,
 				creatable:false, computeService:'scvmmComputeService', displayOrder: 0, hasAutomation:true, reconfigureSupported:true,
 				containerHypervisor:false, bareMetalHost:false, vmHypervisor:false, agentType:ComputeServerType.AgentType.guest, guestVm:true,
-				provisionTypeCode:'scvmm'
+				provisionTypeCode:'scvmm', optionTypes:[consoleSessionModeOptionType]
 		)
 		//windows container host - not used
 		serverTypes << new ComputeServerType(code:'scvmmWindowsVm', name:'SCVMM Windows Instance', description:'', platform:PlatformType.windows,
 				nodeType:'morpheus-windows-vm-node', enabled:true, selectable:false, externalDelete:true, managed:true, controlPower:true,
 				controlSuspend:false, creatable:false, computeService:'scvmmComputeService', displayOrder: 0, hasAutomation:true, reconfigureSupported:true,
 				containerHypervisor:false, bareMetalHost:false, vmHypervisor:false, agentType:ComputeServerType.AgentType.guest, guestVm:true,
-				provisionTypeCode:'scvmm'
+				provisionTypeCode:'scvmm', optionTypes:[consoleSessionModeOptionType]
 		)
 		serverTypes << new ComputeServerType(code:'scvmmUnmanaged', name:'SCVMM Instance', description:'scvmm vm', platform:PlatformType.linux,
 				nodeType:'unmanaged', enabled:true, selectable:false, externalDelete:true, managed:false, controlPower:true, controlSuspend:false,
 				creatable:false, computeService:'scvmmComputeService', displayOrder:99, hasAutomation:false, containerHypervisor:false,
 				bareMetalHost:false, vmHypervisor:false, agentType:ComputeServerType.AgentType.guest, managedServerType:'scvmmVm', guestVm:true,
-				provisionTypeCode:'scvmm'
+				provisionTypeCode:'scvmm', optionTypes:[consoleSessionModeOptionType]
 		)
 
 		//docker
