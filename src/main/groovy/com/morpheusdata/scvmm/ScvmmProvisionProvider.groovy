@@ -771,7 +771,26 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 log.debug("create server: ${scvmmOpts}")
                 def createResults = apiService.createServer(scvmmOpts)
                 log.debug("createResults: ${createResults}")
+
+                // Must be captured before the success check below. Even when createServer fails, a cloud-init ISO
+                // may have already been created and mounted. cloneParentCleanup() (called in the finally block)
+                // relies on scvmmOpts.deleteDvdOnComplete to clean up that ISO, so it must be set regardless
+                // of whether provisioning ultimately succeeds or fails.
                 scvmmOpts.deleteDvdOnComplete = createResults.deleteDvdOnComplete
+
+                if (!createResults.success) {
+                    log.error("Failed to create server: ${createResults}")
+                    // If SCVMM created the VM but a subsequent step (e.g. getServerDetails) failed, createResults
+                    // will have success=false but still carry the VM's externalId. Bind it to the Morpheus server
+                    // record now so the VM is not orphaned in SCVMM with no corresponding Morpheus reference.
+                    if (createResults.server?.id) {
+                        server.externalId = createResults.server.id
+                    }
+                    server.statusMessage = 'Failed to create server'
+                    context.async.computeServer.save(server).blockingGet()
+                    throw new Exception(createResults.errorMsg as String ?: 'Unknown error creating server')
+                }
+
 				// Adding the deleteDvdOnComplete to the workload config for future reference in the finalize step.
 				// This is done as adding it to scvmmOpts above doesn't persist it anywhere.
 				def workloadConfig = workload.configMap
