@@ -26,6 +26,24 @@ class ScvmmGenerationUtil {
         return isGeneration2(toGenerationConfig(cloudItem?.Generation))
     }
 
+    /**
+     * Updates generation config and hotResize from SCVMM cloud item when values differ.
+     * @return true if the server was modified
+     */
+    static boolean syncGenerationFromCloudItem(ComputeServer server, Map cloudItem) {
+        def generation = toGenerationConfig(cloudItem?.Generation)
+        if (!generation) {
+            return false
+        }
+        def hotResize = isGeneration2(generation)
+        def changed = server.getConfigProperty('generation') != generation || server.hotResize != hotResize
+        if (changed) {
+            server.setConfigProperty('generation', generation)
+            server.hotResize = hotResize
+        }
+        return changed
+    }
+
     static boolean supportsHotDiskResize(ComputeServer server) {
         if (!server) {
             return false
@@ -37,18 +55,18 @@ class ScvmmGenerationUtil {
     }
 
     static void applyGenerationFromCloudItem(ComputeServer server, Map cloudItem) {
-        def generation = toGenerationConfig(cloudItem?.Generation)
-        if (generation) {
-            server.setConfigProperty('generation', generation)
-            server.hotResize = isGeneration2(generation)
-        }
+        applyGenerationConfig(server, toGenerationConfig(cloudItem?.Generation))
     }
 
     static void applyGenerationFromScvmmGeneration(ComputeServer server, String scvmmGeneration) {
-        if (!scvmmGeneration) {
+        applyGenerationConfig(server, scvmmGeneration)
+    }
+
+    private static void applyGenerationConfig(ComputeServer server, String generation) {
+        if (!generation) {
             return
         }
-        server.setConfigProperty('generation', scvmmGeneration)
-        server.hotResize = isGeneration2(scvmmGeneration)
+        server.setConfigProperty('generation', generation)
+        server.hotResize = isGeneration2(generation)
     }
 }

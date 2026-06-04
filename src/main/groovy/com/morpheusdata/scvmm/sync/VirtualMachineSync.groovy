@@ -278,17 +278,8 @@ class VirtualMachineSync {
                                 save = true
                             }
 
-                            if (masterItem.Generation != null) {
-                                def generation = ScvmmGenerationUtil.toGenerationConfig(masterItem.Generation)
-                                def hotResize = ScvmmGenerationUtil.isGeneration2(generation)
-                                if (currentServer.getConfigProperty('generation') != generation) {
-                                    currentServer.setConfigProperty('generation', generation)
-                                    save = true
-                                }
-                                if (currentServer.hotResize != hotResize) {
-                                    currentServer.hotResize = hotResize
-                                    save = true
-                                }
+                            if (ScvmmGenerationUtil.syncGenerationFromCloudItem(currentServer, masterItem)) {
+                                save = true
                             }
 
                             //plan
