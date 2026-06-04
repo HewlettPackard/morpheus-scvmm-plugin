@@ -549,6 +549,7 @@ if(\$cloud) {
 						MemoryAssignedMB=\$VM.MemoryAssignedMB
 						DynamicMemoryMinimumMB=\$VM.DynamicMemoryMinimumMB
 						DynamicMemoryMaximumMB=\$VM.DynamicMemoryMaximumMB
+						Generation=\$VM.Generation
 
 					}
 		

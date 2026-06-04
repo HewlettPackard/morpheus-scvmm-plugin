@@ -20,9 +20,11 @@ import com.morpheusdata.response.InitializeHypervisorResponse
 import com.morpheusdata.response.PrepareWorkloadResponse
 import com.morpheusdata.response.ProvisionResponse
 import com.morpheusdata.response.ServiceResponse
+import com.morpheusdata.response.ValidateResizeWorkloadResponse
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
 import com.morpheusdata.scvmm.util.MorpheusUtil
+import com.morpheusdata.scvmm.util.ScvmmGenerationUtil
 import groovy.json.JsonSlurper
 
 class ScvmmProvisionProvider extends AbstractProvisionProvider implements WorkloadProvisionProvider, HostProvisionProvider, ProvisionProvider.HypervisorProvisionFacet, HostProvisionProvider.ResizeFacet, WorkloadProvisionProvider.ResizeFacet, ProvisionProvider.BlockDeviceNameFacet {
@@ -626,6 +628,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 				}
 
                 scvmmOpts.scvmmGeneration = virtualImage?.getConfigProperty('generation') ?: 'generation1'
+                ScvmmGenerationUtil.applyGenerationFromScvmmGeneration(server, scvmmOpts.scvmmGeneration)
                 scvmmOpts.isSyncdImage = virtualImage?.refType == 'ComputeZone'
                 scvmmOpts.isTemplate = !(virtualImage?.remotePath != null) && !virtualImage?.systemImage
                 scvmmOpts.templateId = virtualImage?.externalId
@@ -1945,6 +1948,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 scvmmOpts.secureBoot = virtualImage?.uefi ?: false
                 scvmmOpts.imageId = imageId
                 scvmmOpts.scvmmGeneration = virtualImage?.getConfigProperty('generation') ?: 'generation1'
+                ScvmmGenerationUtil.applyGenerationFromScvmmGeneration(server, scvmmOpts.scvmmGeneration)
                 scvmmOpts.diskMap = context.services.virtualImage.getImageDiskMap(virtualImage)
                 server = saveAndGetMorpheusServer(server, true)
                 scvmmOpts += getScvmmServerOpts(server)
@@ -2190,6 +2194,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      * @return Response from API
      */
     @Override
+    ServiceResponse<ValidateResizeWorkloadResponse> validateResizeWorkload(Instance instance, Workload workload, ResizeRequest resizeRequest, Map opts) {
+        def resizeConfig = getResizeConfig(workload, null, workload?.instance?.plan ?: resizeRequest?.plan, opts, resizeRequest)
+        def response = new ValidateResizeWorkloadResponse()
+        response.allowed = resizeConfig.allowed
+        response.hotResize = resizeConfig.hotResize
+        log.debug("validateResizeWorkload: ${response}")
+        return ServiceResponse.success(response)
+    }
+
+    @Override
     ServiceResponse resizeWorkload(Instance instance, Workload workload, ResizeRequest resizeRequest, Map opts) {
         log.info("resizeWorkload calling resizeWorkloadAndServer")
         return resizeWorkloadAndServer(workload, null, resizeRequest, opts, true)
@@ -2366,37 +2380,54 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             rtn.neededCores = (rtn.requestedCores ?: 1) - (currentCores ?: 1)
             setDynamicMemory(rtn, plan)
 
-            rtn.hotResize = false
+            def targetServer = server ?: workload?.server
+            def supportsHotDisk = ScvmmGenerationUtil.supportsHotDiskResize(targetServer)
+            def memoryOrCpuChange = (rtn.neededMemory != 0 || rtn.neededCores != 0 || rtn.minDynamicMemory || rtn.maxDynamicMemory)
 
-            // Disk changes.. see if stop is required
             if (opts.volumes) {
                 resizeRequest.volumesUpdate?.each { volumeUpdate ->
                     if (volumeUpdate.existingModel) {
-                        //existing disk - resize it
-						def volumeCode = volumeUpdate.existingModel.type?.code ?: "standard"
+                        def volumeCode = volumeUpdate.existingModel.type?.code ?: "standard"
                         if (volumeUpdate.updateProps.maxStorage > volumeUpdate.existingModel.maxStorage) {
-							if (volumeCode.contains("differencing")) {
-								log.warn("getResizeConfig - Resize is not supported on Differencing Disks  - volume type ${volumeCode}")
-								rtn.allowed = false
-							} else {
-								log.info("getResizeConfig - volumeCode: ${volumeCode}. Volume Resize requested. Current: ${volumeUpdate.existingModel.maxStorage} - requested : ${volumeUpdate.updateProps.maxStorage}")
-								rtn.allowed = true
-							}
-                            if (volumeUpdate.existingModel.rootVolume) {
-                                rtn.hotResize = false
+                            if (volumeCode.contains("differencing")) {
+                                log.warn("getResizeConfig - Resize is not supported on Differencing Disks  - volume type ${volumeCode}")
+                                rtn.allowed = false
+                            } else {
+                                log.info("getResizeConfig - volumeCode: ${volumeCode}. Volume Resize requested. Current: ${volumeUpdate.existingModel.maxStorage} - requested : ${volumeUpdate.updateProps.maxStorage}")
+                                rtn.allowed = true
                             }
                         }
                     } else {
-						// new disk - add it
-						log.info("getResizeConfig - Adding new volume ${volumeUpdate.volume}")
-						rtn.allowed = true
-					}
+                        log.info("getResizeConfig - Adding new volume ${volumeUpdate.volume}")
+                        rtn.allowed = true
+                    }
+                }
+                resizeRequest.volumesAdd?.each { volumeAdd ->
+                    log.info("getResizeConfig - Adding new volume ${volumeAdd?.name}")
+                    rtn.allowed = true
                 }
             }
+
+            if (memoryOrCpuChange || resizeRequest.volumesDelete) {
+                rtn.hotResize = false
+            } else if (opts.volumes && hasDiskResizeOrAdd(resizeRequest)) {
+                rtn.hotResize = supportsHotDisk
+            } else {
+                rtn.hotResize = supportsHotDisk
+            }
+            log.debug("getResizeConfig - hotResize: ${rtn.hotResize}, supportsHotDisk: ${supportsHotDisk}, memoryOrCpuChange: ${memoryOrCpuChange}")
         } catch (e) {
             log.error("getResizeConfig error - ${e}", e)
         }
         return rtn
+    }
+
+    private static boolean hasDiskResizeOrAdd(ResizeRequest resizeRequest) {
+        def hasVolumeUpdates = resizeRequest.volumesUpdate?.any { volumeUpdate ->
+            volumeUpdate.existingModel && volumeUpdate.updateProps?.maxStorage > volumeUpdate.existingModel.maxStorage
+        }
+        def hasVolumeAdds = resizeRequest.volumesAdd?.size() > 0
+        return hasVolumeUpdates || hasVolumeAdds
     }
 
     def buildStorageVolume(computeServer, volumeAdd, newCounter) {

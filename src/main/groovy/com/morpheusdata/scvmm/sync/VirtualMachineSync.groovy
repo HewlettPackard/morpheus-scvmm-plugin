@@ -1,6 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
 import com.morpheusdata.scvmm.ScvmmApiService
+import com.morpheusdata.scvmm.util.ScvmmGenerationUtil
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataQuery
@@ -102,6 +103,7 @@ class VirtualMachineSync {
                 log.debug "Adding new virtual machine: ${cloudItem.Name}"
                 def vmConfig = buildVmConfig(cloudItem, defaultServerType)
                 ComputeServer add = new ComputeServer(vmConfig)
+                ScvmmGenerationUtil.applyGenerationFromCloudItem(add, cloudItem)
                 add.maxStorage = (cloudItem.TotalSize?.toDouble() ?: 0)
                 add.usedStorage = (cloudItem.UsedSize?.toDouble() ?: 0)
                 add.maxMemory = (cloudItem.Memory?.toLong() ?: 0) * 1024l * 1024l
@@ -276,6 +278,19 @@ class VirtualMachineSync {
                                 save = true
                             }
 
+                            if (masterItem.Generation != null) {
+                                def generation = ScvmmGenerationUtil.toGenerationConfig(masterItem.Generation)
+                                def hotResize = ScvmmGenerationUtil.isGeneration2(generation)
+                                if (currentServer.getConfigProperty('generation') != generation) {
+                                    currentServer.setConfigProperty('generation', generation)
+                                    save = true
+                                }
+                                if (currentServer.hotResize != hotResize) {
+                                    currentServer.hotResize = hotResize
+                                    save = true
+                                }
+                            }
+
                             //plan
                             ServicePlan plan = SyncUtils.findServicePlanBySizing(availablePlans, currentServer.maxMemory, currentServer.maxCores,
                                     null, fallbackPlan, currentServer.plan, currentServer.account, [])
@@ -369,7 +384,7 @@ class VirtualMachineSync {
                 managed          : false,
                 uniqueId         : cloudItem.ID,
                 provision        : false,
-                hotResize        : false,
+                hotResize        : ScvmmGenerationUtil.hotResizeFromCloudItem(cloudItem),
                 serverType       : 'vm',
                 lvmEnabled       : false,
                 discovered       : true,
