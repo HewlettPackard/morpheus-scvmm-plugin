@@ -1265,7 +1265,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
         } catch (e) {
             log.error("removeWorkload error: ${e}", e)
-            response.error = e.message
+            response.msg = e.message
         }
         return response
     }
