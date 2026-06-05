@@ -66,6 +66,9 @@ class VirtualMachineSync {
                     ))
                 }
                 def serverType = context.async.cloud.findComputeServerTypeByCode("scvmmUnmanaged").blockingGet()
+                def systemNetworks = context.services.cloud.network.list(
+                    new DataQuery().withFilter('category', '=~', "scvmm.network.${cloud.id}.%")
+                )?.collectEntries { [(it.externalId): it] } ?: [:]
 
                 def existingVms = context.async.computeServer.listIdentityProjections(new DataQuery()
                         .withFilter('zone.id', cloud.id)
@@ -83,10 +86,10 @@ class VirtualMachineSync {
                     }
                 }.onAdd { itemsToAdd ->
                     if (createNew) {
-                        addMissingVirtualMachines(itemsToAdd, availablePlans, fallbackPlan, availablePlanPermissions, hosts, consoleEnabled, serverType)
+                        addMissingVirtualMachines(itemsToAdd, availablePlans, fallbackPlan, availablePlanPermissions, hosts, consoleEnabled, serverType, systemNetworks)
                     }
                 }.onUpdate { List<SyncTask.UpdateItem<ComputeServer, Map>> updateItems ->
-                    updateMatchedVirtualMachines(updateItems, availablePlans, fallbackPlan, hosts, consoleEnabled, serverType)
+                    updateMatchedVirtualMachines(updateItems, availablePlans, fallbackPlan, hosts, consoleEnabled, serverType, systemNetworks, systemNetworks)
                 }.onDelete { List<ComputeServerIdentityProjection> removeItems ->
                     removeMissingVirtualMachines(removeItems)
                 }.observe().blockingSubscribe()
@@ -96,7 +99,8 @@ class VirtualMachineSync {
         }
     }
 
-    def addMissingVirtualMachines(List addList, Collection<ServicePlan> availablePlans, ServicePlan fallbackPlan, Collection<ResourcePermission> availablePlanPermissions, List hosts, Boolean consoleEnabled, ComputeServerType defaultServerType) {
+    def addMissingVirtualMachines(List addList, Collection<ServicePlan> availablePlans, ServicePlan fallbackPlan, Collection<ResourcePermission> availablePlanPermissions, List hosts, Boolean consoleEnabled, ComputeServerType defaultServerType, Map systemNetworks) {
+         log.debug("addMissingVirtualMachines: ${cloud} ${addList.size()}")
         try {
             for (cloudItem in addList) {
                 log.debug "Adding new virtual machine: ${cloudItem.Name}"
@@ -140,6 +144,7 @@ class VirtualMachineSync {
                     log.error "error adding new virtual machine: ${add}"
                 } else {
                     syncVolumes(savedServer, cloudItem.Disks)
+                    syncInterfaces(savedServer, cloudItem.NetworkAdapters, systemNetworks)
                 }
             }
         } catch (ex) {
@@ -148,7 +153,7 @@ class VirtualMachineSync {
     }
 
     protected updateMatchedVirtualMachines(List<SyncTask.UpdateItem<ComputeServer, Map>> updateList, availablePlans, fallbackPlan,
-                                           List<ComputeServer> hosts, consoleEnabled, ComputeServerType defaultServerType) {
+                                           List<ComputeServer> hosts, consoleEnabled, ComputeServerType defaultServerType, Map systemNetworks, Map<String, Network> existingSystemNetworks) {
         log.debug("VirtualMachineSync >> updateMatchedVirtualMachines() called")
         try {
             def matchedServers = context.services.computeServer.list(new DataQuery().withFilter('id', 'in', updateList.collect { up -> up.existingItem.id })
@@ -286,6 +291,11 @@ class VirtualMachineSync {
                             if (masterItem.Disks) {
                                 if (currentServer.status != 'resizing' && currentServer.status != 'provisioning') {
                                     syncVolumes(currentServer, masterItem.Disks)
+                                }
+                            }
+                            if (masterItem.NetworkAdapters) {
+                                if (syncInterfaces(currentServer, masterItem.NetworkAdapters, systemNetworks)) {
+                                    save = true
                                 }
                             }
                             log.debug ("updateMatchedVirtualMachines: save: ${save}")
@@ -609,4 +619,87 @@ class VirtualMachineSync {
             return "data-${index}"
         }
     }
+
+    private boolean syncInterfaces(ComputeServer server, List networkAdapters, Map systemNetworks) {
+        def changed = false
+        try {
+            def masterItems = networkAdapters?.findAll { it } ?: []
+            def existingInterfaces = server.interfaces?.findAll { it } ?: []
+            boolean isPrimaryAssigned = existingInterfaces.any { it.primaryInterface }
+
+            def masterById = masterItems.collectEntries { [(it.ID): it] }
+            def existingById = existingInterfaces.findAll { it.externalId }.collectEntries { [(it.externalId): it] }
+
+            // remove NICs no longer reported by SCVMM
+            existingInterfaces.findAll { !masterById.containsKey(it.externalId) }.each { iface ->
+                context.async.computeServer.computeServerInterface.remove([iface]).blockingGet()
+                changed = true
+            }
+
+            masterItems.each { masterItem ->
+                def existing = existingById[masterItem.ID]
+                def network = resolveNetworkForAdapter(masterItem, systemNetworks, existing?.network)
+                def isPrimary = getIsPrimary(existing, masterItem, isPrimaryAssigned)
+                def dhcp = (masterItem.IPv4AddressType == 'Dynamic' || masterItem.IPv6AddressType == 'Dynamic')
+                def allIps = ((masterItem.IPv4Addresses ?: []).findAll { it }) + ((masterItem.IPv6Addresses ?: []).findAll { it })
+
+                if (existing) {
+                    def save = false
+                    if (existing.macAddress != masterItem.MacAddress) { existing.macAddress = masterItem.MacAddress; save = true }
+                    if (existing.vlanId != masterItem.VLanID?.toString()) { existing.vlanId = masterItem.VLanID?.toString(); save = true }
+                    if (existing.network?.id != network?.id) { existing.network = network; save = true }
+                    if (existing.dhcp != dhcp) { existing.dhcp = dhcp; save = true }
+                    if (existing.primaryInterface != isPrimary) { existing.primaryInterface = isPrimary; save = true }
+                    def existingIps = existing.addresses?.collect { it.address } as Set ?: [] as Set
+                    if (existingIps != (allIps as Set)) {
+                        existing.addresses = allIps.collect { ip ->
+                            def type = (masterItem.IPv4Addresses ?: []).contains(ip) ? NetAddress.AddressType.IPV4 : NetAddress.AddressType.IPV6
+                            new NetAddress(type: type, address: ip)
+                        }
+                        save = true
+                    }
+                    if (save) {
+                        context.async.computeServer.computeServerInterface.save([existing]).blockingGet()
+                        changed = true
+                    }
+                } else {
+                    def iface = new ComputeServerInterface(
+                        externalId: masterItem.ID,
+                        name: server.sourceImage?.interfaceName ?: 'eth0',
+                        macAddress: masterItem.MacAddress,
+                        vlanId: masterItem.VLanID?.toString(),
+                        network: network,
+                        primaryInterface: isPrimary,
+                        dhcp: dhcp
+                    )
+                    allIps.each { ip ->
+                        def type = (masterItem.IPv4Addresses ?: []).contains(ip) ? NetAddress.AddressType.IPV4 : NetAddress.AddressType.IPV6
+                        iface.addresses += new NetAddress(type: type, address: ip)
+                    }
+                    context.async.computeServer.computeServerInterface.create([iface], server).blockingGet()
+                    if (isPrimary) isPrimaryAssigned = true
+                    changed = true
+                }
+            }
+        } catch (e) {
+            log.error("syncInterfaces error: ${e}", e)
+        }
+        return changed
+    }
+
+    private Network resolveNetworkForAdapter(Map masterItem, Map systemNetworks, Network existingNetwork = null) {
+        def vlanSuffix = masterItem.VLanID ? '-' + masterItem.VLanID : ''
+        def masterItemNetID = (masterItem.VirtualNetworkId ?: '') + vlanSuffix
+        def alternateId = masterItem.ID + vlanSuffix
+        def network = existingNetwork ?: systemNetworks[masterItemNetID]
+        if (network?.externalId != masterItemNetID && systemNetworks?.get(alternateId)) {
+            network = systemNetworks[alternateId]
+        }
+        return network
+    }
+
+    private boolean getIsPrimary(ComputeServerInterface iface, Map masterItem, boolean isPrimaryAssigned) {
+        return (iface?.primaryInterface == true) || (masterItem.SlotId == 0 && !isPrimaryAssigned)
+    }
+
 }
