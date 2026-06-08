@@ -170,7 +170,7 @@ class ScvmmApiService {
                 } else if (createData.error?.contains('which includes generation 1')) {
                     rtn.errorMsg = 'The virtual hard disk selected is not compatible with the template which include generation 1 virtual machine functionality.'
                 }
-                throw new Exception("Error in launching VM: ${createData}")
+                throw new Exception("Error in launching VM: ${rtn.errorMsg ?: createData.error}")
             }
 
             server = morpheusContext.services.computeServer.get(opts.serverId)//ComputeServer.get(opts.serverId)
@@ -306,6 +306,9 @@ class ScvmmApiService {
             }
         } catch (e) {
             log.error("createServer error: ${e}", e)
+            if (!rtn.errorMsg) {
+                rtn.errorMsg = e.message
+            }
         }
         return rtn
     }
