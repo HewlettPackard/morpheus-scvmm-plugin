@@ -1,19 +1,17 @@
+// Copyright 2026 Hewlett Packard Enterprise Development LP
+
 package com.morpheusdata.scvmm
 
 import com.morpheusdata.core.AbstractOptionSourceProvider
 import com.morpheusdata.core.MorpheusContext
-import com.morpheusdata.core.OptionSourceProvider
 import com.morpheusdata.core.Plugin
 import com.morpheusdata.core.data.DataAndFilter
 import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataOrFilter
 import com.morpheusdata.core.data.DataQuery
-import com.morpheusdata.core.util.MorpheusUtils
 import com.morpheusdata.model.Cloud
-import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
-import groovy.util.logging.Slf4j
 
 class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 
@@ -130,7 +128,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 			optionList << [name: "Select a Cloud", value: ""]
 			optionList += results.clouds?.collect { [name: it.Name, value: it.ID] }
 		} else {
-			optionList = [[name:"No Clouds Found: verify credentials above", value:""]]
+			optionList = [[name:"No Clouds found: verify credentials above", value:""]]
 		}
 		return optionList
 	}
@@ -311,11 +309,27 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 			zoneRegionOrFilters << new DataFilter("userUploaded", true)
 		}
 
+		// Always include SCVMM system images regardless of zone sync status
+		zoneRegionOrFilters << new DataAndFilter([
+			new DataFilter("systemImage", true),
+			new DataFilter("zoneType", "scvmm")
+		])
+
 		query.withFilter(new DataOrFilter(zoneRegionOrFilters))
 
 		try {
 			def results = morpheusContext.services.virtualImage.listIdentityProjections(query.withSort("name", DataQuery.SortOrder.asc))
-			return results.collect { vimage -> [name: vimage.name, value: vimage.id] }
+
+			// Filter out temporary templates created by SCVMM during provisioning; not intended as user-facing options
+			def filteredResults = results.findAll { image ->
+				boolean isTemporaryTemplate = (image.name ?: '') ==~ ScvmmConstants.TEMPORARY_TEMPLATE_UUID_PATTERN
+				if (isTemporaryTemplate) {
+					log.debug("Filtered temporary template image: name=${image.name}, id=${image.id}")
+				}
+				!isTemporaryTemplate
+			}
+
+			return filteredResults.collect { vimage -> [name: vimage.name, value: vimage.id] }
 		} catch (e) {
 			log.error("scvmmVirtualImages error: ${e}", e)
 			return []

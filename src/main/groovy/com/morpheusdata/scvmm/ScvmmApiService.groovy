@@ -1,16 +1,16 @@
+// Copyright 2026 Hewlett Packard Enterprise Development LP
+
 package com.morpheusdata.scvmm
 
+import com.bertramlabs.plugins.karman.CloudFile
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ComputeUtility
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
-import com.morpheusdata.model.KeyPair
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
 import groovy.json.JsonOutput
-import groovy.util.logging.Slf4j
-import com.bertramlabs.plugins.karman.CloudFile
 
 class ScvmmApiService {
     MorpheusContext morpheusContext
@@ -170,7 +170,7 @@ class ScvmmApiService {
                 } else if (createData.error?.contains('which includes generation 1')) {
                     rtn.errorMsg = 'The virtual hard disk selected is not compatible with the template which include generation 1 virtual machine functionality.'
                 }
-                throw new Exception("Error in launching VM: ${createData}")
+                throw new Exception("Error in launching VM: ${rtn.errorMsg ?: createData.error}")
             }
 
             server = morpheusContext.services.computeServer.get(opts.serverId)//ComputeServer.get(opts.serverId)
@@ -306,6 +306,9 @@ class ScvmmApiService {
             }
         } catch (e) {
             log.error("createServer error: ${e}", e)
+            if (!rtn.errorMsg) {
+                rtn.errorMsg = e.message
+            }
         }
         return rtn
     }
@@ -683,7 +686,14 @@ foreach (\$VHDconf in \$Disks) {
         def out = wrapExecuteCommand(command, opts)
         log.debug("out: ${out.data}")
         if (out.success) {
-            rtn.templates = out.data
+            // Filter out temporary templates created by SCVMM during provisioning; not intended as user-facing options
+            rtn.templates = (out.data ?: []).findAll { template ->
+                boolean isTemporaryTemplate = (template?.Name ?: '') ==~ ScvmmConstants.TEMPORARY_TEMPLATE_UUID_PATTERN
+                if (isTemporaryTemplate) {
+                    log.debug("Filtered temporary template: ${template?.Name}")
+                }
+                !isTemporaryTemplate
+            }
             rtn.success = true
         }
         return rtn

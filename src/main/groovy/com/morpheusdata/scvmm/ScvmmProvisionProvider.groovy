@@ -842,13 +842,17 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         }
                         server.statusMessage = 'Failed to create server'
                         context.async.computeServer.save(server).blockingGet()
-                        provisionResponse.success = false
+                        provisionResponse.setError(server.statusMessage)
                     }
-
+                } else {
+                    server.statusMessage = createResults.errorMsg ?: 'Unknown error creating server'
+                    context.async.computeServer.save(server).blockingGet()
+                    provisionResponse.setError(server.statusMessage)
                 }
             } else {
                 server.statusMessage = 'Failed to upload image'
                 context.async.computeServer.save(server).blockingGet()
+                provisionResponse.setError(server.statusMessage)
             }
 
 			if (provisionResponse.success != true) {
@@ -1265,7 +1269,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
         } catch (e) {
             log.error("removeWorkload error: ${e}", e)
-            response.error = e.message
+            response.msg = e.message
         }
         return response
     }
@@ -1892,7 +1896,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
 
             scvmmOpts += apiService.getScvmmControllerOpts(cloud, controllerNode)
-            def imageId
+            def imageId = null
             if (layout && typeSet) {
                 virtualImage = typeSet.workloadType.virtualImage
                 imageId = virtualImage.externalId
@@ -1904,6 +1908,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		virtualImage = new VirtualImage(code: 'scvmm.image.morpheus.ubuntu.22.04.20250218.amd64')
                 //better this later
             }
+
+            log.debug("runHost virtual image: name=${virtualImage?.name} (${virtualImage?.id}), " +
+                    "code=${virtualImage?.code}, remotePath=${virtualImage?.remotePath}, imageId=${imageId}")
 
             if (!imageId) { //If its userUploaded and still needs uploaded
                 def cloudFiles = context.async.virtualImage.getVirtualImageFiles(virtualImage).blockingGet()
@@ -1978,6 +1985,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                             rootVolume.externalId = serverDisks.diskMetaData[serverDisks.osDisk?.externalId]?.VhdID
                             // Fix up the externalId.. initially set to the VirtualDiskDrive ID.. now setting to VirtualHardDisk ID
                             rootVolume.datastore = loadDatastoreForVolume(cloud, serverDisks.diskMetaData[rootVolume.externalId]?.HostVolumeId, serverDisks.diskMetaData[rootVolume.externalId]?.FileShareId, serverDisks.diskMetaData[rootVolume.externalId]?.PartitionUniqueId) ?: rootVolume.datastore
+                            // Sync the volume changes to the Morpheus DB
+                            log.debug("Root volume updated: " +
+                                    "name=${rootVolume.name} (${rootVolume.id}), " +
+                                    "externalId=${rootVolume.externalId}, " +
+                                    "datastore=${rootVolume.datastore?.name}")
+                            context.services.storageVolume.save(rootVolume)
                             storageVolumes.each { storageVolume ->
                                 def dataDisk = serverDisks.dataDisks.find { it.id == storageVolume.id }
                                 if (dataDisk) {
@@ -1988,6 +2001,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
                                     // Ensure the datastore is set
                                     storageVolume.datastore = loadDatastoreForVolume(cloud, serverDisks.diskMetaData[storageVolume.externalId]?.HostVolumeId, serverDisks.diskMetaData[storageVolume.externalId]?.FileShareId, serverDisks.diskMetaData[storageVolume.externalId]?.PartitionUniqueId) ?: storageVolume.datastore
+                                    // Sync the volume changes to the Morpheus DB
+                                    log.debug("Data volume updated: " +
+                                            "name=${storageVolume.name} (${storageVolume.id}), " +
+                                            "externalId=${storageVolume.externalId}, " +
+                                            "datastore=${storageVolume.datastore?.name}")
+                                    context.services.storageVolume.save(storageVolume)
                                 }
                             }
                         }
