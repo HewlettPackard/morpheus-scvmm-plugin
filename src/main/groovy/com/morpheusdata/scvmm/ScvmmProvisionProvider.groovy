@@ -843,13 +843,17 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         }
                         server.statusMessage = 'Failed to create server'
                         context.async.computeServer.save(server).blockingGet()
-                        provisionResponse.success = false
+                        provisionResponse.setError(server.statusMessage)
                     }
-
+                } else {
+                    server.statusMessage = createResults.errorMsg ?: 'Unknown error creating server'
+                    context.async.computeServer.save(server).blockingGet()
+                    provisionResponse.setError(server.statusMessage)
                 }
             } else {
                 server.statusMessage = 'Failed to upload image'
                 context.async.computeServer.save(server).blockingGet()
+                provisionResponse.setError(server.statusMessage)
             }
 
 			if (provisionResponse.success != true) {
