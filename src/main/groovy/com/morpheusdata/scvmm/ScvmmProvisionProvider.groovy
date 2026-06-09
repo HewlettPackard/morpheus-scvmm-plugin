@@ -1619,10 +1619,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             def validationResults = apiService.validateServerConfig(validationOpts)
             if (!validationResults.success) {
                 log.error("Server config validation failed: ${validationResults.errors}")
-                rtn.success = false
-                validationResults.errors.each { error ->
-                    rtn.errors[error.field as String] = error.msg as String
+                (validationResults.errors ?: []).each { error ->
+                    def field = error?.field?.toString() ?: 'general'
+                    def msg = error?.msg?.toString() ?: 'Validation failed'
+                    rtn.errors[field] = msg
                 }
+                rtn.success = false
             }
         } catch (e) {
             log.error("error in validateHost:${e.message}", e)
@@ -1643,7 +1645,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         Map validationOpts = [
                 networkId: opts?.networkInterface?.network?.id ?:
                         opts?.config?.networkInterface?.network?.id ?:
-                                opts.networkInterfaces.getAt(0)?.network?.id,
+                                opts?.networkInterfaces?.getAt(0)?.network?.id,
         ]
 
         // Check all possible locations for capability profile
@@ -1656,11 +1658,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         // Check all possible locations for node count (for validating cluster configs)
         if (opts?.config?.containsKey('nodeCount')) {
             validationOpts.nodeCount = opts.config.nodeCount
+        } else if (opts?.containsKey('nodeCount')) {
+            validationOpts.nodeCount = opts.nodeCount
         }
 
         // Check all possible locations for template (for validating virtual image configs)
         if (opts?.config?.containsKey('template')) {
             validationOpts.template = opts.config.template
+        } else if (opts?.containsKey('template')) {
+            validationOpts.template = opts.template
         }
 
         return validationOpts
