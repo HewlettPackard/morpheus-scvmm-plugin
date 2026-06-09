@@ -2388,6 +2388,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             computeServer.status = 'provisioned'
             computeServer.statusMessage = resizeError
             computeServer = saveAndGet(computeServer)
+            rtn.success = false
             rtn.setError("${e}")
         }
         return rtn
