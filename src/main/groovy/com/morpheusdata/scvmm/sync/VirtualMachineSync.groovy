@@ -235,6 +235,7 @@ class VirtualMachineSync {
                             }
                             if (currentServer.consoleHost != consoleHost) {
                                 currentServer.consoleHost = consoleHost
+                                save = true
                             }
                             if (currentServer.consolePort != consolePort) {
                                 currentServer.consolePort = consolePort
