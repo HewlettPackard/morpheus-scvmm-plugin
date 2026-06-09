@@ -644,6 +644,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     if (cloudFiles?.size() == 0) {
                         server.statusMessage = 'Failed to find cloud files'
                         provisionResponse.setError("Cloud files could not be found for ${virtualImage}")
+                        provisionResponse.success = false
                     }
                     def containerImage = [
                             name          : virtualImage.name ?: workload.workloadType.imageCode,

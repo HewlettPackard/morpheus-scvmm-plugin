@@ -2033,7 +2033,7 @@ For (\$i=0; \$i -le 10; \$i++) {
                     }
                 }
             } else {
-                rtn.errors << [field: 'networkInterface.network.id', msg: 'Network is required']
+                rtn.errors << [field: 'networkId', msg: 'Network is required']
             }
             if (opts.containsKey('nodeCount') && opts.nodeCount == '') {
                 rtn.errors += [field: 'nodeCount', msg: 'You must indicate number of hosts']
