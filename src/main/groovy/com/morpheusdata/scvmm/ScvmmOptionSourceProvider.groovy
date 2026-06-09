@@ -1,3 +1,5 @@
+// Copyright 2026 Hewlett Packard Enterprise Development LP
+
 package com.morpheusdata.scvmm
 
 import com.morpheusdata.core.AbstractOptionSourceProvider
@@ -113,23 +115,23 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
         return cloud
     }
 
-    def scvmmCloud(params) {
-        def cloud = setupCloudConfig(params)
-        def apiConfig = getApiConfig(cloud)
-        def results = []
-        if (apiConfig.sshUsername && apiConfig.sshPassword) {
-            results = apiService.listClouds(apiConfig)
-        }
-        log.debug("listClouds: ${results}")
-        def optionList = []
-        if (results.clouds?.size() > 0) {
-            optionList << [name: "Select a Cloud", value: ""]
-            optionList += results.clouds?.collect { [name: it.Name, value: it.ID] }
-        } else {
-            optionList = [[name: "No Clouds Found: verify credentials above", value: ""]]
-        }
-        return optionList
-    }
+	def scvmmCloud(params) {
+		def cloud = setupCloudConfig(params)
+		def apiConfig = getApiConfig(cloud)
+		def results = []
+		if(apiConfig.sshUsername && apiConfig.sshPassword) {
+			results = apiService.listClouds(apiConfig)
+		}
+		log.debug("listClouds: ${results}")
+		def optionList = []
+		if(results.clouds?.size() > 0) {
+			optionList << [name: "Select a Cloud", value: ""]
+			optionList += results.clouds?.collect { [name: it.Name, value: it.ID] }
+		} else {
+			optionList = [[name:"No Clouds found: verify credentials above", value:""]]
+		}
+		return optionList
+	}
 
     def scvmmHostGroup(params) {
         log.debug("scvmmHostGroup: ${params}")
@@ -307,25 +309,31 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
             zoneRegionOrFilters << new DataFilter("userUploaded", true)
         }
 
-        query.withFilter(new DataOrFilter(zoneRegionOrFilters))
+		// Always include SCVMM system images regardless of zone sync status
+		zoneRegionOrFilters << new DataAndFilter([
+			new DataFilter("systemImage", true),
+			new DataFilter("zoneType", "scvmm")
+		])
 
-        try {
-            def results = morpheusContext.services.virtualImage.listIdentityProjections(query.withSort("name", DataQuery.SortOrder.asc))
+		query.withFilter(new DataOrFilter(zoneRegionOrFilters))
 
-            // Filter out temporary templates created by SCVMM during provisioning; not intended as user-facing options
-            def filteredResults = results.findAll { image ->
-                boolean isTemporaryTemplate = (image.name ?: '') ==~ ScvmmConstants.TEMPORARY_TEMPLATE_UUID_PATTERN
-                if (isTemporaryTemplate) {
-                    log.debug("Filtered temporary template image: name=${image.name}, id=${image.id}")
-                }
-                !isTemporaryTemplate
-            }
+		try {
+			def results = morpheusContext.services.virtualImage.listIdentityProjections(query.withSort("name", DataQuery.SortOrder.asc))
 
-            return filteredResults.collect { vimage -> [name: vimage.name, value: vimage.id] }
-        } catch (e) {
-            log.error("scvmmVirtualImages error: ${e}", e)
-            return []
-        }
-    }
+			// Filter out temporary templates created by SCVMM during provisioning; not intended as user-facing options
+			def filteredResults = results.findAll { image ->
+				boolean isTemporaryTemplate = (image.name ?: '') ==~ ScvmmConstants.TEMPORARY_TEMPLATE_UUID_PATTERN
+				if (isTemporaryTemplate) {
+					log.debug("Filtered temporary template image: name=${image.name}, id=${image.id}")
+				}
+				!isTemporaryTemplate
+			}
+
+			return filteredResults.collect { vimage -> [name: vimage.name, value: vimage.id] }
+		} catch (e) {
+			log.error("scvmmVirtualImages error: ${e}", e)
+			return []
+		}
+	}
 
 }

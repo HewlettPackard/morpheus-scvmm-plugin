@@ -395,6 +395,15 @@ class VirtualMachineSync {
 
     def syncVolumes(server, externalVolumes) {
         log.debug "syncVolumes: ${server}, ${groovy.json.JsonOutput.prettyPrint(externalVolumes?.encodeAsJSON()?.toString())}"
+
+        // Log existing volumes for debugging
+        server?.volumes?.each { StorageVolume it ->
+            log.debug "Existing Morpheus volume: " +
+                    "name=${it.name} (${it.id}), " +
+                    "externalId=${it.externalId}, " +
+                    "maxStorage=${it.maxStorage}"
+        }
+
         def changes = false
         try {
             def maxStorage = 0
@@ -435,7 +444,7 @@ class VirtualMachineSync {
         def provisionProvider = cloudProvider.getProvisionProvider('morpheus-scvmm-plugin.provision')
         def serverVolumeNames = server.volumes.collect { it.name }
         itemsToAdd?.eachWithIndex { diskData, index ->
-            log.debug("adding new volume: ${diskData}")
+            log.debug("adding new volume: ${diskData?.name} (${diskData?.id})")
             def datastore = diskData.datastore ?: loadDatastoreForVolume(diskData.HostVolumeId, diskData.FileShareId, diskData.PartitionUniqueId) ?: null
             def deviceName = diskData.deviceName ?: apiService.getDiskName(diskNumber)
             def volumeName = serverVolumeNames?.getAt(index) ?: getVolumeName(diskData, deviceName, server, index)
@@ -507,7 +516,7 @@ class VirtualMachineSync {
 
     def removeMissingStorageVolumes(removeItems, ComputeServer server, Boolean changes) {
         removeItems?.each { currentVolume ->
-            log.debug "removing volume: ${currentVolume}"
+            log.debug "removing volume: ${currentVolume?.name} (${currentVolume?.id})"
             changes = true
             currentVolume.controller = null
             currentVolume.datastore = null

@@ -95,14 +95,25 @@ class HostSync {
                 def existingItem = updateItem.existingItem
                 def masterItem = updateItem.masterItem
                 def cluster = clusters.find { it.internalId == masterItem.cluster }
+                def fetchedOs = getHypervisorOs(masterItem.os)
                 // May be null if Host not in a cluster
-                if (existingItem.resourcePool != cluster) {
+                def clusterChanged = existingItem.resourcePool != cluster
+                def osChanged = fetchedOs && existingItem.serverOs?.code != fetchedOs.code
+                if (clusterChanged) {
                     existingItem.resourcePool = cluster
+                }
+                // Detect and fix OS mismatch
+                if (osChanged) {
+                    existingItem.serverOs = fetchedOs
+                    existingItem.osType = fetchedOs.platform?.toString() ?: 'windows'
+                }
+                if (clusterChanged || osChanged) {
                     def savedServer = context.async.computeServer.save(existingItem).blockingGet()
                     log.debug("savedServer?.id: ${savedServer?.id}")
                     if (savedServer) {
                         updateHostStats(savedServer, masterItem)
                     }
+                    log.debug("updated host")
                 }
             }
         } catch (e) {
@@ -179,12 +190,12 @@ class HostSync {
     }
 
     def getHypervisorOs(name) {
-        def rtn
-        if (name?.indexOf('2016') > -1)
-            rtn = new OsType(code: 'windows.server.2016')
-        else
-            rtn = new OsType(code: 'windows.server.2012')
-        return rtn
+        def versionCode = apiService.extractWindowsServerVersion(name ?: '')
+        def osType = context.services.osType.find(new DataQuery().withFilter('code', versionCode))
+        if (!osType) {
+            osType = new OsType(code: versionCode)
+        }
+        return osType
     }
 
     def updateHostStats(ComputeServer server, hostMap) {
