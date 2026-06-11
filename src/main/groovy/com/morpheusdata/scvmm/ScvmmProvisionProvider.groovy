@@ -1194,6 +1194,30 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         return rtn
     }
 
+    private void updateServerHost(ComputeServer server, Map scvmmOpts) {
+        try {
+            def serverDetails = apiService.getServerDetails(scvmmOpts, server.externalId)
+            def hostId = serverDetails?.server?.HostId
+            if (hostId) {
+                def hosts = context.services.computeServer.list(
+                    new DataQuery()
+                        .withFilter('cloud.id', server.cloud.id)
+                        .withFilter('computeServerType.code', 'scvmmHypervisor')
+                )
+                def parentServer = hosts?.find { it.externalId == hostId }
+                if (parentServer && server.parentServer?.id != parentServer.id) {
+                    server.parentServer = parentServer
+                    if (server.consoleType == 'vmrdp') {
+                        server.consoleHost = parentServer.name
+                    }
+                    context.services.computeServer.save(server)
+                }
+            }
+        } catch (e) {
+            log.error("updateServerHost error: ${e}", e)
+        }
+    }
+
     /**
      * Issues the remote calls necessary to start a workload element for running.
      * @param workload the Workload we want to start up.
@@ -1299,6 +1323,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 			def newIpAddress = serverDetails.server?.ipAddress
 			def macAddress = serverDetails.server?.macAddress
 			applyComputeServerNetworkIp(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
+            def hostOpts = fetchScvmmConnectionDetails(fetchedServer)
+            updateServerHost(fetchedServer, hostOpts)
 			return new ServiceResponse<ProvisionResponse>(true, null, null,
 					new ProvisionResponse(privateIp: fetchedServer.internalIp, publicIp: fetchedServer.externalIp, success: true))
 		} else {
