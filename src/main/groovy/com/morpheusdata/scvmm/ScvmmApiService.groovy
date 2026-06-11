@@ -2029,8 +2029,11 @@ For (\$i=0; \$i -le 10; \$i++) {
         log.debug("validateServerConfig: ${opts}")
         def rtn = [success: false, errors: []]
         try {
-            if (!opts.scvmmCapabilityProfile) {
+            if (opts.containsKey('scvmmCapabilityProfile') && !opts.scvmmCapabilityProfile) {
                 rtn.errors += [field: 'scvmmCapabilityProfile', msg: 'You must select a capability profile']
+            }
+            if (opts.containsKey('template') && !opts.template) {
+                rtn.errors += [field: 'template', msg: 'Virtual image is required']
             }
             // if(!opts.networkId && opts.networkInterfaces?.size() == 0) {
             // 	rtn.errors += [field: 'networkInterface', msg: 'You must choose a network']
