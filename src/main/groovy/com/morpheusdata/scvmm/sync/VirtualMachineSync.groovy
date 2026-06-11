@@ -241,7 +241,7 @@ class VirtualMachineSync {
                                 currentServer.consolePort = consolePort
                                 save = true
                             }
-                            /*if (consoleEnabled) {
+                            if (consoleEnabled) {
                                 if (consoleUsername != currentServer.sshUsername) {
                                     currentServer.sshUsername = consoleUsername
                                     save = true
@@ -250,7 +250,7 @@ class VirtualMachineSync {
                                     currentServer.consolePassword = consolePassword
                                     save = true
                                 }
-                            }*/
+                            }
                             // Operating System
                             def osTypeCode = apiService.getMapScvmmOsType(masterItem.OperatingSystem, true, masterItem.OperatingSystemWindows?.toString() == 'true' ? 'windows' : null)
                             def osTypeCodeStr = osTypeCode ?: 'other'
