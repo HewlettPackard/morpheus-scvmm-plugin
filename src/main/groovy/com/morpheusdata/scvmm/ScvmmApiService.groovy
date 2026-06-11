@@ -890,47 +890,80 @@ foreach (\$cloud in \$clouds) {
 
         def hasMore = true
         def pageSize = 50
-        def fetchStorageVolumes = { offset ->
-            def commandStr = """\$report = @()
-				\$cloud = Get-SCCloud -VMMServer localhost | where { \$_.ID -eq \'${opts.zone.regionCode ?: ''}\' } 
-				\$StorageVolumes = Get-SCStorageVolume -VMMServer localhost | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
-				If (-not ([string]::IsNullOrEmpty(\$cloud))) {
-					\$AllowedClassifications = \$cloud.StorageClassifications.Name
-					\$StorageVolumes = \$StorageVolumes | where { \$_.Classification -in \$AllowedClassifications }
-				}
-				foreach (\$StorageVolume in \$StorageVolumes) {
-					\$data = New-Object PSObject -property @{
-						id=\$StorageVolume.ID
-						name=\$StorageVolume.Name
-						storageVolumeID=\$StorageVolume.StorageVolumeID
-						partitionUniqueID=\$StorageVolume.PartitionUniqueID
-						capacity=\$StorageVolume.Capacity
-						freeSpace=\$StorageVolume.FreeSpace
-						isClusteredSharedVolume=\$StorageVolume.IsClusterSharedVolume
-						vmHost=\$StorageVolume.VMHost.Name
-						isAvailableForPlacement=\$StorageVolume.IsAvailableForPlacement
-						hostDisk=\$StorageVolume.HostDisk.Name
-						size=\$StorageVolume.Size
-						mountPoints=\$StorageVolume.MountPoints
+		def fetchStorageVolumes = { offset ->
+			def commandStr
+			if (opts.zone.regionCode) {
+				log.debug("Fetching storage volumes for cloud ${opts.zone.regionCode} with offset ${offset} and pageSize ${pageSize}")
+				commandStr = """\$report = @()
+				\$cloud = Get-SCCloud -VMMServer localhost | Where-Object { \$_.ID -eq  \'${opts.zone.regionCode}\' }
+				if (\$cloud) {
+					\$cloudHostGroupPath = \$cloud.HostGroup.Path
+					\$clusters = Get-SCVMHostCluster -VMMServer localhost | Where-Object { \$_.HostGroup.Path -eq \$cloudHostGroupPath }
+					foreach (\$cluster in \$clusters) {
+						\$hosts = Get-SCVMHost -VMMServer localhost | Where-Object { \$_.HostCluster.ID -eq \$cluster.ID }
+						\$allVolumes = @()
+						if (\$hosts.Count -gt 0) {
+							\$hostIDs = \$hosts | Select-Object -ExpandProperty ID
+							\$allVolumes = Get-SCStorageVolume -VMMServer localhost | Where-Object { \$hostIDs -contains \$_.VMHost.ID } | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
+						}
+						\$allVolumes = \$allVolumes | Sort-Object storageVolumeID -Unique
+						foreach (\$StorageVolume in \$allVolumes) {
+							\$data = New-Object PSObject -property @{
+								id = \$StorageVolume.ID
+								name = \$StorageVolume.Name
+								storageVolumeID = \$StorageVolume.StorageVolumeID
+								partitionUniqueID = \$StorageVolume.PartitionUniqueID
+								capacity = \$StorageVolume.Capacity
+								freeSpace = \$StorageVolume.FreeSpace
+								isClusteredSharedVolume = \$StorageVolume.IsClusterSharedVolume
+								vmHost = \$StorageVolume.VMHost.Name
+								isAvailableForPlacement = \$StorageVolume.IsAvailableForPlacement
+								hostDisk = \$StorageVolume.HostDisk.Name
+								size = \$StorageVolume.Size
+								mountPoints = \$StorageVolume.MountPoints
+							}
+							\$report += \$data
+						}
 					}
-					\$report +=\$data
 				}
 				\$report """
-
-            def command = generateCommandString(commandStr)
-            def out = wrapExecuteCommand(command, opts)
-            log.debug "listDatastores results: ${out}"
-            if (out.success) {
-                hasMore = (out.data != '' && out.data != null)
-                if (out.data) {
-                    rtn.datastores += out.data
-                }
-                rtn.success = true
-            } else {
-                log.debug "Return not successful: ${out}"
-                hasMore = false
-            }
-        }
+			} else {
+				log.debug("Fetching storage volumes with no regionCode")
+				commandStr = """\$report = @()
+				\$allVolumes = Get-SCStorageVolume -VMMServer localhost | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
+				foreach (\$StorageVolume in \$allVolumes) {
+					\$data = New-Object PSObject -property @{
+						id = \$StorageVolume.ID
+						name = \$StorageVolume.Name
+						storageVolumeID = \$StorageVolume.StorageVolumeID
+						partitionUniqueID = \$StorageVolume.PartitionUniqueID
+						capacity = \$StorageVolume.Capacity
+						freeSpace = \$StorageVolume.FreeSpace
+						isClusteredSharedVolume = \$StorageVolume.IsClusterSharedVolume
+						vmHost = \$StorageVolume.VMHost.Name
+						isAvailableForPlacement = \$StorageVolume.IsAvailableForPlacement
+						hostDisk = \$StorageVolume.HostDisk.Name
+						size = \$StorageVolume.Size
+						mountPoints = \$StorageVolume.MountPoints
+					}
+					\$report += \$data
+				}
+				\$report """
+			}
+			def command = generateCommandString(commandStr)
+			def out = wrapExecuteCommand(command, opts)
+			log.debug "listDatastores results: ${out.data}"
+			if(out.success) {
+				hasMore = out.data != ''
+				if(out.data) {
+					rtn.datastores += out.data
+				}
+				rtn.success = true
+			} else {
+				log.debug "Return not successful: ${out}"
+				hasMore = false
+			}
+		}
 
         def currentOffset = 0
         while (hasMore) {
