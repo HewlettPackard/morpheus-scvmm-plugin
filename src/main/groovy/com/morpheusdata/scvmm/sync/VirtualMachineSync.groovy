@@ -1,5 +1,6 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataQuery
@@ -7,22 +8,12 @@ import com.morpheusdata.core.providers.CloudProvider
 import com.morpheusdata.core.util.ComputeUtility
 import com.morpheusdata.core.util.SyncTask
 import com.morpheusdata.core.util.SyncUtils
-import com.morpheusdata.model.Cloud
-import com.morpheusdata.model.ComputeCapacityInfo
-import com.morpheusdata.model.ComputeServer
-import com.morpheusdata.model.ComputeServerType
-import com.morpheusdata.model.Datastore
-import com.morpheusdata.model.ResourcePermission
-import com.morpheusdata.model.ServicePlan
-import com.morpheusdata.model.StorageVolume
-import com.morpheusdata.model.VirtualImage
-import com.morpheusdata.model.VirtualImageLocation
-import com.morpheusdata.model.Workload
+import com.morpheusdata.model.*
 import com.morpheusdata.model.projection.ComputeServerIdentityProjection
 import com.morpheusdata.model.projection.StorageVolumeIdentityProjection
-import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
+import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Observable
 
 /**
@@ -187,7 +178,7 @@ class VirtualMachineSync {
                                 save = true
                             }
                             if (masterItem.IpAddress && currentServer.externalIp != masterItem.IpAddress) {
-                                def netInterface = currentServer.interfaces.find { it.publicIpAddress == currentServer.externalIp }
+                                def netInterface = currentServer.interfaces.find {it.publicIpAddress == currentServer.externalIp}
                                 if (netInterface) {
                                     netInterface.publicIpAddress = masterItem.IpAddress
                                     context.async.computeServer.computeServerInterface.save([netInterface]).blockingGet()
@@ -199,7 +190,7 @@ class VirtualMachineSync {
                                 save = true
                             }
                             if (masterItem.InternalIp && currentServer.internalIp != masterItem.InternalIp) {
-                                def netInterface = currentServer.interfaces.find { it.ipAddress == currentServer.internalIp }
+                                def netInterface = currentServer.interfaces.find {it.ipAddress == currentServer.internalIp}
                                 if (netInterface) {
                                     netInterface.ipAddress = masterItem.InternalIp
                                     context.async.computeServer.computeServerInterface.save([netInterface]).blockingGet()
@@ -271,10 +262,10 @@ class VirtualMachineSync {
                             }
 
                             def powerState = masterItem.VirtualMachineState == 'Running' ? ComputeServer.PowerState.on : ComputeServer.PowerState.off
-                            if (powerState != currentServer.powerState) {
+                            if(powerState != currentServer.powerState) {
                                 currentServer.powerState = powerState
-                                if (currentServer.computeServerType?.guestVm) {
-                                    if (currentServer.powerState == ComputeServer.PowerState.on) {
+                                if(currentServer.computeServerType?.guestVm) {
+                                    if(currentServer.powerState == ComputeServer.PowerState.on) {
                                         updateWorkloadAndInstanceStatuses(currentServer, Workload.Status.running, 'running')
                                     } else {
                                         def containerStatus = currentServer.powerState == ComputeServer.PowerState.paused ? Workload.Status.suspended : Workload.Status.stopped
@@ -297,7 +288,7 @@ class VirtualMachineSync {
                                     syncVolumes(currentServer, masterItem.Disks)
                                 }
                             }
-                            log.debug("updateMatchedVirtualMachines: save: ${save}")
+                            log.debug ("updateMatchedVirtualMachines: save: ${save}")
                             if (save) {
                                 saves << currentServer
                             }
@@ -315,7 +306,6 @@ class VirtualMachineSync {
         } catch (Exception e) {
             log.error "Error in updating virtual machines: ${e.message}", e
         }
-        log.debug("Exiting VirtualMachineSync >> updateMatchedVirtualMachines() called")
     }
 
     private void updateWorkloadAndInstanceStatuses(ComputeServer server, Workload.Status workloadStatus,
@@ -352,7 +342,7 @@ class VirtualMachineSync {
                         new DataFilter('server.id', server.id)
                 ))?.collect { it.instance.id }?.unique()
 
-        if (instanceIds) {
+        if(instanceIds) {
             context.services.instance.list(new DataQuery().withFilter('id', 'in', instanceIds))?.each { instance ->
                 instance.status = instanceStatus
                 context.services.instance.save(instance)
@@ -409,7 +399,7 @@ class VirtualMachineSync {
             def maxStorage = 0
 
             def existingVolumes = server.volumes
-            def masterItems = externalVolumes?.findAll { it != null }
+            def masterItems = externalVolumes?.findAll{it != null}
 
             def existingItems = Observable.fromIterable(existingVolumes)
             def diskNumber = masterItems.size()
@@ -442,20 +432,20 @@ class VirtualMachineSync {
 
     def addMissingStorageVolumes(itemsToAdd, ComputeServer server, int diskNumber, maxStorage, changes) {
         def provisionProvider = cloudProvider.getProvisionProvider('morpheus-scvmm-plugin.provision')
-        def serverVolumeNames = server.volumes.collect { it.name }
+        def serverVolumeNames = server.volumes.collect{ it.name }
         itemsToAdd?.eachWithIndex { diskData, index ->
             log.debug("adding new volume: ${diskData?.name} (${diskData?.id})")
             def datastore = diskData.datastore ?: loadDatastoreForVolume(diskData.HostVolumeId, diskData.FileShareId, diskData.PartitionUniqueId) ?: null
             def deviceName = diskData.deviceName ?: apiService.getDiskName(diskNumber)
             def volumeName = serverVolumeNames?.getAt(index) ?: getVolumeName(diskData, deviceName, server, index)
             def volumeConfig = [
-                    name       : volumeName,
-                    size       : diskData.TotalSize?.toLong() ?: 0,
-                    rootVolume : diskData.VolumeType == 'BootAndSystem' || !server.volumes?.size(),
+                    name      : volumeName,
+                    size      : diskData.TotalSize?.toLong() ?: 0,
+                    rootVolume: diskData.VolumeType == 'BootAndSystem' || !server.volumes?.size(),
                     //deviceName: (diskData.deviceName ?: provisionProvider.getDiskName(diskNumber)),
-                    deviceName : deviceName,
-                    externalId : diskData.ID,
-                    internalId : diskData.Name,
+                    deviceName: deviceName,
+                    externalId: diskData.ID,
+                    internalId: diskData.Name,
                     storageType: getStorageVolumeType("scvmm-${diskData?.VHDType}-${diskData?.VHDFormat}".toLowerCase()),
             ]
             if (datastore)
@@ -533,9 +523,10 @@ class VirtualMachineSync {
 
         storageVolume.maxStorage = volume?.maxStorage?.toLong() ?: volume?.size?.toLong()
         def storageType
-        if (volume?.storageType) {
+        if(volume?.storageType) {
             storageType = context.async.storageVolume.storageVolumeType.get(volume.storageType?.toLong()).blockingGet()
-        } else {
+        }
+        else {
             storageType = context.async.storageVolume.storageVolumeType.find(new DataQuery().withFilter('code', 'standard')).blockingGet()
         }
         storageVolume.type = storageType
@@ -544,7 +535,7 @@ class VirtualMachineSync {
         if (volume.datastoreId) {
             storageVolume.datastoreOption = volume.datastoreId
             storageVolume.datastore = context.services.cloud.datastore.get(storageVolume.datastoreOption.toLong())
-            if (storageVolume.datastore) {
+            if(storageVolume.datastore) {
                 storageVolume.storageServer = storageVolume.datastore.storageServer
             }
             storageVolume.refType = 'Datastore'

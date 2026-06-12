@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.ScvmmApiService
+import com.morpheusdata.core.BulkCreateResult
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataOrFilter
@@ -14,9 +16,9 @@ import com.morpheusdata.model.NetworkSubnetType
 import com.morpheusdata.model.NetworkType
 import com.morpheusdata.model.projection.NetworkIdentityProjection
 import com.morpheusdata.model.projection.NetworkSubnetIdentityProjection
-import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
+import groovy.util.logging.Slf4j
 
 class NetworkSync {
 
@@ -44,7 +46,7 @@ class NetworkSync {
             if (listResults.success == true && listResults.networks) {
                 def objList = listResults?.networks
                 log.debug("objList: {}", objList)
-                if (!objList) {
+                if(!objList) {
                     log.info "No networks returned!"
                 }
                 def existingItems = morpheusContext.async.cloud.network.listIdentityProjections(new DataQuery()
@@ -107,26 +109,26 @@ class NetworkSync {
                 // Now add subnets to the created networks
                 result.persistedItems.each { networkAdd ->
 
-                    def cloudItem = addList.find { it.Name == networkAdd.name } // Find corresponding cloud item
+                    def cloudItem = addList.find {it.Name == networkAdd.name} // Find corresponding cloud item
                     def subnet = cloudItem.Subnets?.getAt(0)?.Subnet
                     def networkCidr = NetworkUtility.getNetworkCidrConfig(subnet)
 
                     if (cloudItem) {
                         def subnetConfig = [
-                                dhcpServer       : true,
-                                account          : cloud.owner,
-                                externalId       : cloudItem.ID,
-                                networkSubnetType: subnetType,
-                                category         : "scvmm.subnet.${cloud.id}",
-                                name             : cloudItem.Name,
-                                vlanId           : cloudItem.VLanID,
-                                cidr             : subnet,
-                                netmask          : networkCidr.config?.netmask,
-                                dhcpStart        : (networkCidr.ranges ? networkCidr.ranges[0].startAddress : null),
-                                dhcpEnd          : (networkCidr.ranges ? networkCidr.ranges[0].endAddress : null),
-                                subnetAddress    : subnet,
-                                refType          : 'ComputeZone',
-                                refId            : cloud.id
+                                dhcpServer         : true,
+                                account            : cloud.owner,
+                                externalId         : cloudItem.ID,
+                                networkSubnetType  : subnetType,
+                                category           : "scvmm.subnet.${cloud.id}",
+                                name               : cloudItem.Name,
+                                vlanId             : cloudItem.VLanID,
+                                cidr               : subnet,
+                                netmask            : networkCidr.config?.netmask,
+                                dhcpStart          : (networkCidr.ranges ? networkCidr.ranges[0].startAddress : null),
+                                dhcpEnd            : (networkCidr.ranges ? networkCidr.ranges[0].endAddress : null),
+                                subnetAddress      : subnet,
+                                refType            : 'ComputeZone',
+                                refId              : cloud.id
                         ]
                         def addSubnet = new NetworkSubnet(subnetConfig)
                         // Create subnet for the network
@@ -148,7 +150,7 @@ class NetworkSync {
                 Network network = updateMap.existingItem
                 def matchedNetwork = updateMap.masterItem
 
-                def existingSubnetIds = network.subnets.collect { it.id }
+                def existingSubnetIds = network.subnets.collect{it.id}
                 def existingSubnets = morpheusContext.async.networkSubnet.list(new DataQuery()
                         .withFilter('id', 'in', existingSubnetIds))
 
@@ -168,7 +170,7 @@ class NetworkSync {
                     return morpheusContext.async.networkSubnet.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
             }
-        } catch (e) {
+        } catch(e) {
             log.error("Error in updateMatchedNetworks: ${e}", e)
         }
     }
@@ -210,11 +212,11 @@ class NetworkSync {
         }
     }
 
-    private updateMatchedNetworkSubnet(List<SyncTask.UpdateItem<NetworkSubnet, Map>> updateList) {
+    private updateMatchedNetworkSubnet(List<SyncTask.UpdateItem<NetworkSubnet, Map>> updateList){
         log.debug("updateMatchedNetworkSubnet: ${updateList}")
 
         List<NetworkSubnet> itemsToUpdate = []
-        try {
+        try{
             updateList?.each { subnetUpdateMap ->
                 def matchedSubnet = subnetUpdateMap.masterItem
                 NetworkSubnet subnet = subnetUpdateMap.existingItem
@@ -276,7 +278,7 @@ class NetworkSync {
             if (itemsToUpdate.size() > 0) {
                 morpheusContext.async.networkSubnet.save(itemsToUpdate).blockingGet()
             }
-        } catch (e) {
+        } catch(e) {
             log.error "Error in updateMatchedNetworkSubnet ${e}", e
         }
 

@@ -1,5 +1,6 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataOrFilter
@@ -10,9 +11,9 @@ import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.Network
 import com.morpheusdata.model.NetworkType
 import com.morpheusdata.model.projection.NetworkIdentityProjection
-import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
+import groovy.util.logging.Slf4j
 
 class IsolationNetworkSync {
     private MorpheusContext morpheusContext
@@ -114,11 +115,11 @@ class IsolationNetworkSync {
                 log.debug "processing update: ${network}"
                 if (network) {
                     def save = false
-                    if (network.cidr != masterItem.Subnet) {
+                    if(network.cidr != masterItem.Subnet){
                         network.cidr = masterItem.Subnet
                         save = true
                     }
-                    if (network.vlanId != masterItem.VLanID) {
+                    if(network.vlanId != masterItem.VLanID){
                         network.vlanId = masterItem.VLanID
                         save = true
                     }
@@ -130,7 +131,7 @@ class IsolationNetworkSync {
             if (itemsToUpdate.size() > 0) {
                 morpheusContext.async.cloud.network.save(itemsToUpdate).blockingGet()
             }
-        } catch (e) {
+        } catch(e) {
             log.error "Error in update Isolation Network sync ${e}", e
         }
     }

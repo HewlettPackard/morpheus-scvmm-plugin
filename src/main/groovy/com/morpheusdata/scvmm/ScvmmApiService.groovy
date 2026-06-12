@@ -10,8 +10,6 @@ import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.LogWrapper
-import com.morpheusdata.scvmm.util.MorpheusUtil
-import com.morpheusdata.scvmm.util.PowerShellUtil
 import groovy.json.JsonOutput
 
 class ScvmmApiService {
@@ -24,26 +22,8 @@ class ScvmmApiService {
     static defaultRoot = 'C:\\morpheus'
 
     def executeCommand(command, opts) {
-        // Log command and opts in separate log entries due to truncation issues with a large opts list
-        log.debug("Execute PowerShell command\n${command}")
-        log.debug("PowerShell command opts=${opts}")
         def winrmPort = opts.sshPort && opts.sshPort != 22 ? opts.sshPort : 5985
-        long startNanoTime = System.nanoTime()
         def output = morpheusContext.executeWindowsCommand(opts.sshHost, winrmPort?.toInteger(), opts.sshUsername, opts.sshPassword, command, null, false).blockingGet()
-        long elapsedMs = (System.nanoTime() - startNanoTime) / 1_000_000L as long
-        log.debug("Completed PowerShell command, success=${output.success}, elapsedMs=${elapsedMs}")
-
-        // Log errors and/or warnings from the PowerShell output if present. These may not always cause the command to
-        // be unsuccessful but are still important to log.
-        if (output.error) {
-            String logError = PowerShellUtil.prettyPrintPowerShellScriptError(output.error)
-            log.info("PowerShell script reported warnings and/or errors\n${logError}")
-        }
-
-        if (output.success && output.data) {
-            log.debug("PowerShell script response\n${output.data}")
-        }
-
         return output
     }
 
@@ -210,7 +190,7 @@ class ScvmmApiService {
             log.debug "Servercreated: ${serverCreated}"
 
             // Server Created - Remove Temporary templates and profiles
-            if (removeTemplateCommands) {
+            if(removeTemplateCommands) {
                 log.info("createServer - removing Temporary Templates and Hardware Profiles")
                 def command = removeTemplateCommands.join(';')
                 command += "@()"
@@ -222,7 +202,7 @@ class ScvmmApiService {
                 loadControllerServer(opts)
                 //Get the created VM Disk configuration for new server with id opts.externalId
                 //expect Map [success:true/false, disks: []]
-                def vmDisk = listVirtualDiskDrives(opts, opts.externalId)
+                def vmDisk = listVirtualDiskDrives(opts,opts.externalId)
                 if (vmDisk.success) {
                     log.info("createServer - received current Disk configuration for VM ${opts.externalId}")
                     log.info("createServer - additional volumes - opts.additionalTemplateDisks: ${opts.additionalTemplateDisks}")
@@ -637,7 +617,71 @@ if(\$cloud) {
 
     def listTemplates(Map opts) {
         def rtn = [success: false, templates: []]
-        def commandStr = PowerShellUtil.loadPowerShellScript('listTemplates.ps1')
+        def commandStr = """\$report = @()
+\$VMTemplates = Get-SCVMTemplate -VMMServer localhost -All | where { \$_.ID -ne \$_.Name -and \$_.Status -eq 'Normal'}
+foreach (\$Template in \$VMTemplates) {
+	\$data = New-Object PSObject -property @{
+		ID=\$Template.ID
+		ObjectType=\$Template.ObjectType.ToString()
+		Name=\$Template.Name
+		CPUCount=\$Template.CPUCount
+		Memory=\$Template.Memory
+		OperatingSystem=\$Template.OperatingSystem.Name
+		TotalSize=0
+		UsedSize=0
+		Generation=\$Template.Generation
+		Disks=@()
+	}
+
+	foreach (\$VHDconf in \$Template.VirtualDiskDrives){
+		\$VHD = \$VHDconf.VirtualHardDisk
+		\$disk = New-Object PSObject -property @{
+			ID=\$VHD.ID
+			Name=\$VHD.Name
+			VHDType=\$VHD.VHDType.ToString()
+            VHDFormat=\$VHD.VHDFormatType.ToString()
+			Location=\$VHD.Location
+			TotalSize=\$VHD.MaximumSize
+			UsedSize=\$VHD.Size
+			HostId=\$VHD.HostId
+			HostVolumeId=\$VHD.HostVolumeId
+			VolumeType=([Microsoft.VirtualManager.Remoting.VolumeType]\$VHDconf.VolumeType).toString()
+		}
+		\$data.Disks += \$disk
+		\$data.TotalSize += \$VHD.MaximumSize
+		\$data.UsedSize += \$VHD.Size
+	}
+	\$report += \$data
+}
+
+\$Disks = Get-SCVirtualHardDisk -VMMServer localhost
+foreach (\$VHDconf in \$Disks) {
+	\$data = New-Object PSObject -property @{
+		ID=\$VHDconf.ID
+		Name=\$VHDconf.Name
+		Location=\$VHDconf.Location
+		OperatingSystem=\$VHDconf.OperatingSystem.Name
+		TotalSize=\$VHDconf.MaximumSize
+		VHDFormatType= ([Microsoft.VirtualManager.Remoting.VHDFormatType]\$VHDconf.VHDFormatType).toString()
+		UsedSize=0
+		Disks=@()
+	}
+	\$disk = New-Object PSObject -property @{
+		ID=\$VHDconf.ID
+		ObjectType=\$VHDConf.ObjectType.ToString()
+		Name=\$VHDconf.Name
+		VHDType=\$VHD.VHDType.ToString()
+        VHDFormat=\$VHD.VHDFormatType.ToString()
+		Location=\$VHDconf.Location
+		TotalSize=\$VHDconf.MaximumSize
+		UsedSize=\$VHDconf.Size
+		HostId=\$VHDconf.HostId
+		HostVolumeId=\$VHDconf.HostVolumeId
+	}
+	\$data.Disks += \$disk
+	\$report += \$data
+}
+\$report """
         def command = generateCommandString(commandStr)
         def out = wrapExecuteCommand(command, opts)
         log.debug("out: ${out.data}")
@@ -704,7 +748,18 @@ if(\$cloud) {
 
     def listLibraryShares(Map opts) {
         def rtn = [success: false, libraryShares: []]
-        def command = PowerShellUtil.loadPowerShellScript('listLibraryShares.ps1')
+        def command = """\$report = @()
+\$shares = Get-SCLibraryShare -VMMServer localhost 
+foreach(\$share in \$shares) {
+  \$data = New-Object PSObject -property @{
+    ID=\$share.ID
+    Name=\$share.Name
+    Path=\$share.Path
+}
+\$report += \$data
+}
+\$report"""
+
         def out = wrapExecuteCommand(generateCommandString(command), opts)
         if (out.success) {
             rtn.libraryShares = out.data
@@ -835,47 +890,80 @@ foreach (\$cloud in \$clouds) {
 
         def hasMore = true
         def pageSize = 50
-        def fetchStorageVolumes = { offset ->
-            def commandStr = """\$report = @()
-				\$cloud = Get-SCCloud -VMMServer localhost | where { \$_.ID -eq \'${opts.zone.regionCode ?: ''}\' } 
-				\$StorageVolumes = Get-SCStorageVolume -VMMServer localhost | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
-				If (-not ([string]::IsNullOrEmpty(\$cloud))) {
-					\$AllowedClassifications = \$cloud.StorageClassifications.Name
-					\$StorageVolumes = \$StorageVolumes | where { \$_.Classification -in \$AllowedClassifications }
-				}
-				foreach (\$StorageVolume in \$StorageVolumes) {
-					\$data = New-Object PSObject -property @{
-						id=\$StorageVolume.ID
-						name=\$StorageVolume.Name
-						storageVolumeID=\$StorageVolume.StorageVolumeID
-						partitionUniqueID=\$StorageVolume.PartitionUniqueID
-						capacity=\$StorageVolume.Capacity
-						freeSpace=\$StorageVolume.FreeSpace
-						isClusteredSharedVolume=\$StorageVolume.IsClusterSharedVolume
-						vmHost=\$StorageVolume.VMHost.Name
-						isAvailableForPlacement=\$StorageVolume.IsAvailableForPlacement
-						hostDisk=\$StorageVolume.HostDisk.Name
-						size=\$StorageVolume.Size
-						mountPoints=\$StorageVolume.MountPoints
+		def fetchStorageVolumes = { offset ->
+			def commandStr
+			if (opts.zone.regionCode) {
+				log.debug("Fetching storage volumes for cloud ${opts.zone.regionCode} with offset ${offset} and pageSize ${pageSize}")
+				commandStr = """\$report = @()
+				\$cloud = Get-SCCloud -VMMServer localhost | Where-Object { \$_.ID -eq  \'${opts.zone.regionCode}\' }
+				if (\$cloud) {
+					\$cloudHostGroupPath = \$cloud.HostGroup.Path
+					\$clusters = Get-SCVMHostCluster -VMMServer localhost | Where-Object { \$_.HostGroup.Path -eq \$cloudHostGroupPath }
+					foreach (\$cluster in \$clusters) {
+						\$hosts = Get-SCVMHost -VMMServer localhost | Where-Object { \$_.HostCluster.ID -eq \$cluster.ID }
+						\$allVolumes = @()
+						if (\$hosts.Count -gt 0) {
+							\$hostIDs = \$hosts | Select-Object -ExpandProperty ID
+							\$allVolumes = Get-SCStorageVolume -VMMServer localhost | Where-Object { \$hostIDs -contains \$_.VMHost.ID } | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
+						}
+						\$allVolumes = \$allVolumes | Sort-Object storageVolumeID -Unique
+						foreach (\$StorageVolume in \$allVolumes) {
+							\$data = New-Object PSObject -property @{
+								id = \$StorageVolume.ID
+								name = \$StorageVolume.Name
+								storageVolumeID = \$StorageVolume.StorageVolumeID
+								partitionUniqueID = \$StorageVolume.PartitionUniqueID
+								capacity = \$StorageVolume.Capacity
+								freeSpace = \$StorageVolume.FreeSpace
+								isClusteredSharedVolume = \$StorageVolume.IsClusterSharedVolume
+								vmHost = \$StorageVolume.VMHost.Name
+								isAvailableForPlacement = \$StorageVolume.IsAvailableForPlacement
+								hostDisk = \$StorageVolume.HostDisk.Name
+								size = \$StorageVolume.Size
+								mountPoints = \$StorageVolume.MountPoints
+							}
+							\$report += \$data
+						}
 					}
-					\$report +=\$data
 				}
 				\$report """
-
-            def command = generateCommandString(commandStr)
-            def out = wrapExecuteCommand(command, opts)
-            log.debug "listDatastores results: ${out}"
-            if (out.success) {
-                hasMore = (out.data != '' && out.data != null)
-                if (out.data) {
-                    rtn.datastores += out.data
-                }
-                rtn.success = true
-            } else {
-                log.debug "Return not successful: ${out}"
-                hasMore = false
-            }
-        }
+			} else {
+				log.debug("Fetching storage volumes with no regionCode")
+				commandStr = """\$report = @()
+				\$allVolumes = Get-SCStorageVolume -VMMServer localhost | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
+				foreach (\$StorageVolume in \$allVolumes) {
+					\$data = New-Object PSObject -property @{
+						id = \$StorageVolume.ID
+						name = \$StorageVolume.Name
+						storageVolumeID = \$StorageVolume.StorageVolumeID
+						partitionUniqueID = \$StorageVolume.PartitionUniqueID
+						capacity = \$StorageVolume.Capacity
+						freeSpace = \$StorageVolume.FreeSpace
+						isClusteredSharedVolume = \$StorageVolume.IsClusterSharedVolume
+						vmHost = \$StorageVolume.VMHost.Name
+						isAvailableForPlacement = \$StorageVolume.IsAvailableForPlacement
+						hostDisk = \$StorageVolume.HostDisk.Name
+						size = \$StorageVolume.Size
+						mountPoints = \$StorageVolume.MountPoints
+					}
+					\$report += \$data
+				}
+				\$report """
+			}
+			def command = generateCommandString(commandStr)
+			def out = wrapExecuteCommand(command, opts)
+			log.debug "listDatastores results: ${out.data}"
+			if(out.success) {
+				hasMore = out.data != ''
+				if(out.data) {
+					rtn.datastores += out.data
+				}
+				rtn.success = true
+			} else {
+				log.debug "Return not successful: ${out}"
+				hasMore = false
+			}
+		}
 
         def currentOffset = 0
         while (hasMore) {
@@ -1034,7 +1122,7 @@ Get-SCLogicalNetwork -VMMServer localhost -Cloud \$cloud | Select ID,Name"""
                 if (out.success && out.exitCode == '0' && out.data?.size() > 0) {
                     def logicalNetworks = out.data
                     command = generateCommandString("""\$report = @()
-\$networks = Get-SCVMNetwork -VMMServer localhost | where {\$_.IsolationType -ne "NoIsolationDBGDBG"} | Select ID,Name,LogicalNetwork,VMSubnet | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
+\$networks = Get-SCVMNetwork -VMMServer localhost | where {\$_.IsolationType -ne "NoIsolation"} | Select ID,Name,LogicalNetwork,VMSubnet | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
 foreach (\$network in \$networks) {
 	\$logicalNetwork = \$network.LogicalNetwork
 	\$data = New-Object PSObject -property @{
@@ -1327,8 +1415,8 @@ foreach (\$network in \$networks) {
 		$report 
 		'''
         String cmd = templateCmd.stripIndent().trim()
-                .replace("<%vmid%>", externalId)
-                .replace("<%vhdname%>", name ?: "")
+                .replace("<%vmid%>",externalId)
+                .replace("<%vhdname%>",name ?: "")
         //Execute
         def out = wrapExecuteCommand(generateCommandString(cmd), opts)
         if (out.success) {
@@ -1377,9 +1465,9 @@ foreach (\$network in \$networks) {
 		\$report 
 		"""
         String resizeCmd = templateCmd.stripIndent().trim()
-                .replace("<%vmid%>", opts.externalId)
-                .replace("<%diskid%>", diskId ?: "")
-                .replace("<%sizegb%>", "${(int) (diskSizeBytes.toLong()).div(ComputeUtility.ONE_GIGABYTE)}")
+                .replace("<%vmid%>",opts.externalId)
+                .replace("<%diskid%>",diskId ?: "")
+                .replace("<%sizegb%>","${(int)(diskSizeBytes.toLong()).div(ComputeUtility.ONE_GIGABYTE)}")
 
         log.debug "resizeDisk: ${resizeCmd}"
         def resizeResults = wrapExecuteCommand(generateCommandString(resizeCmd), opts)
@@ -1396,11 +1484,11 @@ foreach (\$network in \$networks) {
             }
         } else {
             log.warn("resizeDisk - rpc disk not return a usable response - ${resizeResults}")
-            return [success: false, errOut: "resizeDisk - did not receive expected response from rpc"]
+            return [success:false,errOut: "resizeDisk - did not receive expected response from rpc"]
         }
     }
 
-    def createAndAttachDisk(Map opts, Map diskSpec, Boolean returnDiskDrives = true) {
+    def createAndAttachDisk(Map opts, Map diskSpec, Boolean returnDiskDrives=true) {
         LogWrapper.instance.info("createAndAttachDisk - Adding new Virtual SCSI Disk VHDType:${diskSpec}")
         String templateCmd = '''
         #Morpheus will replace items in <%   %>
@@ -1509,23 +1597,23 @@ foreach (\$network in \$networks) {
         $report
         '''
         def addDiskCmd = templateCmd.stripIndent().trim()
-                .replace("<%vmid%>", opts.externalId ?: "")
-                .replace("<%vhdname%>", diskSpec.vhdName ?: "data-${UUID.randomUUID().toString()}")
-                .replace("<%sizemb%>", diskSpec.sizeMb.toString())
-                .replace("<%vhdtype%>", diskSpec.vhdType ?: "")
-                .replace("<%vhdformat%>", diskSpec.vhdFormat ?: "")
-                .replace("<%vhdpath%>", diskSpec.vhdPath ?: "")
+                .replace("<%vmid%>",opts.externalId ?: "")
+                .replace("<%vhdname%>",diskSpec.vhdName ?: "data-${UUID.randomUUID().toString()}")
+                .replace("<%sizemb%>",diskSpec.sizeMb.toString())
+                .replace("<%vhdtype%>",diskSpec.vhdType ?: "")
+                .replace("<%vhdformat%>",diskSpec.vhdFormat ?: "")
+                .replace("<%vhdpath%>",diskSpec.vhdPath ?: "")
         //Execute
         def out = wrapExecuteCommand(generateCommandString(addDiskCmd), opts)
-        if (out.success && returnDiskDrives) {
+        if(out.success && returnDiskDrives) {
             def listResults = listVirtualDiskDrives(opts, opts.externalId, diskSpec.vhdName)
             return [success: listResults.success, disk: listResults.disks.first()]
         }
     }
 
     def getDiskName(index, platform = 'linux') {
-        if (platform == 'windows')
-            return "disk ${index + 1}"
+        if(platform == 'windows')
+            return "disk ${index+1}"
         // return windowsDiskNames[index]
         else
             return getDiskNameList()[index]
@@ -1561,12 +1649,12 @@ foreach (\$network in \$networks) {
                     // the expected count.. we are good
                     log.debug "serverStatus: ${serverDetail.server?.Status}, opts.dataDisks: ${opts.dataDisks?.size()}, additionalTemplateDisks: ${opts.additionalTemplateDisks?.size()}"
 
-                    if (serverDetail.server?.Status != 'UnderCreation' &&
-                            serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
+                     if (serverDetail.server?.Status != 'UnderCreation' &&
+                             serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
                         // additionalTemplateDisks are created after VM creation
                         // data disks are created and attached after vm creation
 
-                        // if(serverDetail.server?.Status != 'UnderCreation' && serverDetail.server?.VirtualDiskDrives?.size() == 1 - (opts.additionalTemplateDisks?.size() ?: 0)) {
+                    // if(serverDetail.server?.Status != 'UnderCreation' && serverDetail.server?.VirtualDiskDrives?.size() == 1 - (opts.additionalTemplateDisks?.size() ?: 0)) {
                         // additionalTemplateDisks are created after VM creation
                         rtn.success = true
                         rtn.server = serverDetail.server
@@ -1657,9 +1745,8 @@ Status=\$job.Status.toString()
             def notFoundAttempts = 0
             def serverId = opts.server.id
             def waitForIp = opts.waitForIp
-            waitForIp = false // TODO
             while (pending) {
-                // sleep(1000l * 5l) // TODO
+                sleep(1000l * 5l)
                 log.debug "checkServerReady: ${vmId}"
                 ComputeServer server = morpheusContext.services.computeServer.get(serverId)
                 opts.server = server
@@ -1668,15 +1755,10 @@ Status=\$job.Status.toString()
                 def serverDetail = getServerDetails(opts, vmId)
                 if (serverDetail.success == true && serverDetail.server) {
                     def ipAddress = serverDetail.server?.internalIp ?: server?.externalIp
-                    log.debug "DBGDBG ipAddress found 1: ${ipAddress}"
+                    log.debug "ipAddress found: ${ipAddress}"
                     if (ipAddress) {
                         server.internalIp = ipAddress
                     }
-
-                    log.error("DBGDBG, waitForIp=${waitForIp}")
-//                    log.error("DBGDBG stack trace:\n" +
-//                            Thread.currentThread().stackTrace*.toString().join('\n')
-//                    )
 
                     if (waitForIp && !ipAddress) {
                         // Keep waiting
@@ -1695,7 +1777,7 @@ Status=\$job.Status.toString()
                             pending = false
                         } else {
                             log.debug("check server loading server: ip: ${server.internalIp}")
-                            if (server.internalIp || true) { // DBGDBG
+                            if (server.internalIp) {
                                 rtn.success = true
                                 rtn.server = serverDetail.server
                                 rtn.server.ipAddress = ipAddress ?: server.internalIp
@@ -1709,16 +1791,13 @@ Status=\$job.Status.toString()
                     }
                 }
 
-                // 300 attempts * 5 second delay between attempt is 25 minutes!!!
                 attempts++
-                if (attempts > 10 || notFoundAttempts > 10) // DBGDBG
+                if (attempts > 300 || notFoundAttempts > 10)
                     pending = false
-                log.error("DBGDBG pending=${pending}")
             }
         } catch (e) {
             log.error("An Exception Has Occurred", e)
         }
-        log.error("DBGDBG Returning from checkServerReady")
         return rtn
     }
 
@@ -1747,7 +1826,7 @@ Status=\$job.Status.toString()
         try {
             def command = """\$VM = Get-SCVirtualMachine -VMMServer localhost  -ID \"${vmId}\"
 if(\$VM.Status -ne 'PowerOff') { 
-	\$ignore = Stop-SCVirtualMachine -VM \$VM;
+	\$ignore = Stop-SCVirtualMachine -VM \$VM; 
 } \$true """
             def out = wrapExecuteCommand(generateCommandString(command), opts)
             rtn.success = out.success
@@ -1873,8 +1952,8 @@ foreach(\$share in \$shares) {
         InputStream inputStream = new ByteArrayInputStream(content.getBytes())
         def command = "\$ignore = mkdir \"${diskFolder}\""
         def dirResults = wrapExecuteCommand(generateCommandString(command), opts)
-        def fileResults = MorpheusUtil.copyToServer(morpheusContext, opts.hypervisor, "${opts.fileName}", "${diskFolder}\\${opts.fileName}", inputStream, opts.cloudConfigBytes?.size(), null, true)
-        log.debug("importScript: fileResults.success: ${fileResults.success}")
+        def fileResults = morpheusContext.services.fileCopy.copyToServer(opts.hypervisor, "${opts.fileName}", "${diskFolder}\\${opts.fileName}", inputStream, opts.cloudConfigBytes?.size(), null, true)
+        log.debug ("importScript: fileResults.success: ${fileResults.success}")
         if (!fileResults.success) {
             throw new Exception("Script Upload to SCVMM Host Failed. Perhaps an agent communication issue...${opts.hypervisor.name}")
         }
@@ -1892,14 +1971,30 @@ foreach(\$share in \$shares) {
         def busNumber = 0
         def lunNumber = opts.scvmmGeneration == 'generation1' ? 0 : 1
 
-        String command = PowerShellUtil.loadPowerShellScriptWithTokens(
-                'createDVD.ps1',
-                [
-                        '<%busNumber%>' : busNumber,
-                        '<%lunNumber%>' : lunNumber,
-                        '<%externalId%>': opts.externalId,
-                ]
-        )
+        def command = """\$busNumber = ${busNumber}
+\$lunNumber = ${lunNumber}
+\$externalId = "${opts.externalId}"
+\$VM = Get-SCVirtualMachine -VMMServer localhost -ID \$externalId
+\$success = \$false
+For (\$i=0; \$i -le 10; \$i++) {
+	If (\$success -eq \$false) {
+		\$jobGuid = New-Guid
+		\$ignore = New-SCVirtualDVDDrive -VMMServer localhost -JobGroup \$jobGuid -Bus \$busNumber -LUN \$lunNumber
+		\$ignore = Set-SCVirtualMachine -VM \$VM -JobGroup \$jobGuid
+		if( -not \$? ) {
+			\$lunNumber = \$lunNumber + 1
+			\$ignore = Repair-SCVirtualMachine -VM \$VM -Dismiss -Force
+		} else {
+			\$success = \$true
+		}
+	}
+}
+
+\$report = New-Object -Type PSObject -Property @{
+	'success'=\$success
+	'BUS'=\$busNumber
+	'LUN'=\$lunNumber}
+\$report"""
 
         def out = wrapExecuteCommand(generateCommandString(command), opts)
         if (!out.success) {
@@ -1915,8 +2010,8 @@ foreach(\$share in \$shares) {
         InputStream inputStream = new ByteArrayInputStream(cloudConfigBytes)
         def command = "\$ignore = mkdir \"${diskFolder}\""
         def dirResults = wrapExecuteCommand(generateCommandString(command), opts)
-        def fileResults = MorpheusUtil.copyToServer(morpheusContext, opts.hypervisor, "config.iso", "${diskFolder}\\config.iso", inputStream, cloudConfigBytes?.size())
-        log.debug("importAndMountIso: fileResults?.success: ${fileResults?.success}")
+        def fileResults = morpheusContext.services.fileCopy.copyToServer(opts.hypervisor, "config.iso", "${diskFolder}\\config.iso", inputStream, cloudConfigBytes?.size())
+        log.debug ("importAndMountIso: fileResults?.success: ${fileResults?.success}")
         if (!fileResults.success) {
             throw new Exception("ISO Upload to SCVMM Host Failed. Perhaps an agent communication issue...${opts.hypervisor.name}")
         }
@@ -1934,8 +2029,11 @@ foreach(\$share in \$shares) {
         log.debug("validateServerConfig: ${opts}")
         def rtn = [success: false, errors: []]
         try {
-            if (!opts.scvmmCapabilityProfile) {
+            if (opts.containsKey('scvmmCapabilityProfile') && !opts.scvmmCapabilityProfile) {
                 rtn.errors += [field: 'scvmmCapabilityProfile', msg: 'You must select a capability profile']
+            }
+            if (opts.containsKey('template') && !opts.template) {
+                rtn.errors += [field: 'template', msg: 'Virtual image is required']
             }
             // if(!opts.networkId && opts.networkInterfaces?.size() == 0) {
             // 	rtn.errors += [field: 'networkInterface', msg: 'You must choose a network']
@@ -2025,7 +2123,7 @@ foreach(\$share in \$shares) {
 
     def cleanData(data, ignoreString = null) {
         def rtn = ''
-        if (data) {
+        if(data){
             def lines = data.tokenize('\n')
             lines = lines?.findAll { it?.trim()?.length() > 1 }
             if (lines?.size() > 0) {
@@ -2213,7 +2311,7 @@ foreach(\$share in \$shares) {
         }
         fileList.each { Map fileItem ->
             Long contentLength = (Long) fileItem.contentLength
-            def fileResults = MorpheusUtil.copyToServer(morpheusContext, opts.hypervisor, fileItem.copyRequestFileName, fileItem.targetPath, fileItem.inputStream, contentLength, null, true)
+            def fileResults = morpheusContext.services.fileCopy.copyToServer(opts.hypervisor, fileItem.copyRequestFileName, fileItem.targetPath, fileItem.inputStream, contentLength, null, true)
             rtn.success = fileResults.success
         }
 
@@ -2333,8 +2431,8 @@ foreach(\$share in \$shares) {
         def vlanEnabled = networkConfig.primaryInterface?.vlanId > 0
         def vlanId = networkConfig.primaryInterface?.vlanId
         // network may be a vlan network... therefore, the externalId includes the VLAN id.. need to remove it
-        def networkExternalId = networkConfig?.primaryInterface?.network?.externalId?.take(36)
-        def subnetExternalId = networkConfig?.primaryInterface?.subnet?.externalId?.take(36)
+        def networkExternalId = networkConfig.primaryInterface.network.externalId?.take(36)
+        def subnetExternalId = networkConfig.primaryInterface.subnet?.externalId?.take(36)
 
         if (isTemplate && templateId) {
             commands << "\$template = Get-SCVMTemplate -VMMServer localhost | where {\$_.ID -eq \"$templateId\"}"
@@ -2358,17 +2456,16 @@ foreach(\$share in \$shares) {
         }
 
         commands << "\$ignore = New-SCVirtualScsiAdapter -VMMServer localhost -JobGroup $hardwareGuid -AdapterID 7 -ShareVirtualScsiAdapter \$false -ScsiControllerType DefaultTypeNoType"
-        if (networkExternalId) {
-            commands << "\$VMNetwork = Get-SCVMNetwork -VMMServer localhost -ID \"${networkExternalId}\""
-            commands << "If (-not ([string]::IsNullOrEmpty(\$MACAddress))) {"
-            commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddress \$MACAddress -MACAddressType \$MACAddressType -VLanEnabled ${vlanEnabled ? "\$true" : "\$false"} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${doStatic && doPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${subnetExternalId ? '-VMSubnet \$VMSubnet' : ''} -VMNetwork \$VMNetwork"
-            commands << "} else {"
-            commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddressType \$MACAddressType -VLanEnabled ${vlanEnabled ? "\$true" : "\$false"} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${doStatic && doPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${subnetExternalId ? '-VMSubnet \$VMSubnet' : ''} -VMNetwork \$VMNetwork"
-            commands << "}"
-        }
+        commands << "\$VMNetwork = Get-SCVMNetwork -VMMServer localhost -ID \"${networkExternalId}\""
         if (subnetExternalId) {
             commands << "\$VMSubnet = Get-SCVMSubnet -VMMServer localhost -ID \"${subnetExternalId}\""
         }
+        commands << "If (-not ([string]::IsNullOrEmpty(\$MACAddress))) {"
+        commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddress \$MACAddress -MACAddressType \$MACAddressType -VLanEnabled ${vlanEnabled ? "\$true" : "\$false"} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${doStatic && doPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${subnetExternalId ? '-VMSubnet \$VMSubnet' : ''} -VMNetwork \$VMNetwork"
+        commands << "} else {"
+        commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddressType \$MACAddressType -VLanEnabled ${vlanEnabled ? "\$true" : "\$false"} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${doStatic && doPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${subnetExternalId ? '-VMSubnet \$VMSubnet' : ''} -VMNetwork \$VMNetwork"
+        commands << "}"
+
         if (scvmmCapabilityProfile) {
             commands << "\$CapabilityProfile = Get-SCCapabilityProfile -VMMServer localhost | where {\$_.Name -eq \"${scvmmCapabilityProfile?.trim()}\"}"
         }
@@ -2473,7 +2570,7 @@ foreach(\$share in \$shares) {
                     if (isSyncdImage) {
                         fromDisk = "\$VirtualHardDisk${index}"
                         def diskExternalId = diskExternalIdMappings[1 + index]?.externalId
-                        if (diskExternalId) {
+                        if(diskExternalId) {
                             commands << "${fromDisk} = Get-SCVirtualHardDisk -VMMServer localhost -ID \"${diskExternalId}\""
                         }
                     }
@@ -2523,7 +2620,7 @@ foreach(\$share in \$shares) {
                 commands << newVMString
             } else {
                 //HostGroup deployment NOT TO CLOUD
-                if (hostExternalId) {
+                if(hostExternalId) {
                     commands << "\$vmHost = Get-SCVMHost -ID \"$hostExternalId\""
                     commands << "\$ignore = Set-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration -VMHost \$vmHost"
                     commands << "\$ignore = Update-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration"
@@ -2711,7 +2808,7 @@ foreach(\$share in \$shares) {
 //				File file = new File("/Users/bob/Desktop/bad.json")
 //				file.write payload
             }
-            out.data = new JsonSlurper().parseText(payload)
+            out.data = new groovy.json.JsonSlurper().parseText(payload)
         }
         out
     }
@@ -2761,10 +2858,10 @@ foreach(\$share in \$shares) {
     }
 
     private getUsername(Cloud cloud) {
-        ((cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.username : cloud.getConfigProperty('username')) ?: 'dunno'
+		((cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.username : cloud.getConfigProperty('username')) ?: 'dunno'
     }
 
     private getPassword(Cloud cloud) {
-        (cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.password : cloud.getConfigProperty('password')
+		(cloud.accountCredentialLoaded && cloud.accountCredentialData) ? cloud.accountCredentialData?.password : cloud.getConfigProperty('password')
     }
 }
