@@ -6,6 +6,7 @@ import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.providers.CloudProvider
 import com.morpheusdata.core.util.ComputeUtility
+import com.morpheusdata.core.util.MorpheusUtils
 import com.morpheusdata.core.util.SyncTask
 import com.morpheusdata.core.util.SyncUtils
 import com.morpheusdata.model.*
@@ -102,6 +103,10 @@ class VirtualMachineSync {
                 log.debug "Adding new virtual machine: ${cloudItem.Name}"
                 def vmConfig = buildVmConfig(cloudItem, defaultServerType)
                 ComputeServer add = new ComputeServer(vmConfig)
+                if (cloudItem.Generation != null) {
+                    def generation = cloudItem.Generation?.toString() == '2' ? 'generation2' : 'generation1'
+                    add.setConfigProperty('generation', generation)
+                }
                 add.maxStorage = (cloudItem.TotalSize?.toDouble() ?: 0)
                 add.usedStorage = (cloudItem.UsedSize?.toDouble() ?: 0)
                 add.maxMemory = (cloudItem.Memory?.toLong() ?: 0) * 1024l * 1024l
@@ -215,6 +220,25 @@ class VirtualMachineSync {
                             if (currentServer.maxMemory != maxMemory) {
                                 currentServer.maxMemory = maxMemory
                                 save = true
+                            }
+
+                            // Hot-add capabilities based on VM generation and dynamic memory
+                            if (masterItem.Generation != null) {
+                                def isGen2 = masterItem.Generation?.toString() == '2'
+                                def hotResize = MorpheusUtils.parseBooleanConfig(masterItem.DynamicMemoryEnabled)
+                                def generation = isGen2 ? 'generation2' : 'generation1'
+                                if (currentServer.hotResize != hotResize) {
+                                    currentServer.hotResize = hotResize
+                                    save = true
+                                }
+                                if (currentServer.cpuHotResize != isGen2) {
+                                    currentServer.cpuHotResize = isGen2
+                                    save = true
+                                }
+                                if (currentServer.getConfigProperty('generation') != generation) {
+                                    currentServer.setConfigProperty('generation', generation)
+                                    save = true
+                                }
                             }
                             def parentServer = hosts?.find { host -> host.externalId == masterItem.HostId }
                             if (parentServer != null && currentServer.parentServer != parentServer) {
@@ -360,6 +384,8 @@ class VirtualMachineSync {
     }
 
     private buildVmConfig(Map cloudItem, ComputeServerType defaultServerType) {
+        def isGen2 = cloudItem.Generation?.toString() == '2'
+        def hasDynamicMemory = MorpheusUtils.parseBooleanConfig(cloudItem.DynamicMemoryEnabled)
         def vmConfig = [
                 name             : cloudItem.Name,
                 cloud            : cloud,
@@ -369,7 +395,8 @@ class VirtualMachineSync {
                 managed          : false,
                 uniqueId         : cloudItem.ID,
                 provision        : false,
-                hotResize        : false,
+                hotResize        : hasDynamicMemory,
+                cpuHotResize     : isGen2,
                 serverType       : 'vm',
                 lvmEnabled       : false,
                 discovered       : true,
