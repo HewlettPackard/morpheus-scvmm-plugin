@@ -954,7 +954,7 @@ foreach (\$cloud in \$clouds) {
 			def out = wrapExecuteCommand(command, opts)
 			log.debug "listDatastores results: ${out.data}"
 			if(out.success) {
-				hasMore = out.data != ''
+				hasMore = (out.data != '' && out.data != null)
 				if(out.data) {
 					rtn.datastores += out.data
 				}
