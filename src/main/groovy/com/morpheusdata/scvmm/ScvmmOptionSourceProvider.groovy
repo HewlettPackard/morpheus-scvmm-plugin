@@ -336,4 +336,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 		}
 	}
 
+	def consoleSessionMode(params) {
+    	['auto', 'enhanced', 'normal'].collect { [name: it, value: it] }
+	}
 }
