@@ -224,10 +224,8 @@ class VirtualMachineSync {
                             def consoleType = consoleEnabled ? 'vmrdp' : null
                             def consolePort = consoleEnabled ? 2179 : null
                             def consoleHost = consoleEnabled ? currentServer.parentServer?.name : null
-                            def consoleUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username') ?: 'dunno'
-                            if (consoleUsername.contains('\\')) {
-                                consoleUsername = consoleUsername.tokenize('\\')[1]
-                            }
+                            def rawUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username') ?: 'dunno'
+                            def consoleUsername = rawUsername.contains('\\') ? (rawUsername.tokenize('\\')[1] ?: rawUsername) : rawUsername
                             def consolePassword = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
                             if (currentServer.consoleType != consoleType) {
                                 currentServer.consoleType = consoleType
