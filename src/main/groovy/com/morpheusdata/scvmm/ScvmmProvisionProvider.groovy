@@ -713,9 +713,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 // prefer clone request (opts) so user UI selections take precedence.
                 def resolvedCapabilityProfile = opts?.config?.scvmmCapabilityProfile ?: opts?.scvmmCapabilityProfile ?: scvmmOpts.scvmmCapabilityProfile
                 if (resolvedCapabilityProfile) scvmmOpts.scvmmCapabilityProfile = resolvedCapabilityProfile
-                def resolvedNetworkId = opts?.config?.scvmmNetworkId ?: opts?.scvmmNetworkId ?: scvmmOpts.networkId
+                def resolvedNetworkId = opts?.config?.scvmmNetworkId ?: opts?.scvmmNetworkId ?: scvmmOpts.containerConfig?.networkId
                 if (resolvedNetworkId) scvmmOpts.networkId = resolvedNetworkId
-                def resolvedNetworkInterfaces = opts?.networkInterfaces ?: scvmmOpts.networkInterfaces ?: []
+                def resolvedNetworkInterfaces = opts?.networkInterfaces ?: scvmmOpts.containerConfig?.networkInterfaces ?: []
                 scvmmOpts.networkInterfaces = resolvedNetworkInterfaces
                 if (opts?.config?.scvmmGeneration) scvmmOpts.scvmmGeneration = opts.config.scvmmGeneration
                 def resolvedHostId = opts?.config?.scvmmHostId ?: opts?.scvmmHostId ?: scvmmOpts.hostId
@@ -1683,6 +1683,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         opts?.config?.networkInterface?.network?.id ?:
                                 opts?.networkInterfaces?.getAt(0)?.network?.id ?:
                                         opts?.config?.scvmmNetworkId,
+                networkInterfaces: opts?.networkInterfaces ?: [],
         ]
 
         // Check all possible locations for capability profile
