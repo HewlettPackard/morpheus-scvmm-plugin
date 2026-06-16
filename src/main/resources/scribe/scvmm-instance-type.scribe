@@ -27,7 +27,6 @@ resource "workload-type" "scvmm-1_0" {
   code             = "scvmm-1.0"
   shortName        = "scvmm"
   name             = "SCVMM"
-  ports = []
   containerVersion = "1.0"
   repositoryImage  = ""
   entryPoint       = ""

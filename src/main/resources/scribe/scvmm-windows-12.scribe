@@ -2,7 +2,6 @@ resource "workload-type" "scvmm-windows-2012_r2" {
   code             = "scvmm-windows-2012_r2"
   shortName        = "windows"
   name             = "Windows 2012 r2"
-  ports            = [3389]
   containerVersion = "2012 r2"
   repositoryImage  = null
   imageCode        = "morpheus windows 2012 r2",

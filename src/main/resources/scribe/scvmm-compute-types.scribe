@@ -59,7 +59,6 @@ resource "workload-type" "docker-scvmm-ubuntu-22_04" {
   code             = "docker-scvmm-ubuntu-22.04"
   shortName        = "ubuntu"
   name             = "Docker Ubuntu 22.04"
-  ports            = [22]
   containerVersion = "22.04"
   repositoryImage  = ""
   imageCode        = "morpheus ubuntu 22.04"
@@ -74,9 +73,7 @@ resource "workload-type" "docker-scvmm-ubuntu-22_04" {
   serverType       = "vm"
   providerType     = "scvmm"
   checkTypeCode    = "vmCheck"
-  virtualImage     = {
-   code = "scvmm.image.morpheus.ubuntu.22.04.20250218.amd64"
-   }
+  virtualImage     = virtual-image.scvmm-image-morpheus-ubuntu-22_04
   containerPorts   = ["ubuntu.22"]
   provisionType    = "scvmm"
 }

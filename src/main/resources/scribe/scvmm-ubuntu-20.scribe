@@ -2,7 +2,6 @@ resource "workload-type" "ubuntu-scvmm-20_04" {
   code             = "ubuntu-scvmm-20.04"
   shortName        = "ubuntu"
   name             = "Ubuntu 20.04"
-  ports            = [22]
   containerVersion = "20.04"
   repositoryImage  = null
   entryPoint       = null

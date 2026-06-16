@@ -2,7 +2,6 @@ resource "workload-type" "ubuntu-scvmm-16_04" {
   code             = "ubuntu-scvmm-16.04"
   shortName        = "ubuntu"
   name             = "Ubuntu 16.04"
-  ports            = [22]
   containerVersion = "16.04"
   repositoryImage  = null
   entryPoint       = null
