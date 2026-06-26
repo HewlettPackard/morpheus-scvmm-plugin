@@ -2453,7 +2453,20 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             rtn.neededCores = (rtn.requestedCores ?: 1) - (currentCores ?: 1)
             setDynamicMemory(rtn, plan)
 
-            rtn.hotResize = false
+            // Determine hot-add capability based on VM generation and dynamic memory
+            def serverObj = server ?: workload?.server
+            if (serverObj?.getConfigProperty('generation') == null) {
+                // Legacy server without generation info — safe default to always stop
+                rtn.hotResize = false
+            } else {
+                def hasDynamicMemory = serverObj?.hotResize == true
+                // Memory hot-add: allowed if no change or dynamic memory is enabled (both gen 1 and gen 2)
+                def memoryHotAdd = (rtn.neededMemory == 0) || (hasDynamicMemory && rtn.neededMemory >= 0)
+                // CPU hot-add: only gen 2, only adding (not removing)
+                def cpuHotAdd = (rtn.neededCores == 0) || (serverObj?.cpuHotResize == true && rtn.neededCores > 0)
+                // Disk operations on SCSI are always hot-addable (both gen 1 and gen 2)
+                rtn.hotResize = memoryHotAdd && cpuHotAdd
+            }
 
             // Disk changes.. see if stop is required
             if (opts.volumes) {
