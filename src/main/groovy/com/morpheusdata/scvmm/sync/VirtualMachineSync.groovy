@@ -89,7 +89,7 @@ class VirtualMachineSync {
                         addMissingVirtualMachines(itemsToAdd, availablePlans, fallbackPlan, availablePlanPermissions, hosts, consoleEnabled, serverType, systemNetworks)
                     }
                 }.onUpdate { List<SyncTask.UpdateItem<ComputeServer, Map>> updateItems ->
-                    updateMatchedVirtualMachines(updateItems, availablePlans, fallbackPlan, hosts, consoleEnabled, serverType, systemNetworks, systemNetworks)
+                    updateMatchedVirtualMachines(updateItems, availablePlans, fallbackPlan, hosts, consoleEnabled, serverType, systemNetworks)
                 }.onDelete { List<ComputeServerIdentityProjection> removeItems ->
                     removeMissingVirtualMachines(removeItems)
                 }.observe().blockingSubscribe()
@@ -153,7 +153,7 @@ class VirtualMachineSync {
     }
 
     protected updateMatchedVirtualMachines(List<SyncTask.UpdateItem<ComputeServer, Map>> updateList, availablePlans, fallbackPlan,
-                                           List<ComputeServer> hosts, consoleEnabled, ComputeServerType defaultServerType, Map systemNetworks, Map<String, Network> existingSystemNetworks) {
+                                           List<ComputeServer> hosts, consoleEnabled, ComputeServerType defaultServerType, Map systemNetworks) {
         log.debug("VirtualMachineSync >> updateMatchedVirtualMachines() called")
         try {
             def matchedServers = context.services.computeServer.list(new DataQuery().withFilter('id', 'in', updateList.collect { up -> up.existingItem.id })
