@@ -709,6 +709,17 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 scvmmOpts.imageId = imageId
                 scvmmOpts.server = server
                 scvmmOpts += getScvmmContainerOpts(workload)
+                // For managed/brownfield VMs, container configMap may be stale;
+                // prefer clone request (opts) so user UI selections take precedence.
+                def resolvedCapabilityProfile = opts?.config?.scvmmCapabilityProfile ?: opts?.scvmmCapabilityProfile ?: scvmmOpts.scvmmCapabilityProfile
+                if (resolvedCapabilityProfile) scvmmOpts.scvmmCapabilityProfile = resolvedCapabilityProfile
+                def resolvedNetworkId = opts?.config?.scvmmNetworkId ?: opts?.scvmmNetworkId ?: scvmmOpts.containerConfig?.networkId
+                if (resolvedNetworkId) scvmmOpts.networkId = resolvedNetworkId
+                def resolvedNetworkInterfaces = opts?.networkInterfaces ?: scvmmOpts.containerConfig?.networkInterfaces ?: []
+                scvmmOpts.networkInterfaces = resolvedNetworkInterfaces
+                if (opts?.config?.scvmmGeneration) scvmmOpts.scvmmGeneration = opts.config.scvmmGeneration
+                def resolvedHostId = opts?.config?.scvmmHostId ?: opts?.scvmmHostId ?: scvmmOpts.hostId
+                if (resolvedHostId) scvmmOpts.hostId = resolvedHostId
                 scvmmOpts.hostname = server.getExternalHostname()
                 scvmmOpts.domainName = server.getExternalDomain()
                 scvmmOpts.fqdn = scvmmOpts.hostname
@@ -1670,7 +1681,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         Map validationOpts = [
                 networkId: opts?.networkInterface?.network?.id ?:
                         opts?.config?.networkInterface?.network?.id ?:
-                                opts?.networkInterfaces?.getAt(0)?.network?.id,
+                                opts?.networkInterfaces?.getAt(0)?.network?.id ?:
+                                        opts?.config?.scvmmNetworkId,
+                networkInterfaces: opts?.networkInterfaces ?: [],
         ]
 
         // Check all possible locations for capability profile
