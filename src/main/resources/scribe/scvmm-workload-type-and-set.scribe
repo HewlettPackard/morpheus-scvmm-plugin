@@ -2,6 +2,7 @@ resource "workload-type" "almalinux-scvmm-9" {
   code             = "almalinux-scvmm-9"
   shortName        = "almalinux"
   name             = "AlmaLinux 9"
+  ports            = [22]
   containerVersion = "9"
   repositoryImage  = null
   entryPoint       = null
@@ -31,6 +32,7 @@ resource "workload-type" "opensuse-scvmm-15_1" {
   code             = "opensuse-scvmm-15.1"
   shortName        = "opensuse"
   name             = "openSUSE 15.1"
+  ports            = [22]
   containerVersion = "15.1"
   repositoryImage  = null
   entryPoint       = null
@@ -59,6 +61,7 @@ resource "workload-type" "centos-scvmm-9-stream" {
   code             = "centos-scvmm-9-stream"
   shortName        = "centos"
   name             = "CentOS 9-stream"
+  ports            = [22]
   containerVersion = "9-stream"
   repositoryImage  = null
   entryPoint       = null
@@ -88,6 +91,7 @@ resource "workload-type" "debian-scvmm-11" {
   code             = "debian-scvmm-11"
   shortName        = "debian"
   name             = "Debian 11"
+  ports            = [22]
   containerVersion = "11"
   repositoryImage  = null
   entryPoint       = null
@@ -117,6 +121,7 @@ resource "workload-type" "debian-scvmm-12" {
   code             = "debian-scvmm-12"
   shortName        = "debian"
   name             = "Debian 12"
+  ports            = [22]
   containerVersion = "12"
   repositoryImage  = null
   entryPoint       = null
@@ -146,6 +151,7 @@ resource "workload-type" "rocky-scvmm-8" {
   code             = "rocky-scvmm-8"
   shortName        = "rocky"
   name             = "Rocky 8"
+  ports            = [22]
   containerVersion = "8"
   repositoryImage  = null
   entryPoint       = null
@@ -175,6 +181,7 @@ resource "workload-type" "rocky-scvmm-9" {
   code             = "rocky-scvmm-9"
   shortName        = "rocky"
   name             = "Rocky 9"
+  ports            = [22]
   containerVersion = "9"
   repositoryImage  = null
   entryPoint       = null
@@ -204,6 +211,7 @@ resource "workload-type" "ubuntu-scvmm-18_04" {
   code             = "ubuntu-scvmm-18.04"
   shortName        = "ubuntu"
   name             = "Ubuntu 18.04"
+  ports            = [22]
   containerVersion = "18.04"
   repositoryImage  = null
   entryPoint       = null
@@ -233,6 +241,7 @@ resource "workload-type" "ubuntu-scvmm-24_04" {
   code             = "ubuntu-scvmm-24.04"
   shortName        = "ubuntu"
   name             = "Ubuntu 24.04"
+  ports            = [22]
   containerVersion = "24.04"
   repositoryImage  = null
   entryPoint       = null

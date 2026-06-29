@@ -59,6 +59,7 @@ resource "workload-type" "docker-scvmm-ubuntu-22_04" {
   code             = "docker-scvmm-ubuntu-22.04"
   shortName        = "ubuntu"
   name             = "Docker Ubuntu 22.04"
+  ports            = [22]
   containerVersion = "22.04"
   repositoryImage  = ""
   imageCode        = "morpheus ubuntu 22.04"

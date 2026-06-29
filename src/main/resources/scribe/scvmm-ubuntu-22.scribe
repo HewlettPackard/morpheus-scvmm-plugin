@@ -2,6 +2,7 @@ resource "workload-type" "ubuntu-scvmm-22_04" {
   code             = "ubuntu-scvmm-22.04"
   shortName        = "ubuntu"
   name             = "Ubuntu 22.04"
+  ports            = [22]
   containerVersion = "22.04"
   repositoryImage  = null
   entryPoint       = null

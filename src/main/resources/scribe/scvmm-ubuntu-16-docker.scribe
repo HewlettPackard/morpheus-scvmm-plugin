@@ -2,6 +2,7 @@ resource "workload-type" "docker-scvmm-ubuntu-16_04" {
   code              = "docker-scvmm-ubuntu-16.04"
   name              = "Docker Ubuntu 16.04"
   shortName        = "ubuntu"
+  ports             = ["22"]
   containerVersion = "16.04"
   containerType    = "docker"
   repositoryImage  = null
