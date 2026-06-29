@@ -709,6 +709,17 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 scvmmOpts.imageId = imageId
                 scvmmOpts.server = server
                 scvmmOpts += getScvmmContainerOpts(workload)
+                // For managed/brownfield VMs, container configMap may be stale;
+                // prefer clone request (opts) so user UI selections take precedence.
+                def resolvedCapabilityProfile = opts?.config?.scvmmCapabilityProfile ?: opts?.scvmmCapabilityProfile ?: scvmmOpts.scvmmCapabilityProfile
+                if (resolvedCapabilityProfile) scvmmOpts.scvmmCapabilityProfile = resolvedCapabilityProfile
+                def resolvedNetworkId = opts?.config?.scvmmNetworkId ?: opts?.scvmmNetworkId ?: scvmmOpts.containerConfig?.networkId
+                if (resolvedNetworkId) scvmmOpts.networkId = resolvedNetworkId
+                def resolvedNetworkInterfaces = opts?.networkInterfaces ?: scvmmOpts.containerConfig?.networkInterfaces ?: []
+                scvmmOpts.networkInterfaces = resolvedNetworkInterfaces
+                if (opts?.config?.scvmmGeneration) scvmmOpts.scvmmGeneration = opts.config.scvmmGeneration
+                def resolvedHostId = opts?.config?.scvmmHostId ?: opts?.scvmmHostId ?: scvmmOpts.hostId
+                if (resolvedHostId) scvmmOpts.hostId = resolvedHostId
                 scvmmOpts.hostname = server.getExternalHostname()
                 scvmmOpts.domainName = server.getExternalDomain()
                 scvmmOpts.fqdn = scvmmOpts.hostname
@@ -1670,7 +1681,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         Map validationOpts = [
                 networkId: opts?.networkInterface?.network?.id ?:
                         opts?.config?.networkInterface?.network?.id ?:
-                                opts?.networkInterfaces?.getAt(0)?.network?.id,
+                                opts?.networkInterfaces?.getAt(0)?.network?.id ?:
+                                        opts?.config?.scvmmNetworkId,
+                networkInterfaces: opts?.networkInterfaces ?: [],
         ]
 
         // Check all possible locations for capability profile
@@ -2440,7 +2453,20 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             rtn.neededCores = (rtn.requestedCores ?: 1) - (currentCores ?: 1)
             setDynamicMemory(rtn, plan)
 
-            rtn.hotResize = false
+            // Determine hot-add capability based on VM generation and dynamic memory
+            def serverObj = server ?: workload?.server
+            if (serverObj?.getConfigProperty('generation') == null) {
+                // Legacy server without generation info — safe default to always stop
+                rtn.hotResize = false
+            } else {
+                def hasDynamicMemory = serverObj?.hotResize == true
+                // Memory hot-add: allowed if no change or dynamic memory is enabled (both gen 1 and gen 2)
+                def memoryHotAdd = (rtn.neededMemory == 0) || (hasDynamicMemory && rtn.neededMemory >= 0)
+                // CPU hot-add: only gen 2, only adding (not removing)
+                def cpuHotAdd = (rtn.neededCores == 0) || (serverObj?.cpuHotResize == true && rtn.neededCores > 0)
+                // Disk operations on SCSI are always hot-addable (both gen 1 and gen 2)
+                rtn.hotResize = memoryHotAdd && cpuHotAdd
+            }
 
             // Disk changes.. see if stop is required
             if (opts.volumes) {
