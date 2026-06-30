@@ -544,6 +544,7 @@ if(\$cloud) {
 						UsedSize=0
 						HostId=\$VM.HostId
 						Disks=@()
+                        NetworkAdapters=@()
 						IpAddress=''
 						InternalIp=''
 						OperatingSystem=\$VM.OperatingSystem.Name
@@ -579,14 +580,32 @@ if(\$cloud) {
 					}
 
 					\$VNAs = \$VM | Get-SCVirtualNetworkAdapter
-					foreach (\$VNA in \$VNAs) {
-						foreach (\$ip in \$VNA.IPv4Addresses) {
-							if([string]::IsNullOrEmpty(\$data.IpAddress)) {
-								\$data.IpAddress = \$ip
-								\$data.InternalIp = \$ip
-							}
-						}
-					}
+                    foreach (\$VNA in \$VNAs) {
+                        # If slotId = 0 set data.ipAddress and data.internalIp from IPv4 or IPv6
+                        if (\$VNA.SlotId -eq 0) {
+                            if (\$VNA.IPv4Addresses.Count -gt 0) {
+                                \$data.IpAddress = \$VNA.IPv4Addresses[0]
+                                \$data.InternalIp = \$VNA.IPv4Addresses[0]
+                            } elseif (\$VNA.IPv6Addresses.Count -gt 0) {
+                                \$data.IpAddress = \$VNA.IPv6Addresses[0]
+                                \$data.InternalIp = \$VNA.IPv6Addresses[0]
+                            }
+                        }
+                        \$nic = New-Object PSObject -property @{
+                            ID               = \$VNA.ID
+                            Name             = \$VNA.Name
+                            IPv4Addresses    = @(\$VNA.IPv4Addresses)
+                            IPv4AddressType  = \$VNA.IPv4AddressType.ToString()
+                            IPv6Addresses    = @(\$VNA.IPv6Addresses)
+                            IPv6AddressType  = \$VNA.IPv6AddressType.ToString()
+                            MacAddress       = \$VNA.MacAddress
+                            VirtualNetworkId = \$VNA.VMNetwork.ID
+                            VLanID           = \$VNA.VLanID
+                            SlotId           = \$VNA.SlotId
+                            Enabled          = \$VNA.Enabled
+                        }
+                        \$data.NetworkAdapters += \$nic
+                    }
 
 					\$report +=\$data
 				}
