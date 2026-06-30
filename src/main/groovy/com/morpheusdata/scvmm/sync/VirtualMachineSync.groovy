@@ -248,10 +248,8 @@ class VirtualMachineSync {
                             def consoleType = consoleEnabled ? 'vmrdp' : null
                             def consolePort = consoleEnabled ? 2179 : null
                             def consoleHost = consoleEnabled ? currentServer.parentServer?.name : null
-                            def consoleUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username') ?: 'dunno'
-                            if (consoleUsername.contains('\\')) {
-                                consoleUsername = consoleUsername.tokenize('\\')[1]
-                            }
+                            def rawUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username') ?: 'dunno'
+                            def consoleUsername = rawUsername.contains('\\') ? (rawUsername.tokenize('\\')[1] ?: rawUsername) : rawUsername
                             def consolePassword = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
                             if (currentServer.consoleType != consoleType) {
                                 currentServer.consoleType = consoleType
@@ -259,12 +257,13 @@ class VirtualMachineSync {
                             }
                             if (currentServer.consoleHost != consoleHost) {
                                 currentServer.consoleHost = consoleHost
+                                save = true
                             }
                             if (currentServer.consolePort != consolePort) {
                                 currentServer.consolePort = consolePort
                                 save = true
                             }
-                            /*if (consoleEnabled) {
+                            if (consoleEnabled) {
                                 if (consoleUsername != currentServer.sshUsername) {
                                     currentServer.sshUsername = consoleUsername
                                     save = true
@@ -273,7 +272,7 @@ class VirtualMachineSync {
                                     currentServer.consolePassword = consolePassword
                                     save = true
                                 }
-                            }*/
+                            }
                             // Operating System
                             def osTypeCode = apiService.getMapScvmmOsType(masterItem.OperatingSystem, true, masterItem.OperatingSystemWindows?.toString() == 'true' ? 'windows' : null)
                             def osTypeCodeStr = osTypeCode ?: 'other'
