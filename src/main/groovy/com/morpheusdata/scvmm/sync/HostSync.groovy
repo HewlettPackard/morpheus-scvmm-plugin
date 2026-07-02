@@ -11,7 +11,7 @@ import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.OsType
 import com.morpheusdata.model.projection.ComputeServerIdentityProjection
 import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
 
 /**
@@ -24,7 +24,7 @@ class HostSync {
     private ComputeServer node
     private MorpheusContext context
     private ScvmmApiService apiService
-    private LogInterface log = LogWrapper.instance
+    private LogInterface log = PrefixedLoggerFactory.getLogger(HostSync)
 
     HostSync(Cloud cloud, ComputeServer node, MorpheusContext context) {
         this.cloud = cloud

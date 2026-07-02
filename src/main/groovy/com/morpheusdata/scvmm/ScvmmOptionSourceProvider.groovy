@@ -11,14 +11,14 @@ import com.morpheusdata.core.data.DataOrFilter
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 
 class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 
 	ScvmmPlugin plugin
 	MorpheusContext morpheusContext
 	private ScvmmApiService apiService
-	private LogInterface log = LogWrapper.instance
+	private LogInterface log = PrefixedLoggerFactory.getLogger(ScvmmOptionSourceProvider)
 
 	ScvmmOptionSourceProvider(ScvmmPlugin plugin, MorpheusContext context) {
 		this.plugin = plugin

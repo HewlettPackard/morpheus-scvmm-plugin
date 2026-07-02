@@ -15,7 +15,7 @@ import com.morpheusdata.model.NetworkSubnet
 import com.morpheusdata.model.ResourcePermission
 import com.morpheusdata.model.projection.NetworkPoolIdentityProjection
 import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
 import org.apache.commons.net.util.SubnetUtils
 
@@ -24,7 +24,7 @@ class IpPoolsSync {
     private MorpheusContext morpheusContext
     private Cloud cloud
     private ScvmmApiService apiService
-    private LogInterface log = LogWrapper.instance
+    private LogInterface log = PrefixedLoggerFactory.getLogger(IpPoolsSync)
 
     IpPoolsSync(MorpheusContext morpheusContext, Cloud cloud) {
         this.cloud = cloud

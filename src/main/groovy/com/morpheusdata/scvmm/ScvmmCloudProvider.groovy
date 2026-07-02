@@ -2,7 +2,7 @@ package com.morpheusdata.scvmm
 
 import com.morpheusdata.scvmm.helper.morpheus.types.StorageVolumeTypeHelper
 import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import com.morpheusdata.scvmm.sync.CloudCapabilityProfilesSync
 import com.morpheusdata.scvmm.sync.ClustersSync
 import com.morpheusdata.scvmm.sync.DatastoresSync
@@ -33,7 +33,7 @@ class ScvmmCloudProvider implements CloudProvider {
 	protected MorpheusContext context
 	protected ScvmmPlugin plugin
 	ScvmmApiService apiService
-	private LogInterface log = LogWrapper.instance
+	private LogInterface log = PrefixedLoggerFactory.getLogger(ScvmmCloudProvider)
 
 	ScvmmCloudProvider(ScvmmPlugin plugin, MorpheusContext context) {
 		super()

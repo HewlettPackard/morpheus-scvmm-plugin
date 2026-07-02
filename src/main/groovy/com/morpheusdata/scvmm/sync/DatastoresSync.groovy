@@ -7,7 +7,7 @@ import com.morpheusdata.core.util.SyncTask
 import com.morpheusdata.model.*
 import com.morpheusdata.model.projection.DatastoreIdentityProjection
 import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Observable
 
@@ -21,7 +21,7 @@ class DatastoresSync {
     private Cloud cloud
     private MorpheusContext context
     private ScvmmApiService apiService
-    private LogInterface log = LogWrapper.instance
+    private LogInterface log = PrefixedLoggerFactory.getLogger(DatastoresSync)
 
     DatastoresSync(ComputeServer node, Cloud cloud, MorpheusContext context) {
         this.node = node

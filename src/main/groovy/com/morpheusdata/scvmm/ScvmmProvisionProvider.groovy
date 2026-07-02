@@ -23,7 +23,7 @@ import com.morpheusdata.response.PrepareWorkloadResponse
 import com.morpheusdata.response.ProvisionResponse
 import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import com.morpheusdata.scvmm.util.MorpheusUtil
 import groovy.json.JsonSlurper
 
@@ -35,7 +35,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     protected MorpheusContext context
     protected ScvmmPlugin plugin
     ScvmmApiService apiService
-	private LogInterface log = LogWrapper.instance
+	private LogInterface log = PrefixedLoggerFactory.getLogger(ScvmmProvisionProvider)
 
     ScvmmProvisionProvider(ScvmmPlugin plugin, MorpheusContext context) {
         super()

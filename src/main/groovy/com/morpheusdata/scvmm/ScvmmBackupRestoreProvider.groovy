@@ -10,7 +10,7 @@ import com.morpheusdata.model.BackupResult;
 import com.morpheusdata.model.Backup;
 import com.morpheusdata.model.Instance
 import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
 
 class ScvmmBackupRestoreProvider implements BackupRestoreProvider {
@@ -18,7 +18,7 @@ class ScvmmBackupRestoreProvider implements BackupRestoreProvider {
 	Plugin plugin
 	MorpheusContext morpheusContext
 	ScvmmApiService apiService
-	private LogInterface log = LogWrapper.instance
+	private LogInterface log = PrefixedLoggerFactory.getLogger(ScvmmBackupRestoreProvider)
 
 	ScvmmBackupRestoreProvider(Plugin plugin, MorpheusContext morpheusContext) {
 		this.plugin = plugin

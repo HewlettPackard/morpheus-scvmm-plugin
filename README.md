@@ -139,3 +139,37 @@ You can use finer controls if you want to enable/disable `IsAvailableForPlacemen
 - Use the **Backup** or **Snapshot** actions to create or restore VM snapshots.
 
 For more detailed instructions and screenshots, refer to the official Morpheus documentation.
+
+---
+
+## Debug Logging
+
+When needed for debugging in a test environment, the logback configuration can be modified to enable debug logging
+with the file name and line number of each log statement. *Note: The file name and line number lookup are
+resource intensive.*
+
+On the test appliance, edit the `/opt/morpheus/conf/logback.xml` file and add a custom appender, with a pattern that
+includes `[%file:%line]`, along with the existing appenders.
+
+```xml
+    <appender name="DEBUG_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>[%d] [%thread] %highlight(%-5level) %cyan(%logger{15}) - [%file:%line] %maskedMsg %n</pattern>
+        </encoder>
+    </appender>
+```
+
+Then add a logger for the plugin at `DEBUG` level and reference the new appender.
+
+```xml
+    <logger name="com.morpheusdata.scvmm" level="DEBUG" additivity="false">
+        <appender-ref ref="DEBUG_CONSOLE"/>
+    </logger>
+```
+
+If file name and line number information is not needed, a custom appender is not required. Simply add a logger
+at `DEBUG` level.
+
+```xml
+    <logger name="com.morpheusdata.scvmm" level="DEBUG"/>
+```
