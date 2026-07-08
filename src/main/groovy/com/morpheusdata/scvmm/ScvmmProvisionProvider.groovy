@@ -12,13 +12,17 @@ import com.morpheusdata.core.data.DataOrFilter
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.providers.HostProvisionProvider
 import com.morpheusdata.core.providers.ProvisionProvider
+import com.morpheusdata.core.providers.ResourceProvisionProvider
 import com.morpheusdata.core.providers.WorkloadProvisionProvider
 import com.morpheusdata.core.util.ComputeUtility
 import com.morpheusdata.model.*
+import com.morpheusdata.model.provisioning.InstanceRequest
 import com.morpheusdata.model.provisioning.HostRequest
 import com.morpheusdata.model.provisioning.WorkloadRequest
 import com.morpheusdata.request.ResizeRequest
 import com.morpheusdata.response.InitializeHypervisorResponse
+import com.morpheusdata.response.PrepareCloneInstanceResponse
+import com.morpheusdata.response.PrepareInstanceResponse
 import com.morpheusdata.response.PrepareWorkloadResponse
 import com.morpheusdata.response.ProvisionResponse
 import com.morpheusdata.response.ServiceResponse
@@ -27,7 +31,7 @@ import com.morpheusdata.scvmm.logging.LogWrapper
 import com.morpheusdata.scvmm.util.MorpheusUtil
 import groovy.json.JsonSlurper
 
-class ScvmmProvisionProvider extends AbstractProvisionProvider implements WorkloadProvisionProvider, HostProvisionProvider, ProvisionProvider.HypervisorProvisionFacet, HostProvisionProvider.ResizeFacet, WorkloadProvisionProvider.ResizeFacet, ProvisionProvider.BlockDeviceNameFacet {
+class ScvmmProvisionProvider extends AbstractProvisionProvider implements WorkloadProvisionProvider, HostProvisionProvider, ResourceProvisionProvider, ProvisionProvider.HypervisorProvisionFacet, HostProvisionProvider.ResizeFacet, WorkloadProvisionProvider.ResizeFacet, ProvisionProvider.BlockDeviceNameFacet {
     public static final String PROVIDER_CODE = 'scvmm.provision'
     public static final String PROVISION_TYPE_CODE = 'scvmm'
     public static final diskNames = ['sda', 'sdb', 'sdc', 'sdd', 'sde', 'sdf', 'sdg', 'sdh', 'sdi', 'sdj', 'sdk', 'sdl']
@@ -521,6 +525,84 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     @Override
     ServiceResponse validateWorkload(Map opts) {
         return validateServerConfigOptions(opts)
+    }
+
+    @Override
+    ServiceResponse validateInstance(Instance instance, Map opts) {
+        return validateServerConfigOptions(opts)
+    }
+
+    @Override
+    ServiceResponse<PrepareInstanceResponse> prepareInstance(Instance instance, InstanceRequest instanceRequest, Map opts) {
+        def response = new PrepareInstanceResponse(instance: instance, resources: [])
+        return new ServiceResponse<PrepareInstanceResponse>(true, null, null, response)
+    }
+
+    @Override
+    ServiceResponse<ProvisionResponse> runInstance(Instance instance, InstanceRequest instanceRequest, Map opts) {
+        return new ServiceResponse<ProvisionResponse>(true, null, null, new ProvisionResponse(success: true))
+    }
+
+    @Override
+    ServiceResponse<ProvisionResponse> updateInstance(Instance instance, InstanceRequest instanceRequest, Map opts) {
+        return new ServiceResponse<ProvisionResponse>(true, null, null, new ProvisionResponse(success: true))
+    }
+
+    @Override
+    ServiceResponse destroyInstance(Instance instance, Map opts) {
+        if (!instance?.containers) {
+            return ServiceResponse.success()
+        }
+
+        def deletedServers = [] as Set
+        def errors = [:]
+        instance.containers.each { Workload workload ->
+            def workloadExternalId = workload?.server?.externalId
+            if (!workloadExternalId || deletedServers.contains(workloadExternalId)) {
+                return
+            }
+            deletedServers << workloadExternalId
+            ServiceResponse removeResults = removeWorkload(workload, opts ?: [:])
+            if (!removeResults.success) {
+                errors[(workload?.id ?: workloadExternalId) as String] = removeResults.msg ?: 'Failed to remove workload'
+            }
+        }
+        if (errors) {
+            return new ServiceResponse(false, 'Failed to destroy one or more SCVMM workloads', errors, null)
+        }
+        return ServiceResponse.success()
+    }
+
+    @Override
+    ServiceResponse<PrepareCloneInstanceResponse> prepareCloneInstance(Instance instance, Map opts) {
+        Workload sourceWorkload = instance?.containers?.first()
+        ComputeServer sourceServer = sourceWorkload?.server
+        if (!sourceServer?.externalId) {
+            return new ServiceResponse<PrepareCloneInstanceResponse>(
+                    false,
+                    'Unable to prepare SCVMM clone: source server externalId is missing',
+                    [externalId: 'Missing source server externalId for clone'],
+                    null
+            )
+        }
+        VirtualImage sourceImage = sourceServer.sourceImage
+        if (!sourceImage?.id) {
+            return new ServiceResponse<PrepareCloneInstanceResponse>(
+                    false,
+                    'Unable to prepare SCVMM clone: source image is missing',
+                    [imageId: 'Missing source image on source server'],
+                    null
+            )
+        }
+
+        def cloneResponse = new PrepareCloneInstanceResponse(
+                instance: instance,
+                image: sourceImage,
+                cloneVmExternalId: sourceServer.externalId,
+                cloneContainerId: opts.cloneInstanceId?.toLong(),
+                snapshotToWorkloadMap: [:]
+        )
+        return new ServiceResponse<PrepareCloneInstanceResponse>(true, null, null, cloneResponse)
     }
 
     /**
@@ -1326,10 +1408,6 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		opts.waitForIp = true
 		def serverDetails = apiService.checkServerReady(opts, fetchedServer.externalId)
 		if (serverDetails.success == true) {
-			def agentWait = waitForAgentInstall(fetchedServer)
-			if (agentWait.success) {
-				fetchedServer = context.async.computeServer.get(server.id).blockingGet()
-			}
 			fetchedServer.externalIp = serverDetails.server?.ipAddress
 			fetchedServer.powerState = ComputeServer.PowerState.on
 			fetchedServer = MorpheusUtil.saveAndGetMorpheusServer(context, fetchedServer, true)
