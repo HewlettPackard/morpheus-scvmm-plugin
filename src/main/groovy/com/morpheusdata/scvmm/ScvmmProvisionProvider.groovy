@@ -562,7 +562,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 return
             }
             deletedServers << workloadExternalId
-            ServiceResponse removeResults = removeWorkload(workload, opts ?: [:])
+            ServiceResponse removeResults = removeWorkload(workload, opts)
             if (!removeResults.success) {
                 errors[(workload?.id ?: workloadExternalId) as String] = removeResults.msg ?: 'Failed to remove workload'
             }
@@ -1368,7 +1368,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      * @return Response from API
      */
     @Override
-    ServiceResponse removeWorkload(Workload workload, Map opts) {
+    ServiceResponse removeWorkload(Workload workload, Map opts = [:]) {
+        opts = opts ?: [:]
         log.debug("removeWorkload: opts: ${opts}")
         ServiceResponse response = ServiceResponse.prepare()
         try {
