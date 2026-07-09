@@ -98,8 +98,9 @@ dependencies {
     testImplementation 'org.apache.httpcomponents:httpclient:4.5.13'
     testImplementation 'org.apache.httpcomponents:httpcore:4.4.5'
     testImplementation "org.slf4j:slf4j-parent:$slf4jVersion"
-    // Add SLF4J implementation for tests to enable logging in coverage testing
-    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.9'
+    // Add a Logback (location-aware) SLF4J implementation for tests to enable logging in coverage
+    // testing and to exercise the location-aware logging path used in production.
+    testRuntimeOnly 'ch.qos.logback:logback-classic:1.5.13'
 
     testImplementation 'net.bytebuddy:byte-buddy:1.15.11'
     testImplementation 'org.objenesis:objenesis:3.4'

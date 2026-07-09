@@ -13,7 +13,7 @@ import com.morpheusdata.model.*
 import com.morpheusdata.model.projection.ComputeServerIdentityProjection
 import com.morpheusdata.model.projection.StorageVolumeIdentityProjection
 import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Observable
 
@@ -28,7 +28,7 @@ class VirtualMachineSync {
     private MorpheusContext context
     private ScvmmApiService apiService
     private CloudProvider cloudProvider
-    private LogInterface log = LogWrapper.instance
+    private LogInterface log = PrefixedLoggerFactory.getLogger(VirtualMachineSync)
 
     VirtualMachineSync(ComputeServer node, Cloud cloud, MorpheusContext context, CloudProvider cloudProvider) {
         this.node = node

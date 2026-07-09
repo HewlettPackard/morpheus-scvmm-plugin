@@ -4,10 +4,10 @@ import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 
 class MorpheusUtil {
-    private static LogInterface log = LogWrapper.instance
+    private static LogInterface log = PrefixedLoggerFactory.getLogger(MorpheusUtil)
 
     static ComputeServer saveAndGetMorpheusServer(MorpheusContext context, ComputeServer server, Boolean fullReload = false) {
         def saveResult = context.async.computeServer.bulkSave([server]).blockingGet()

@@ -11,3 +11,4 @@ out/
 .assetcache
 lib/
 .vscode/
+bin

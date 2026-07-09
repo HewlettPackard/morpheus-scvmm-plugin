@@ -10,7 +10,7 @@ import com.morpheusdata.model.CloudPool
 import com.morpheusdata.model.ResourcePermission
 import com.morpheusdata.model.projection.CloudPoolIdentity
 import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Observable
 
@@ -18,7 +18,7 @@ class ClustersSync {
     private MorpheusContext morpheusContext
     private Cloud cloud
     private ScvmmApiService apiService
-    private LogInterface log = LogWrapper.instance
+    private LogInterface log = PrefixedLoggerFactory.getLogger(ClustersSync)
 
     ClustersSync(MorpheusContext morpheusContext, Cloud cloud) {
         this.cloud = cloud

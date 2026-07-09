@@ -11,7 +11,7 @@ import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.scvmm.logging.LogInterface
-import com.morpheusdata.scvmm.logging.LogWrapper
+import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
 
 class ScvmmBackupExecutionProvider implements BackupExecutionProvider {
@@ -20,7 +20,7 @@ class ScvmmBackupExecutionProvider implements BackupExecutionProvider {
 	MorpheusContext morpheusContext
 	ScvmmProvisionProvider provisionProvider
 	ScvmmApiService apiService
-	private LogInterface log = LogWrapper.instance
+	private LogInterface log = PrefixedLoggerFactory.getLogger(ScvmmBackupExecutionProvider)
 
 	ScvmmBackupExecutionProvider(ScvmmPlugin plugin, MorpheusContext morpheusContext) {
 		this.plugin = plugin
