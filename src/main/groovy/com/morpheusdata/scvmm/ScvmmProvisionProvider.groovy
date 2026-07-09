@@ -1369,7 +1369,6 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse removeWorkload(Workload workload, Map opts = [:]) {
-        opts = opts ?: [:]
         log.debug("removeWorkload: opts: ${opts}")
         ServiceResponse response = ServiceResponse.prepare()
         try {
