@@ -123,6 +123,14 @@ class DatastoresSync {
                     existingItem.zonePool = cluster
                     doSave = true
                 }
+                // Scope the datastore to its cluster via assignedZonePools (many-to-many) so it can be
+                // selected per resource pool during provisioning without marking it highly available
+                // (only a singular zonePool implies a clustered shared volume / HA placement).
+                def assignedCluster = cluster ?: host?.resourcePool
+                if (assignedCluster && !existingItem.assignedZonePools?.find { it.id == assignedCluster.id }) {
+                    existingItem.assignedZonePools = (existingItem.assignedZonePools ?: []) + new CloudPool(id: assignedCluster.id)
+                    doSave = true
+                }
                 if (doSave) {
                     def savedDataStore = context.async.cloud.datastore.save(existingItem).blockingGet()
                     if (savedDataStore && host) {
@@ -167,6 +175,13 @@ class DatastoresSync {
                         ]
                 log.debug("datastoreConfig: ${datastoreConfig}")
                 Datastore datastore = new Datastore(datastoreConfig)
+                // Scope the datastore to its cluster via assignedZonePools (many-to-many) so it can be
+                // selected per resource pool during provisioning without marking it highly available
+                // (only a singular zonePool implies a clustered shared volume / HA placement).
+                def assignedCluster = cluster ?: host?.resourcePool
+                if (assignedCluster) {
+                    datastore.assignedZonePools = [new CloudPool(id: assignedCluster.id)]
+                }
                 def savedDataStore = context.async.cloud.datastore.create(datastore).blockingGet()
                 log.debug("savedDataStore?.id: ${savedDataStore?.id}")
                 if (savedDataStore && host) {
