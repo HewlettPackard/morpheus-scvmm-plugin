@@ -316,10 +316,14 @@ class VirtualMachineSync {
                                     syncVolumes(currentServer, masterItem.Disks)
                                 }
                             }
-                            if (masterItem.NetworkAdapters) {
-                                if (syncInterfaces(currentServer, masterItem.NetworkAdapters, systemNetworks)) {
+                            if (masterItem.NetworkAdapters != null) {
+                                def interfacesChanged = syncInterfaces(currentServer, masterItem.NetworkAdapters, systemNetworks)
+                                if (interfacesChanged) {
                                     save = true
                                 }
+                            }
+                            else {
+                                log.debug("Null NetworkAdapters from SCVMM for '${currentServer.name}' (id:${currentServer.id}, externalId:${currentServer.externalId}) - skipping sync")
                             }
                             log.debug ("updateMatchedVirtualMachines: save: ${save}")
                             if (save) {
