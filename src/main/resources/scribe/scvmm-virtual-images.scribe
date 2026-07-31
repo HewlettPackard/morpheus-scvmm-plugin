@@ -241,7 +241,7 @@ resource "virtual-image" "scvmm-image-morpheus-almalinux-10" {
   installAgent       = true
   isCloudInit        = true
   osType = {
-     code = "almalinux.9.64"
+     code = "almalinux.10.64"
      owner = null
   }
   active             = true
