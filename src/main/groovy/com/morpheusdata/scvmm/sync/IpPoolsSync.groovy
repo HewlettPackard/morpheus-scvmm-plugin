@@ -1,6 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
 import com.morpheusdata.scvmm.ScvmmApiService
+import com.morpheusdata.scvmm.ScvmmConstants
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataOrFilter
@@ -53,7 +54,7 @@ class IpPoolsSync {
             def listResults = apiService.listNetworkIPPools(scvmmOpts)
 
             if (listResults.success == true) {
-                def poolType = new NetworkPoolType(code: 'scvmm')
+                def poolType = new NetworkPoolType(code: ScvmmConstants.NETWORK_POOL_TYPE_CODE)
                 def objList = listResults.ipPools
                 def networkMapping = listResults.networkMapping
 
