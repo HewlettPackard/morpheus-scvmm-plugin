@@ -812,6 +812,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 if (scvmmOpts.networkConfig?.primaryInterface?.network?.pool) {
                     scvmmOpts.networkConfig.primaryInterface.poolType = scvmmOpts.networkConfig.primaryInterface.network.pool.type.code
                 }
+                scvmmOpts.networkConfig?.extraInterfaces?.each { extraInterface ->
+                    if (extraInterface?.network?.pool) {
+                        extraInterface.poolType = extraInterface.network.pool.type.code
+                    }
+                }
                 workloadRequest.cloudConfigOpts.licenses
                 scvmmOpts.licenses = workloadRequest.cloudConfigOpts.licenses
                 log.debug("scvmmOpts.licenses: ${scvmmOpts.licenses}")
@@ -1610,7 +1615,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
 	@Override
 	Integer getMaxNetworks() {
-		return 1
+		return 8
 	}
 
     @Override
