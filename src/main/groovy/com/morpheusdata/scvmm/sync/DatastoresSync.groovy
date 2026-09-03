@@ -17,6 +17,14 @@ import io.reactivex.rxjava3.core.Observable
 
 class DatastoresSync {
 
+    /**
+     * Marks a datastore record as backed by a Cluster Shared Volume. Provisioning uses this (rather than the
+     * presence of a zonePool) to decide whether a VM can be created as Highly Available, since every
+     * cluster scoped datastore now carries a zonePool.
+     */
+    static final String EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME = 'clusteredSharedVolume'
+    static final String EXTERNAL_TYPE_HOST_VOLUME = 'hostVolume'
+
     ComputeServer node
     private Cloud cloud
     private MorpheusContext context
@@ -44,14 +52,26 @@ class DatastoresSync {
                 def objList = []
                 def partitionUniqueIds = []
                 listResults.datastores?.each { data ->
-                    if (!partitionUniqueIds?.contains(data.partitionUniqueID)) {
+                    if (!data.partitionUniqueID || !partitionUniqueIds.contains(data.partitionUniqueID)) {
                         objList << data
                     }
-                    partitionUniqueIds << data.partitionUniqueID
+                    if (data.partitionUniqueID) {
+                        partitionUniqueIds << data.partitionUniqueID
+                    }
                 }
                 log.debug("DatastoresSync: objList: ${objList}")
                 List<ComputeServer> existingHosts = context.services.computeServer.list(new DataQuery().withFilter('zone.id', cloud.id)
                         .withFilter('computeServerType.code', 'scvmmHypervisor'))
+
+                // A shared volume is reported once per host that can see it, but only a single record survives the
+                // de-duplication above. Keep the full set of hosts per datastore so it can be scoped to every cluster
+                // that is able to place VMs on it.
+                Map<String, Set<String>> hostNamesByDatastore = [:]
+                listResults.datastores?.each { data ->
+                    if (data.vmHost) {
+                        hostNamesByDatastore.get(getDataStoreExternalId(data).toString(), [] as Set) << data.vmHost.toString()
+                    }
+                }
 
                 Observable<DatastoreIdentityProjection> existingItems = context.async.cloud.datastore.listIdentityProjections(new DataQuery()
                         .withFilter('category', '=~', 'scvmm.datastore.%').withFilter('refType', 'ComputeZone')
@@ -59,13 +79,13 @@ class DatastoresSync {
 
                 SyncTask<DatastoreIdentityProjection, Map, Datastore> syncTask = new SyncTask<>(existingItems, objList as Collection<Map>)
                 syncTask.addMatchFunction { existingItem, cloudItem ->
-                    existingItem.externalId?.toString() == cloudItem.partitionUniqueID?.toString()
+                    existingItem.externalId?.toString() == getDataStoreExternalId(cloudItem)?.toString()
                 }.onDelete { removeItems ->
                     removeMissingDatastores(removeItems)
                 }.onUpdate { updateItems ->
-                    updateMatchedDatastores(updateItems, clusters, existingHosts, volumeType)
+                    updateMatchedDatastores(updateItems, clusters, existingHosts, volumeType, hostNamesByDatastore)
                 }.onAdd { itemsToAdd ->
-                    addMissingDatastores(itemsToAdd, clusters, existingHosts, volumeType)
+                    addMissingDatastores(itemsToAdd, clusters, existingHosts, volumeType, hostNamesByDatastore)
                 }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<DatastoreIdentityProjection, Map>> updateItems ->
                     return context.async.cloud.datastore.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
@@ -84,7 +104,7 @@ class DatastoresSync {
         }
     }
 
-    private void updateMatchedDatastores(List<SyncTask.UpdateItem<Datastore, Map>> updateList, clusters, existingHosts, volumeType) {
+    private void updateMatchedDatastores(List<SyncTask.UpdateItem<Datastore, Map>> updateList, clusters, existingHosts, volumeType, Map<String, Set<String>> hostNamesByDatastore) {
         try {
             log.debug("updateMatchedDatastores: ${updateList?.size()}")
             def host
@@ -92,13 +112,11 @@ class DatastoresSync {
                 def masterItem = item.masterItem
                 def existingItem = item.existingItem
                 host = existingHosts.find { it.hostname == masterItem.vmHost }
-                def cluster
-                if (masterItem.isClusteredSharedVolume) {
-                    cluster = clusters.find { c ->
-                        c.getConfigProperty('sharedVolumes')?.toString().contains(masterItem.name) && (!host || host.resourcePool.id == c.id)
-                    }
-                }
+                def cluster = findSharedVolumeCluster(masterItem, clusters, host)
+                List<CloudPool> owningPools = findOwningPools(masterItem, existingHosts, hostNamesByDatastore, cluster)
+                CloudPool zonePool = cluster ?: owningPools?.getAt(0)
                 def name = getName(masterItem, cluster, host)
+                def externalType = masterItem.isClusteredSharedVolume ? EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME : EXTERNAL_TYPE_HOST_VOLUME
                 def doSave = false
 
                 if (existingItem.online != masterItem.isAvailableForPlacement) {
@@ -119,8 +137,16 @@ class DatastoresSync {
                     existingItem.storageSize = totalSize
                     doSave = true
                 }
-                if (existingItem.zonePool?.id != cluster?.id) {
-                    existingItem.zonePool = cluster
+                if (existingItem.externalType != externalType) {
+                    existingItem.externalType = externalType
+                    doSave = true
+                }
+                if (existingItem.zonePool?.id != zonePool?.id) {
+                    existingItem.zonePool = zonePool
+                    doSave = true
+                }
+                if (poolIds(existingItem.assignedZonePools) != poolIds(owningPools)) {
+                    existingItem.assignedZonePools = owningPools
                     doSave = true
                 }
                 if (doSave) {
@@ -135,38 +161,36 @@ class DatastoresSync {
         }
     }
 
-    private addMissingDatastores(Collection<Map> addList, clusters, existingHosts, volumeType) {
+    private addMissingDatastores(Collection<Map> addList, clusters, existingHosts, volumeType, Map<String, Set<String>> hostNamesByDatastore) {
         log.debug("addMissingDatastores: addList?.size(): ${addList?.size()}")
         try {
             addList?.each { Map item ->
-                def isSharedVolume = item.isClusteredSharedVolume
                 def externalId = getDataStoreExternalId(item)
                 ComputeServer host = existingHosts.find { it.hostname == item.vmHost }
-                def cluster
-                if (isSharedVolume) {
-                    cluster = clusters.find { c ->
-                        c.getConfigProperty('sharedVolumes')?.toString().contains(item.name) && (!host || host.resourcePool.id == c.id)
-                    }
-                }
+                def cluster = findSharedVolumeCluster(item, clusters, host)
+                List<CloudPool> owningPools = findOwningPools(item, existingHosts, hostNamesByDatastore, cluster)
+                CloudPool zonePool = cluster ?: owningPools?.getAt(0)
                 def datastoreConfig =
                         [
-                                cloud      : cloud,
-                                drsEnabled : false,
-                                zonePool   : cluster,
-                                refId      : cloud.id,
-                                type       : 'generic',
-                                owner      : cloud.owner,
-                                refType    : 'ComputeZone',
-                                name       : getName(item, cluster, host),
-                                externalId : externalId,
-                                online     : item.isAvailableForPlacement,
-                                category   : "scvmm.datastore.${cloud.id}",
-                                freeSpace  : item.freeSpace?.toLong() ?: 0,
-                                active     : cloud.defaultDatastoreSyncActive,
-                                storageSize: item.size ? item.size?.toLong() : item.capacity ? item.capacity?.toLong() : 0
+                                cloud       : cloud,
+                                drsEnabled  : false,
+                                zonePool    : zonePool,
+                                refId       : cloud.id,
+                                type        : 'generic',
+                                owner       : cloud.owner,
+                                refType     : 'ComputeZone',
+                                name        : getName(item, cluster, host),
+                                externalId  : externalId,
+                                externalType: item.isClusteredSharedVolume ? EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME : EXTERNAL_TYPE_HOST_VOLUME,
+                                online      : item.isAvailableForPlacement,
+                                category    : "scvmm.datastore.${cloud.id}",
+                                freeSpace   : item.freeSpace?.toLong() ?: 0,
+                                active      : cloud.defaultDatastoreSyncActive,
+                                storageSize : item.size ? item.size?.toLong() : item.capacity ? item.capacity?.toLong() : 0
                         ]
                 log.debug("datastoreConfig: ${datastoreConfig}")
                 Datastore datastore = new Datastore(datastoreConfig)
+                datastore.assignedZonePools = owningPools
                 def savedDataStore = context.async.cloud.datastore.create(datastore).blockingGet()
                 log.debug("savedDataStore?.id: ${savedDataStore?.id}")
                 if (savedDataStore && host) {
@@ -176,6 +200,37 @@ class DatastoresSync {
         } catch (e) {
             log.error "Error in adding Datastores sync ${e}", e
         }
+    }
+
+    /**
+     * Resolves the cluster that owns a Cluster Shared Volume. Preference is given to the cluster reporting the
+     * volume in its shared volume list, falling back to the cluster of the host the volume was discovered on.
+     */
+    private CloudPool findSharedVolumeCluster(Map cloudItem, clusters, ComputeServer host) {
+        if (!cloudItem.isClusteredSharedVolume) {
+            return null
+        }
+        return clusters?.find { c ->
+            c.getConfigProperty('sharedVolumes')?.toString()?.contains(cloudItem.name) && (!host || host.resourcePool?.id == c.id)
+        } ?: host?.resourcePool
+    }
+
+    /**
+     * Every cluster able to place a VM on the datastore, derived from the clusters of the hosts that reported it.
+     * Datastores are scoped to these pools so that selecting a resource pool during provisioning only offers the
+     * storage attached to that cluster.
+     */
+    private List<CloudPool> findOwningPools(Map cloudItem, List<ComputeServer> existingHosts, Map<String, Set<String>> hostNamesByDatastore, CloudPool sharedVolumeCluster) {
+        Set<String> hostNames = hostNamesByDatastore?.get(getDataStoreExternalId(cloudItem)?.toString()) ?: ([cloudItem.vmHost?.toString()] as Set)
+        List<CloudPool> pools = existingHosts?.findAll { hostNames.contains(it.hostname) }?.collect { it.resourcePool }?.findAll { it } ?: []
+        if (sharedVolumeCluster) {
+            pools = pools + [sharedVolumeCluster]
+        }
+        return pools.unique { it.id }.collect { new CloudPool(id: it.id) }
+    }
+
+    private static Set<Long> poolIds(Collection<CloudPool> pools) {
+        return (pools?.collect { it.id }?.findAll { it } ?: []) as Set<Long>
     }
 
     private syncVolume(item, ComputeServer host, savedDataStore, volumeType, externalId) {

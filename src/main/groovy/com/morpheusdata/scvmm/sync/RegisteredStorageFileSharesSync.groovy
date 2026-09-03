@@ -5,6 +5,7 @@ import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.SyncTask
 import com.morpheusdata.model.Cloud
+import com.morpheusdata.model.CloudPool
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.Datastore
 import com.morpheusdata.model.StorageVolume
@@ -48,6 +49,8 @@ class RegisteredStorageFileSharesSync {
             if (listResults.success == true && listResults.datastores) {
                 def objList = listResults?.datastores
                 def serverType = context.async.cloud.findComputeServerTypeByCode('scvmmHypervisor').blockingGet()
+                List<ComputeServer> existingHosts = context.services.computeServer.list(new DataQuery().withFilter('zone.id', cloud.id)
+                        .withFilter('computeServerType.code', 'scvmmHypervisor'))
 
                 def domainRecords = context.async.cloud.datastore.listIdentityProjections(new DataQuery()
                         .withFilter('category', '=~', 'scvmm.registered.file.share.datastore.%')
@@ -62,9 +65,9 @@ class RegisteredStorageFileSharesSync {
                     log.debug("removing datastore: ${removeItems?.size()}")
                     context.async.cloud.datastore.remove(removeItems).blockingGet()
                 }.onUpdate {  updateItems ->
-                    updateMatchedFileShares(updateItems, objList)
+                    updateMatchedFileShares(updateItems, objList, clusters, existingHosts)
                 }.onAdd { itemsToAdd ->
-                    addMissingFileShares(itemsToAdd, objList)
+                    addMissingFileShares(itemsToAdd, objList, clusters, existingHosts)
                 }.withLoadObjectDetailsFromFinder {  updateItems ->
                     return context.async.cloud.datastore.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
@@ -76,7 +79,7 @@ class RegisteredStorageFileSharesSync {
         }
     }
 
-    private addMissingFileShares(Collection<Map> addList, objList) {
+    private addMissingFileShares(Collection<Map> addList, objList, clusters, List<ComputeServer> existingHosts) {
         log.debug("RegisteredStorageFileSharesSync: addMissingFileShares: called")
         def dataStoreAdds = []
         try {
@@ -111,7 +114,10 @@ class RegisteredStorageFileSharesSync {
                         type       : 'generic'
                 ]
                 log.info "Created registered file share for id: ${cloudItem.ID}"
+                List<CloudPool> owningPools = findOwningPools(cloudItem, clusters, existingHosts)
+                datastoreConfig.zonePool = owningPools?.getAt(0)
                 Datastore datastore = new Datastore(datastoreConfig)
+                datastore.assignedZonePools = owningPools
                 dataStoreAdds << datastore
                 // buildMap
                 //def externalId = ds.ID
@@ -135,7 +141,7 @@ class RegisteredStorageFileSharesSync {
         }
     }
 
-    private updateMatchedFileShares(List<SyncTask.UpdateItem<Datastore, Map>> updateList, objList) {
+    private updateMatchedFileShares(List<SyncTask.UpdateItem<Datastore, Map>> updateList, objList, clusters, List<ComputeServer> existingHosts) {
         log.debug("RegisteredStorageFileSharesSync >> updateMatchedFileShares >> Entered")
         def itemsToUpdate = []
         try {
@@ -168,6 +174,15 @@ class RegisteredStorageFileSharesSync {
                 def totalSize = masterItem.Capacity ? masterItem.Capacity?.toLong() : 0
                 if (existingItem.storageSize != totalSize) {
                     existingItem.storageSize = totalSize
+                    save = true
+                }
+                List<CloudPool> owningPools = findOwningPools(masterItem, clusters, existingHosts)
+                if (existingItem.zonePool?.id != owningPools?.getAt(0)?.id) {
+                    existingItem.zonePool = owningPools?.getAt(0)
+                    save = true
+                }
+                if (poolIds(existingItem.assignedZonePools) != poolIds(owningPools)) {
+                    existingItem.assignedZonePools = owningPools
                     save = true
                 }
                 if (save) {
@@ -301,5 +316,25 @@ class RegisteredStorageFileSharesSync {
         } catch (e) {
             log.error "error in cacheRegisteredStorageFileShares: ${e}", e
         }
+    }
+
+    /**
+     * The clusters a registered file share is associated with, either directly or through the hosts it is mounted
+     * on. Scoping the datastore to these pools keeps the share out of the datastore dropdown for unrelated
+     * resource pools during provisioning.
+     */
+    private List<CloudPool> findOwningPools(Map cloudItem, clusters, List<ComputeServer> existingHosts) {
+        def clusterIds = (cloudItem.ClusterAssociations?.collect { it.ClusterID?.toString() } ?: []).findAll { it }
+        List pools = clusterIds.collect { clusterId -> clusters?.find { it.externalId == clusterId } }.findAll { it }
+
+        def hostIds = ((cloudItem.ClusterAssociations?.collect { it.HostID?.toString() } ?: []) +
+                (cloudItem.HostAssociations?.collect { it.HostID?.toString() } ?: [])).findAll { it } as Set
+        pools = pools + (existingHosts?.findAll { hostIds.contains(it.externalId) }?.collect { it.resourcePool }?.findAll { it } ?: [])
+
+        return pools.unique { it.id }.collect { new CloudPool(id: it.id) }
+    }
+
+    private static Set<Long> poolIds(Collection<CloudPool> pools) {
+        return (pools?.collect { it.id }?.findAll { it } ?: []) as Set<Long>
     }
 }

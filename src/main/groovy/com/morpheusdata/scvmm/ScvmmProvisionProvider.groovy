@@ -28,6 +28,7 @@ import com.morpheusdata.response.ProvisionResponse
 import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
+import com.morpheusdata.scvmm.sync.DatastoresSync
 import com.morpheusdata.scvmm.util.MorpheusUtil
 import groovy.json.JsonSlurper
 
@@ -1928,21 +1929,23 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         )
                 )
             }
-            if (clusterId) {
-                if (clusterId.toString().isNumber()) {
-                    dsQuery = dsQuery.withFilter('zonePool.id', clusterId.toLong())
-                } else {
-                    dsQuery = dsQuery.withFilter('zonePool.externalId', clusterId)
+            CloudPool cluster = clusterId ? findClusterPool(cloud, clusterId) : null
+            dsList = context.services.cloud.datastore.list(dsQuery.withSort('freeSpace', DataQuery.SortOrder.desc))
+
+            // Restrict to storage the selected cluster can actually place on. A datastore shared by more than one
+            // cluster only carries one of them as its zonePool, so the assigned pools are considered as well.
+            if (cluster) {
+                dsList = dsList.findAll { ds ->
+                    ds.zonePool?.id == cluster.id || ds.assignedZonePools?.any { it.id == cluster.id }
                 }
             }
-            dsList = context.services.cloud.datastore.list(dsQuery.withSort('freeSpace', DataQuery.SortOrder.desc))
 
             // Return the first one
             if (dsList.size() > 0) {
                 datastore = dsList[0]
                 log.info("Selected datastore: ${datastore?.name} (${datastore?.id})")
             } else {
-                log.warn("No datastore found with query: ${dsQuery}")
+                log.warn("No datastore found with query: ${dsQuery} and cluster: ${clusterId}")
             }
         }
 
@@ -1967,13 +1970,37 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         volumePath = getVolumePathForDatastore(datastore)
 
         // Highly Available (in the Failover Cluster Manager) if we are in a cluster and the datastore is a shared volume
-        log.info("Determining HA: clusterId: ${clusterId}, datastore.zonePool: ${datastore?.zonePool}")
-        if (clusterId && (datastore?.zonePool || isClone)) {
-            // datastore found above MUST be part of a shared volume because it has a zonepool
+        log.info("Determining HA: clusterId: ${clusterId}, datastore.externalType: ${datastore?.externalType}, datastore.zonePool: ${datastore?.zonePool}")
+        if (clusterId && (isClone || isClusteredSharedVolume(datastore))) {
             highlyAvailable = true
         }
 
         return [node, datastore, volumePath, highlyAvailable]
+    }
+
+    /**
+     * Resolves the selected resource pool, which is supplied either as a morpheus id or as the SCVMM cluster id.
+     */
+    protected CloudPool findClusterPool(Cloud cloud, clusterId) {
+        def query = new DataQuery().withFilter('refType', 'ComputeZone').withFilter('refId', cloud.id)
+        if (clusterId.toString().isNumber()) {
+            query = query.withFilter('id', clusterId.toLong())
+        } else {
+            query = query.withFilter('externalId', clusterId.toString())
+        }
+        return context.services.cloud.pool.find(query)
+    }
+
+    /**
+     * Every cluster scoped datastore carries a zonePool so that datastore selection can be filtered by resource
+     * pool, so the Cluster Shared Volume marker recorded during sync is what determines HA placement. Datastores
+     * synced before that marker existed fall back to the legacy "has a zonePool" behaviour.
+     */
+    protected static boolean isClusteredSharedVolume(Datastore datastore) {
+        if (datastore?.externalType) {
+            return datastore.externalType == DatastoresSync.EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME
+        }
+        return datastore?.zonePool != null
     }
 
     def loadDatastoreForVolume(Cloud cloud, hostVolumeId = null, fileShareId = null, partitionUniqueId = null) {
