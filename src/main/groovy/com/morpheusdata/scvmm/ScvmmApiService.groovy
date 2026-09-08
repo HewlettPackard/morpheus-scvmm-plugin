@@ -2141,6 +2141,67 @@ For (\$i=0; \$i -le 10; \$i++) {
         return rtn
     }
 
+    /**
+     * Reassigns an existing virtual network adapter on a VM to a different VM network (and optional subnet/VLAN).
+     * Used during instance reconfigure to change the network attached to a NIC.
+     * @param opts connection options
+     * @param vmId the SCVMM VM external id
+     * @param nicProps map with: adapterId (SCVMM adapter ID), macAddress (fallback matcher),
+     *        networkExternalId (VMNetwork ID), subnetExternalId (optional VMSubnet ID),
+     *        vlanEnabled (Boolean), vlanId (Integer)
+     * @return map with success flag
+     */
+    def updateNetworkInterface(opts, vmId, Map nicProps = [:]) {
+        log.debug("updateNetworkInterface: vmId: ${vmId}, nicProps: ${nicProps}")
+        def rtn = [success: false]
+        try {
+            def adapterId = nicProps.adapterId
+            def macAddress = nicProps.macAddress
+            def networkExternalId = nicProps.networkExternalId?.toString()?.take(36)
+            def subnetExternalId = nicProps.subnetExternalId?.toString()?.take(36)
+            def vlanEnabled = nicProps.vlanEnabled == true && nicProps.vlanId != null
+            def vlanId = nicProps.vlanId
+
+            if (!networkExternalId) {
+                rtn.error = 'No target network provided for NIC update'
+                log.error("updateNetworkInterface: ${rtn.error}")
+                return rtn
+            }
+            if (!adapterId && !macAddress) {
+                rtn.error = 'No adapter identifier provided for NIC update'
+                log.error("updateNetworkInterface: ${rtn.error}")
+                return rtn
+            }
+
+            def commands = []
+            commands << "\$VM = Get-SCVirtualMachine -VMMServer localhost -ID \"${vmId}\""
+            def adapterFilter = adapterId ? "\$_.ID -eq \"${adapterId}\"" : "\$_.MACAddress -eq \"${macAddress}\""
+            commands << "\$VirtualNetworkAdapter = Get-SCVirtualNetworkAdapter -VMMServer localhost -VM \$VM | where { ${adapterFilter} } | Select-Object -First 1"
+            commands << "if (-not \$VirtualNetworkAdapter) { Write-Error \"Network adapter not found\"; Exit 24 }"
+            commands << "\$VMNetwork = Get-SCVMNetwork -VMMServer localhost -ID \"${networkExternalId}\""
+            if (subnetExternalId) {
+                commands << "\$VMSubnet = Get-SCVMSubnet -VMMServer localhost -ID \"${subnetExternalId}\""
+            }
+            def vlanArgs = vlanEnabled ? "-VLanEnabled \$true -VLanID ${vlanId}" : "-VLanEnabled \$false"
+            def subnetArg = subnetExternalId ? "-VMSubnet \$VMSubnet" : ""
+            commands << "\$ignore = Set-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter -VMNetwork \$VMNetwork ${subnetArg} ${vlanArgs}"
+            commands << "\$true"
+
+            def command = commands.join(';')
+            log.debug "updateNetworkInterface: ${command}"
+            def out = wrapExecuteCommand(generateCommandString(command), opts)
+            log.debug "updateNetworkInterface results: ${out}"
+            rtn.success = out.success && out.exitCode == '0'
+            if (!rtn.success) {
+                rtn.error = out.error ?: out.errorOutput ?: 'Failed to update network adapter'
+            }
+        } catch (e) {
+            log.error "updateNetworkInterface error: ${e}", e
+            rtn.error = e.message
+        }
+        return rtn
+    }
+
     def cleanData(data, ignoreString = null) {
         def rtn = ''
         if(data){
