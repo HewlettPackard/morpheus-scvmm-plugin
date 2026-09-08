@@ -1638,6 +1638,25 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		return true
 	}
 
+	/**
+	 * SCVMM supports automatic datastore placement (deploy to the cloud/cluster and let SCVMM
+	 * choose the volume). This keeps the datastore optional rather than required during provisioning.
+	 * @return Boolean
+	 */
+	@Override
+	Boolean supportsAutoDatastore() {
+		return true
+	}
+
+	/**
+	 * The root volume datastore is selectable for SCVMM (per-cluster datastore selection is supported).
+	 * @return Boolean
+	 */
+	@Override
+	Boolean disableRootDatastore() {
+		return false
+	}
+
     @Override
     HostType getHostType() {
         return HostType.vm
