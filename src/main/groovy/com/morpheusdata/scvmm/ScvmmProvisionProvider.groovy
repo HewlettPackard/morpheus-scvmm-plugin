@@ -1614,6 +1614,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 	}
 
     @Override
+    Boolean canReconfigureNetwork() {
+        return true
+    }
+
+    @Override
     Boolean canAddVolumes() {
         return true
     }
@@ -2492,6 +2497,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         }
                     }
                 }
+                // Handle network interface network reassignment
+                if (resizeRequest.interfacesUpdate && !rtn.error) {
+                    computeServer = updateResizedInterfaces(computeServer, scvmmOpts, vmId, resizeRequest, rtn)
+                }
                 computeServer = getMorpheusServer(computeServer.id)
                 rtn.success = true
             } else {
@@ -2513,6 +2522,55 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             rtn.setError("${e}")
         }
         return rtn
+    }
+
+    /**
+     * Reassigns the network for existing virtual NICs during a reconfigure/resize operation.
+     * For each interface update whose target network differs from the current one, the change is
+     * applied in SCVMM and then persisted on the ComputeServerInterface model.
+     */
+    private ComputeServer updateResizedInterfaces(ComputeServer computeServer, Map scvmmOpts, vmId, ResizeRequest resizeRequest, ServiceResponse rtn) {
+        resizeRequest.interfacesUpdate?.each { interfaceUpdate ->
+            ComputeServerInterface existing = interfaceUpdate.existingModel
+            Map updateProps = interfaceUpdate.updateProps ?: [:]
+            if (!existing) {
+                return
+            }
+            def targetNetworkId = updateProps.network?.id ?: updateProps.networkId
+            if (!targetNetworkId) {
+                return
+            }
+            if (existing.network?.id == targetNetworkId?.toLong()) {
+                log.debug("updateResizedInterfaces - NIC ${existing.id} already on network ${targetNetworkId}, skipping")
+                return
+            }
+            def targetNetwork = context.services.cloud.network.get(targetNetworkId.toLong())
+            if (!targetNetwork) {
+                rtn.error = "Unable to find network ${targetNetworkId} for NIC update"
+                log.error("updateResizedInterfaces - ${rtn.error}")
+                return
+            }
+            def nicProps = [
+                    adapterId        : existing.externalId,
+                    macAddress       : existing.macAddress,
+                    networkExternalId: targetNetwork.externalId,
+                    vlanEnabled      : targetNetwork.vlanId != null,
+                    vlanId           : targetNetwork.vlanId
+            ]
+            def updateResults = apiService.updateNetworkInterface(scvmmOpts, vmId, nicProps)
+            if (updateResults.success == true) {
+                def iface = computeServer.interfaces?.find { it.id == existing.id }
+                if (iface) {
+                    iface.network = targetNetwork
+                    context.async.computeServer.computeServerInterface.save([iface]).blockingGet()
+                    computeServer = getMorpheusServer(computeServer.id)
+                }
+            } else {
+                rtn.error = updateResults.error ?: "Failed to update network for NIC ${existing.id}"
+                log.error("updateResizedInterfaces - ${rtn.error}")
+            }
+        }
+        return computeServer
     }
 
     private getResizeConfig(Workload workload = null, ComputeServer server = null, ServicePlan plan, Map opts = [:], ResizeRequest resizeRequest) {
