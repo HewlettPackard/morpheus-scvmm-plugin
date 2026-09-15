@@ -660,9 +660,31 @@ class VirtualMachineSync {
             def masterById = masterItems.collectEntries { [(it.ID): it] }
             def existingById = existingInterfaces.findAll { it.externalId }.collectEntries { [(it.externalId): it] }
 
+            // Interfaces created during provisioning may not carry the SCVMM adapter ID yet; adopt them
+            // by IP address (or slot for the primary) instead of dropping and re-creating them.
+            def unmatchedInterfaces = existingInterfaces.findAll { !it.externalId || !masterById.containsKey(it.externalId) }
+            def unclaimedAdapters = masterItems.findAll { !existingById.containsKey(it.ID) }
+            unclaimedAdapters.each { masterItem ->
+                def adapterIps = adapterAddresses(masterItem.IPv4Addresses) + adapterAddresses(masterItem.IPv6Addresses)
+                def match = unmatchedInterfaces.find { iface ->
+                    def ifaceIps = ([iface.ipAddress, iface.publicIpAddress] + (iface.addresses?.collect { it.address } ?: [])).findAll { it }.collect { it.toString() }
+                    ifaceIps.any { adapterIps.contains(it) }
+                }
+                if (!match && masterItem.SlotId?.toString() == '0') {
+                    match = unmatchedInterfaces.find { it.primaryInterface }
+                }
+                if (match) {
+                    existingById[masterItem.ID] = match
+                    unmatchedInterfaces.remove(match)
+                }
+            }
+
             // remove NICs no longer reported by SCVMM
-            existingInterfaces.findAll { !masterById.containsKey(it.externalId) }.each { iface ->
-                context.async.computeServer.computeServerInterface.remove([iface]).blockingGet()
+            if (unmatchedInterfaces) {
+                def removed = context.async.computeServer.computeServerInterface.remove(unmatchedInterfaces, server).blockingGet()
+                if (!removed) {
+                    log.warn("syncInterfaces: failed to remove ${unmatchedInterfaces.size()} stale interface(s) from server ${server.id}")
+                }
                 changed = true
             }
 
@@ -675,6 +697,7 @@ class VirtualMachineSync {
 
                 if (existing) {
                     def save = false
+                    if (existing.externalId != masterItem.ID) { existing.externalId = masterItem.ID; save = true }
                     if (existing.macAddress != masterItem.MacAddress) { existing.macAddress = masterItem.MacAddress; save = true }
                     if (existing.vlanId != masterItem.VLanID?.toString()) { existing.vlanId = masterItem.VLanID?.toString(); save = true }
                     if (existing.network?.id != network?.id) { existing.network = network; save = true }
@@ -730,6 +753,20 @@ class VirtualMachineSync {
 
     private boolean getIsPrimary(ComputeServerInterface iface, Map masterItem, boolean isPrimaryAssigned) {
         return (iface?.primaryInterface == true) || (masterItem.SlotId == 0 && !isPrimaryAssigned)
+    }
+
+    /**
+     * ConvertTo-Json collapses nested address arrays into whitespace-delimited strings once they exceed
+     * its depth, so accept either an array or a delimited string and never iterate a string per character.
+     */
+    private static List<String> adapterAddresses(def addresses) {
+        if (!addresses) {
+            return []
+        }
+        if (addresses instanceof Collection || addresses instanceof Object[]) {
+            return (addresses as Collection).findAll { it }.collect { it.toString().trim() }.findAll { it } as List<String>
+        }
+        return addresses.toString().split(/\s*[,;\n]\s*|\s+/).collect { it.trim() }.findAll { it } as List<String>
     }
 
 }
