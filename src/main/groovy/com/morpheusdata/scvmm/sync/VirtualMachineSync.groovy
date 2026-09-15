@@ -671,7 +671,13 @@ class VirtualMachineSync {
                 def network = resolveNetworkForAdapter(masterItem, systemNetworks, existing?.network)
                 def isPrimary = getIsPrimary(existing, masterItem, isPrimaryAssigned)
                 def dhcp = (masterItem.IPv4AddressType == 'Dynamic' || masterItem.IPv6AddressType == 'Dynamic')
-                def allIps = ((masterItem.IPv4Addresses ?: []).findAll { it }) + ((masterItem.IPv6Addresses ?: []).findAll { it })
+                // ConvertTo-Json may hand these back as delimited strings rather than arrays; never iterate them raw
+                List<String> ipv4s = ScvmmApiService.normalizeAddresses(masterItem.IPv4Addresses)
+                List<String> ipv6s = ScvmmApiService.normalizeAddresses(masterItem.IPv6Addresses)
+                List<String> allIps = (ipv4s + ipv6s).unique()
+                def buildAddresses = {
+                    allIps.collect { ip -> new NetAddress(type: ipv4s.contains(ip) ? NetAddress.AddressType.IPV4 : NetAddress.AddressType.IPV6, address: ip) }
+                }
 
                 if (existing) {
                     def save = false
@@ -682,10 +688,9 @@ class VirtualMachineSync {
                     if (existing.primaryInterface != isPrimary) { existing.primaryInterface = isPrimary; save = true }
                     def existingIps = existing.addresses?.collect { it.address } as Set ?: [] as Set
                     if (existingIps != (allIps as Set)) {
-                        existing.addresses = allIps.collect { ip ->
-                            def type = (masterItem.IPv4Addresses ?: []).contains(ip) ? NetAddress.AddressType.IPV4 : NetAddress.AddressType.IPV6
-                            new NetAddress(type: type, address: ip)
-                        }
+                        existing.addresses = buildAddresses()
+                        existing.ipAddress = ipv4s ? ipv4s.first() : null
+                        existing.ipv6Address = ipv6s ? ipv6s.first() : null
                         save = true
                     }
                     if (save) {
@@ -702,10 +707,9 @@ class VirtualMachineSync {
                         primaryInterface: isPrimary,
                         dhcp: dhcp
                     )
-                    allIps.each { ip ->
-                        def type = (masterItem.IPv4Addresses ?: []).contains(ip) ? NetAddress.AddressType.IPV4 : NetAddress.AddressType.IPV6
-                        iface.addresses += new NetAddress(type: type, address: ip)
-                    }
+                    iface.addresses = buildAddresses()
+                    iface.ipAddress = ipv4s ? ipv4s.first() : null
+                    iface.ipv6Address = ipv6s ? ipv6s.first() : null
                     context.async.computeServer.computeServerInterface.create([iface], server).blockingGet()
                     if (isPrimary) isPrimaryAssigned = true
                     changed = true
