@@ -948,9 +948,18 @@ foreach (\$cloud in \$clouds) {
 				}
 				\$report """
 			} else {
-				log.debug("Fetching storage volumes with no regionCode")
+				// Without a cloud the volumes still have to be limited to the hosts in the cloud's host group,
+				// otherwise every volume known to the SCVMM server is imported.
+				def hostGroupPath = opts.zone.getConfigProperty('hostGroup')
+				log.debug("Fetching storage volumes with no regionCode for host group ${hostGroupPath}")
 				commandStr = """\$report = @()
-				\$allVolumes = Get-SCStorageVolume -VMMServer localhost | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
+				\$hostGroupPath = '${hostGroupPath ?: ''}'
+				\$hosts = Get-SCVMHost -VMMServer localhost
+				if (\$hostGroupPath) {
+					\$hosts = \$hosts | Where-Object { \$_.VMHostGroup.Path -eq \$hostGroupPath -or \$_.VMHostGroup.Path.StartsWith(\$hostGroupPath + '\\\\') }
+				}
+				\$hostIDs = @(\$hosts | Select-Object -ExpandProperty ID)
+				\$allVolumes = Get-SCStorageVolume -VMMServer localhost | Where-Object { \$hostIDs -contains \$_.VMHost.ID } | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
 				foreach (\$StorageVolume in \$allVolumes) {
 					\$data = New-Object PSObject -property @{
 						id = \$StorageVolume.ID
