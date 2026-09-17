@@ -358,6 +358,10 @@ public class ServiceResponse<T> {
 		this.results = results;
 	}
 
+	public Boolean getWarning() { return warning; }
+
+	public void setWarning(Boolean warning) { this.warning = warning; }
+
 	public Map getCookies() {
 		return cookies;
 	}
