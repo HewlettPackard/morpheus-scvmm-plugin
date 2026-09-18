@@ -84,6 +84,15 @@ public interface MorpheusStorageService {
 	MorpheusStorageVolumeGroupService getVolumeGroup();
 
 	/**
+	 * Returns the StorageServerNode Service for managing the hosts that participate
+	 * in a scale-out storage system.
+	 *
+	 * @return An instance of the StorageServerNode Service
+	 * @since 1.5.1
+	 */
+	MorpheusStorageServerNodeService getServerNode();
+
+	/**
 	 * Validates an update on a {@link StorageServer} before executing the update.
 	 * @deprecated use {@link MorpheusStorageServerService#validateUpdate(UpdateDefinition, StorageServer)}  instead
 	 */
