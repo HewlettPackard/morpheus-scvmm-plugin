@@ -231,10 +231,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 			return [[name:'Auto', value: '']]
 		}
 
-		def resourcePoolId = params.resourcePoolId?.toString()?.isNumber() ? params.resourcePoolId.toLong() :
-				(params.config?.resourcePool != 'null' ?
-						(params.config?.resourcePool?.toString()?.isNumber() ?
-								params.config.resourcePool?.toLong() : null) : null)
+		def resourcePoolId = parseResourcePoolId(tmpZone, params.resourcePoolId ?: params.poolId ?: params.config?.resourcePoolId ?: params.config?.resourcePool)
 
 		def query = new DataQuery()
 
@@ -253,6 +250,29 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 		def results = morpheusContext.services.computeServer.listIdentityProjections(query.withSort('name', DataQuery.SortOrder.asc))
 
 		return results.collect { host -> [name: host.name, value: host.id] }
+	}
+
+	/**
+	 * The provisioning wizard sends the selected resource pool as {@code pool-<id>} (or {@code poolGroup-<id>}),
+	 * older forms send the bare morpheus id. Anything else (e.g. the SCVMM cluster id) is resolved by externalId.
+	 * @return the morpheus id of the selected pool, or null when nothing usable was supplied
+	 */
+	protected Long parseResourcePoolId(Cloud cloud, rawValue) {
+		def value = rawValue?.toString()?.trim()
+		if(!value || value == 'null') {
+			return null
+		}
+		if(value.startsWith('pool-')) {
+			value = value.substring('pool-'.length())
+		} else if(value.startsWith('poolGroup-')) {
+			// a pool group spans several pools; the host list can not be narrowed to a single one
+			return null
+		}
+		if(value.isNumber()) {
+			return value.toLong()
+		}
+		return morpheusContext.services.cloud.pool.find(new DataQuery().withFilter('refType', 'ComputeZone')
+				.withFilter('refId', cloud.id).withFilter('externalId', value))?.id
 	}
 
 	def scvmmVirtualImages(Object params) {
