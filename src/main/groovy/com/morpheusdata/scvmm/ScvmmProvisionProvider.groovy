@@ -866,6 +866,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 def createResults = apiService.createServer(scvmmOpts)
                 log.debug("createResults: ${createResults}")
                 scvmmOpts.deleteDvdOnComplete = createResults.deleteDvdOnComplete
+                // Parent VM's re-created cloud-init ISO (clone only) - cleaned up in cloneParentCleanup.
+                // The clone's own ISO (deleteDvdOnComplete) must stay mounted until finalizeWorkload so cloud-init can run.
+                scvmmOpts.cloneBaseResults = createResults.cloneBaseResults
 				// Adding the deleteDvdOnComplete to the workload config for future reference in the finalize step.
 				// This is done as adding it to scvmmOpts above doesn't persist it anywhere.
 				def workloadConfig = workload.configMap
@@ -1004,16 +1007,18 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 					}
 				}
 
-				// Always check for DVD/ISO cleanup on the parent VM
+				// Always check for DVD/ISO cleanup on the parent VM.
+				// Only the parent's re-created ISO is deleted here; the clone's ISO is handled by finalizeWorkload.
 				if (scvmmOpts.cloneBaseOpts?.clonedScvmmOpts) {
 					log.debug "Checking for DVD/ISO cleanup on parent VM: ${scvmmOpts.cloneVMId}"
 					def setCdromResults = apiService.setCdrom(scvmmOpts.cloneBaseOpts.clonedScvmmOpts)
 					if (!setCdromResults.success) {
 						log.error "Failed to unmount DVD of parent VM. Please unmount manually as this may cause issues for further clone operations."
 					}
-					if (scvmmOpts.deleteDvdOnComplete?.deleteIso) {
-						log.debug "Deleting ISO of parent VM: ${scvmmOpts.deleteDvdOnComplete.deleteIso}"
-						apiService.deleteIso(scvmmOpts.cloneBaseOpts.clonedScvmmOpts, scvmmOpts.deleteDvdOnComplete.deleteIso)
+					def parentIsoPath = scvmmOpts.cloneBaseResults?.cloudInitIsoPath
+					if (parentIsoPath) {
+						log.debug "Deleting ISO of parent VM: ${parentIsoPath}"
+						apiService.deleteIso(scvmmOpts.cloneBaseOpts.clonedScvmmOpts, parentIsoPath)
 					}
 				}
 			} catch (Exception ex) {
