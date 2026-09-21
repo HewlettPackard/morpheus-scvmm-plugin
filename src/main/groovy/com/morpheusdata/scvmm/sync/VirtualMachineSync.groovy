@@ -14,6 +14,7 @@ import com.morpheusdata.model.projection.ComputeServerIdentityProjection
 import com.morpheusdata.model.projection.StorageVolumeIdentityProjection
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
+import com.morpheusdata.scvmm.util.MorpheusUtil
 import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Observable
 
@@ -133,16 +134,14 @@ class VirtualMachineSync {
                     add.platform = osType?.platform
                 }
                 add.sshHost = add.internalIp ?: add.externalIp
-                /*if (consoleEnabled) {
+                if (consoleEnabled) {
                     add.consoleType = 'vmrdp'
-                    add.consoleHost = add.parentServer?.name
+                    add.consoleHost = MorpheusUtil.getConsoleHost(add.parentServer)
                     add.consolePort = 2179
-                    add.sshUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username') ?: 'dunno'
-                    if (add.sshUsername.contains('\\')) {
-                        add.sshUsername = add.sshUsername.tokenize('\\')[1]
-                    }
+                    // Keep DOMAIN\user intact; the console tunnel splits it into RDP username/domain at connect time.
+                    add.consoleUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username')
                     add.consolePassword = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
-                }*/
+                }
                 add.capacityInfo = new ComputeCapacityInfo(maxCores: add.maxCores, maxMemory: add.maxMemory, maxStorage: add.maxStorage)
                 ComputeServer savedServer = context.async.computeServer.create(add).blockingGet()
                 if (!savedServer) {
@@ -252,9 +251,9 @@ class VirtualMachineSync {
                             }
                             def consoleType = consoleEnabled ? 'vmrdp' : null
                             def consolePort = consoleEnabled ? 2179 : null
-                            def consoleHost = consoleEnabled ? currentServer.parentServer?.name : null
-                            def rawUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username') ?: 'dunno'
-                            def consoleUsername = rawUsername.contains('\\') ? (rawUsername.tokenize('\\')[1] ?: rawUsername) : rawUsername
+                            def consoleHost = consoleEnabled ? MorpheusUtil.getConsoleHost(currentServer.parentServer) : null
+                            // Keep DOMAIN\user intact; the console tunnel splits it into RDP username/domain at connect time.
+                            def consoleUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username')
                             def consolePassword = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
                             if (currentServer.consoleType != consoleType) {
                                 currentServer.consoleType = consoleType
@@ -269,8 +268,8 @@ class VirtualMachineSync {
                                 save = true
                             }
                             if (consoleEnabled) {
-                                if (consoleUsername != currentServer.sshUsername) {
-                                    currentServer.sshUsername = consoleUsername
+                                if (consoleUsername != currentServer.consoleUsername) {
+                                    currentServer.consoleUsername = consoleUsername
                                     save = true
                                 }
                                 if (consolePassword != currentServer.consolePassword) {
