@@ -37,11 +37,32 @@ class ScvmmApiService {
         out = executeCommand(command, opts)
     }
 
-    def generateCommandString(command) {
+    def generateCommandString(command, Integer depth = 3) {
         // FormatEnumeration causes lists to show ALL items
         // width value prevents wrapping
         //TODO make sure command does NOT end in a newline otherwise this fails
-        "\$FormatEnumerationLimit =-1; ${command} | ConvertTo-Json -Depth 3"
+        "\$FormatEnumerationLimit =-1; ${command} | ConvertTo-Json -Depth ${depth}"
+    }
+
+    /**
+     * Depth required to fully serialize VM reports that nest per-NIC address arrays:
+     * [VMs](0) -> VM(1) -> NetworkAdapters(2) -> adapter(3) -> IPv4Addresses/IPv6Addresses(4).
+     * Anything shallower makes ConvertTo-Json stringify the address arrays.
+     */
+    static final int VM_REPORT_JSON_DEPTH = 5
+
+    /**
+     * Normalizes an address payload returned from PowerShell into a list of address strings. ConvertTo-Json
+     * collapses arrays beyond its depth into a whitespace/comma-delimited string, so accept either shape.
+     */
+    static List<String> normalizeAddresses(def addresses) {
+        if (!addresses) {
+            return []
+        }
+        if (addresses instanceof Collection || addresses instanceof Object[]) {
+            return (addresses as Collection).findAll { it }.collect { it.toString().trim() }.findAll { it } as List<String>
+        }
+        return addresses.toString().split(/\s*[,;\n]\s*|\s+/).collect { it.trim() }.findAll { it } as List<String>
     }
 
     def insertContainerImage(opts) {
@@ -612,7 +633,7 @@ if(\$cloud) {
 				\$report """
 
 
-            def command = generateCommandString(commandStr)
+            def command = generateCommandString(commandStr, VM_REPORT_JSON_DEPTH)
             def out = wrapExecuteCommand(command, opts)
             log.debug("out: ${out.data}")
             if (out.success) {
