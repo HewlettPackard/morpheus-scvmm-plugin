@@ -30,4 +30,14 @@ class MorpheusUtil {
                 new DataQuery().withFilter("id", id).withJoin("interfaces.network")
         )
     }
+
+    /**
+     * Resolves the VMConnect (vmrdp) console target for a VM's parent Hyper-V host.
+     * Prefers the host's resolvable FQDN ({@code hostname}) and falls back to its
+     * SCVMM display name only when no FQDN is available, since guacd must be able to
+     * resolve the value via DNS.
+     */
+    static String getConsoleHost(ComputeServer host) {
+        host?.hostname ?: host?.name
+    }
 }

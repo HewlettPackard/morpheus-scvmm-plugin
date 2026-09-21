@@ -881,14 +881,6 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 if (createResults.success == true) {
                     node = context.services.computeServer.get(nodeId)
                     if (createResults.server) {
-						/*if (server.cloud.getConfigProperty('enableVnc')) {
-                            //credentials
-                            server.consoleHost = server.parentServer?.name
-                            server.consoleType = 'vmrdp'
-                            server.sshUsername = server.cloud.accountCredentialData?.username ?: server.cloud.getConfigProperty('username')
-                            server.consolePassword = server.cloud.accountCredentialData?.password ?: server.cloud.getConfigProperty('password')
-                            server.consolePort = 2179
-                        }*/
                         def serverDisks = createResults.server.disks
                         if (serverDisks && server.volumes) {
                             storageVolumes = server.volumes
@@ -915,6 +907,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 						server.externalId = createResults.server.id
 						server.internalId = createResults.server.VMId
 						server.parentServer = node
+						if (cloud.getConfigProperty('enableVnc')) {
+							// Hypervisor (VMConnect) console credentials; consoleHost is refreshed to the actual
+							// Hyper-V host in updateServerHost once SCVMM reports final placement.
+							server.consoleHost = MorpheusUtil.getConsoleHost(server.parentServer)
+							server.consoleType = 'vmrdp'
+							server.consoleUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username')
+							server.consolePassword = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
+							server.consolePort = 2179
+						}
 						server.osDevice = '/dev/sda'
 						server.dataDevice = '/dev/sda'
 						server.lvmEnabled = false
@@ -1311,7 +1312,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     def latestServer = context.services.computeServer.get(server.id) ?: server
                     latestServer.parentServer = parentServer
                     if (latestServer.consoleType == 'vmrdp') {
-                        latestServer.consoleHost = parentServer.name
+                        latestServer.consoleHost = MorpheusUtil.getConsoleHost(parentServer)
                     }
                     context.services.computeServer.save(latestServer)
                 }
