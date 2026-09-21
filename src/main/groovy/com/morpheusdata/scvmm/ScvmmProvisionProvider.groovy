@@ -1412,8 +1412,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 			fetchedServer.powerState = ComputeServer.PowerState.on
 			fetchedServer = MorpheusUtil.saveAndGetMorpheusServer(context, fetchedServer, true)
 			def newIpAddress = serverDetails.server?.ipAddress
-			def macAddress = serverDetails.server?.macAddress
-			applyComputeServerNetworkIp(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
+			def networkAdapter = findPrimaryNetworkAdapter(serverDetails.server as Map, newIpAddress)
+			applyComputeServerNetworkIp(fetchedServer, newIpAddress, newIpAddress, 0, networkAdapter)
             def hostOpts = fetchScvmmConnectionDetails(fetchedServer)
             updateServerHost(fetchedServer, hostOpts)
 			return new ServiceResponse<ProvisionResponse>(true, null, null,
@@ -2216,18 +2216,24 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
     }
 
-    private saveAndGetNetworkInterface(ComputeServer server, privateIp, publicIp, index, macAddress) {
-        log.debug("applyComputeServerNetworkIp: ${privateIp}")
+    private saveAndGetNetworkInterface(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
+        log.debug("applyComputeServerNetworkIp: ${privateIp}, adapter: ${networkAdapter?.ID}")
 		def rtn = [:]
         ComputeServerInterface netInterface
+        def macAddress = networkAdapter?.MacAddress
+        def adapterExternalId = networkAdapter?.ID
         if (privateIp) {
             privateIp = privateIp?.toString().contains("\n") ? privateIp.toString().replace("\n", "") : privateIp.toString()
             def newInterface = false
             server.internalIp = privateIp
             server.sshHost = privateIp
-            server.macAddress = macAddress
+            if (macAddress) {
+                server.macAddress = macAddress
+            }
             log.debug("Setting private ip on server:${server.sshHost}")
-            netInterface = server.interfaces?.find { it.ipAddress == privateIp }
+            netInterface = server.interfaces?.find { adapterExternalId && it.externalId == adapterExternalId }
+            if (netInterface == null)
+                netInterface = server.interfaces?.find { it.ipAddress == privateIp }
 
             if (netInterface == null) {
                 if (index == 0)
@@ -2255,7 +2261,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 netInterface.publicIpAddress = publicIp
                 server.externalIp = publicIp
             }
-            netInterface.macAddress = macAddress
+            // Bind the interface to the SCVMM adapter so VirtualMachineSync matches it by externalId
+            if (adapterExternalId) {
+                netInterface.externalId = adapterExternalId
+            }
+            if (macAddress) {
+                netInterface.macAddress = macAddress
+            }
+            if (networkAdapter?.VLanID != null) {
+                netInterface.vlanId = networkAdapter.VLanID.toString()
+            }
             if (newInterface == true)
                 context.async.computeServer.computeServerInterface.create([netInterface], server).blockingGet()
             else
@@ -2267,12 +2282,43 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         return rtn
     }
 
-	private applyComputeServerNetworkIp(ComputeServer server, privateIp, publicIp, index, macAddress) {
-		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, macAddress).netInterface
+	private applyComputeServerNetworkIp(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
+		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, networkAdapter).netInterface
 	}
 
-	private applyNetworkIpAndGetServer(ComputeServer server, privateIp, publicIp, index, macAddress) {
-		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, macAddress).server
+	private applyNetworkIpAndGetServer(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
+		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, networkAdapter).server
+	}
+
+	/**
+	 * Picks the SCVMM network adapter that backs the primary interface: prefer the adapter holding the
+	 * detected IP, then SlotId 0, then the first enabled adapter.
+	 */
+	protected static Map findPrimaryNetworkAdapter(Map serverDetail, ipAddress) {
+		List<Map> adapters = (serverDetail?.NetworkAdapters ?: []).findAll { it } as List<Map>
+		if (!adapters) {
+			return null
+		}
+		def ip = ipAddress?.toString()?.trim()
+		def byIp = ip ? adapters.find { adapter ->
+			def ips = adapterAddresses(adapter.IPv4Addresses) + adapterAddresses(adapter.IPv6Addresses)
+			ips.contains(ip)
+		} : null
+		return byIp ?: adapters.find { it.SlotId?.toString() == '0' } ?: adapters.first()
+	}
+
+	/**
+	 * ConvertTo-Json collapses nested address arrays into whitespace-delimited strings once they exceed
+	 * its depth, so accept either an array or a delimited string and never iterate a string per character.
+	 */
+	private static List<String> adapterAddresses(def addresses) {
+		if (!addresses) {
+			return []
+		}
+		if (addresses instanceof Collection || addresses instanceof Object[]) {
+			return (addresses as Collection).findAll { it }.collect { it.toString().trim() }.findAll { it } as List<String>
+		}
+		return addresses.toString().split(/\s*[,;\n]\s*|\s+/).collect { it.trim() }.findAll { it } as List<String>
 	}
 
     @Override
@@ -2328,8 +2374,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 					fetchedServer = context.async.computeServer.get(server.id).blockingGet()
 				}
 				def newIpAddress = serverDetail.server?.ipAddress
-				def macAddress = serverDetail.server?.macAddress
-				def savedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
+				def networkAdapter = findPrimaryNetworkAdapter(serverDetail.server as Map, newIpAddress)
+				def savedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, networkAdapter)
                 context.async.computeServer.save(savedServer).blockingGet()
                 rtn.success = true
             }
