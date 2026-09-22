@@ -139,8 +139,9 @@ class VirtualMachineSync {
                     add.consoleHost = MorpheusUtil.getConsoleHost(add.parentServer)
                     add.consolePort = 2179
                     // Keep DOMAIN\user intact; the console tunnel splits it into RDP username/domain at connect time.
-                    add.consoleUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username')
-                    add.consolePassword = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
+                    // Hypervisor credentials belong on console* only; sshUsername/sshPassword are the guest login.
+                    add.consoleUsername = MorpheusUtil.getConsoleUsername(cloud)
+                    add.consolePassword = MorpheusUtil.getConsolePassword(cloud)
                 }
                 add.capacityInfo = new ComputeCapacityInfo(maxCores: add.maxCores, maxMemory: add.maxMemory, maxStorage: add.maxStorage)
                 ComputeServer savedServer = context.async.computeServer.create(add).blockingGet()
@@ -253,8 +254,8 @@ class VirtualMachineSync {
                             def consolePort = consoleEnabled ? 2179 : null
                             def consoleHost = consoleEnabled ? MorpheusUtil.getConsoleHost(currentServer.parentServer) : null
                             // Keep DOMAIN\user intact; the console tunnel splits it into RDP username/domain at connect time.
-                            def consoleUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username')
-                            def consolePassword = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
+                            def consoleUsername = MorpheusUtil.getConsoleUsername(cloud)
+                            def consolePassword = MorpheusUtil.getConsolePassword(cloud)
                             if (currentServer.consoleType != consoleType) {
                                 currentServer.consoleType = consoleType
                                 save = true
@@ -268,6 +269,9 @@ class VirtualMachineSync {
                                 save = true
                             }
                             if (consoleEnabled) {
+                                // Only the console* fields carry the hypervisor account. Never write it to
+                                // sshUsername/sshPassword: those are the guest credentials used by agent
+                                // install and WinRM, and overwriting them breaks Install/Upgrade Agent.
                                 if (consoleUsername != currentServer.consoleUsername) {
                                     currentServer.consoleUsername = consoleUsername
                                     save = true
