@@ -2,6 +2,7 @@ package com.morpheusdata.scvmm.util
 
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
+import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
@@ -29,5 +30,37 @@ class MorpheusUtil {
         return context.services.computeServer.find(
                 new DataQuery().withFilter("id", id).withJoin("interfaces.network")
         )
+    }
+
+    /**
+     * Resolves the VMConnect (vmrdp) console target for a VM's parent Hyper-V host.
+     * Prefers the host's resolvable FQDN ({@code hostname}) and falls back to its
+     * SCVMM display name only when no FQDN is available, since guacd must be able to
+     * resolve the value via DNS.
+     */
+    static String getConsoleHost(ComputeServer host) {
+        host?.hostname ?: host?.name
+    }
+
+    /**
+     * Resolves the hypervisor (VMConnect) console username from the cloud's SCVMM credentials.
+     * The value is returned exactly as configured, including any {@code DOMAIN\} prefix; the
+     * console tunnel splits it into RDP username/domain at connect time.
+     * <p>
+     * This value must only ever be persisted on {@link ComputeServer#consoleUsername}. It is the
+     * hypervisor account, not a guest login, and must never be written to the guest-owned
+     * {@link ComputeServer#sshUsername}, which the agent install / WinRM paths authenticate with.
+     */
+    static String getConsoleUsername(Cloud cloud) {
+        cloud?.accountCredentialData?.username ?: cloud?.getConfigProperty('username')
+    }
+
+    /**
+     * Resolves the hypervisor (VMConnect) console password from the cloud's SCVMM credentials.
+     * Persist only on {@link ComputeServer#consolePassword}; never on the guest-owned
+     * {@link ComputeServer#sshPassword}.
+     */
+    static String getConsolePassword(Cloud cloud) {
+        cloud?.accountCredentialData?.password ?: cloud?.getConfigProperty('password')
     }
 }
