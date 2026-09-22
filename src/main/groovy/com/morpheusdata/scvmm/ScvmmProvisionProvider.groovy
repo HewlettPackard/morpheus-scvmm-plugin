@@ -906,8 +906,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 							// Hyper-V host in updateServerHost once SCVMM reports final placement.
 							server.consoleHost = MorpheusUtil.getConsoleHost(server.parentServer)
 							server.consoleType = 'vmrdp'
-							server.consoleUsername = cloud.accountCredentialData?.username ?: cloud.getConfigProperty('username')
-							server.consolePassword = cloud.accountCredentialData?.password ?: cloud.getConfigProperty('password')
+							server.consoleUsername = MorpheusUtil.getConsoleUsername(cloud)
+							server.consolePassword = MorpheusUtil.getConsolePassword(cloud)
 							server.consolePort = 2179
 						}
 						server.osDevice = '/dev/sda'
