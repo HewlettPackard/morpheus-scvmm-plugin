@@ -1,6 +1,5 @@
 package com.morpheusdata.scvmm.sync
 
-import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ComputeUtility
@@ -10,6 +9,7 @@ import com.morpheusdata.model.ComputeCapacityInfo
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.OsType
 import com.morpheusdata.model.projection.ComputeServerIdentityProjection
+import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
@@ -156,6 +156,7 @@ class HostSync {
                 newServer.maxMemory = cloudItem.totalMemory?.toLong() ?: 0
                 newServer.maxStorage = cloudItem.totalStorage?.toLong() ?: 0
                 newServer.maxCpu = (cloudItem.cpuCount?.toLong() ?: 1)
+                newServer.maxSockets = (cloudItem.cpuCount?.toLong() ?: 1)
                 newServer.maxCores = (cloudItem.cpuCount?.toLong() ?: 1) * (cloudItem.coresPerCpu?.toLong() ?: 1)
                 newServer.capacityInfo = new ComputeCapacityInfo(maxMemory: newServer.maxMemory, maxStorage: newServer.maxStorage, maxCores: newServer.maxCores)
                 newServer.setConfigProperty('rawData', cloudItem.encodeAsJSON().toString())
@@ -222,6 +223,10 @@ class HostSync {
             def capacityInfo = server.capacityInfo ?: new ComputeCapacityInfo(maxMemory: maxMemory, maxStorage: maxStorage)
             if (maxCpu != server.maxCpu) {
                 server.maxCpu = maxCpu
+                updates = true
+            }
+            if (maxCpu != server.maxSockets) {
+                server.maxSockets = maxCpu
                 updates = true
             }
             if (maxCores != server.maxCores) {
