@@ -4,6 +4,7 @@ import com.morpheusdata.core.cloud.MorpheusCloudService
 import com.morpheusdata.core.MorpheusAsyncServices
 import com.morpheusdata.core.MorpheusComputeServerService
 import com.morpheusdata.core.MorpheusContext
+import com.morpheusdata.core.util.SyncTask
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeCapacityInfo
 import com.morpheusdata.model.ComputeServer
@@ -59,24 +60,18 @@ class HostSyncSpec extends Specification {
 		createdServer.maxCores == 32L
 	}
 
-	def "updateHostStats sets maxSockets when the socket count was missing"() {
+	def "updateMatchedHosts updates maxSockets when metadata is unchanged"() {
 		given:
-		ComputeServer server = serverWithCapacity(maxSockets: null)
+		HostSync sync = Spy(hostSync) {
+			getHypervisorOs(_) >> new OsType(code: 'windows')
+		}
+		ComputeServer server = serverWithCapacity(maxSockets: null, serverOs: new OsType(code: 'windows'))
+		def updateMatchedHosts = HostSync.declaredMethods.find { it.name == 'updateMatchedHosts' }
+		updateMatchedHosts.accessible = true
+		def updateItem = new SyncTask.UpdateItem(existingItem: server, masterItem: hostStats(cpuCount: '2'))
 
 		when:
-		hostSync.updateHostStats(server, hostStats(cpuCount: '2'))
-
-		then:
-		server.maxSockets == 2L
-		1 * computeServerService.save(server) >> Single.just(server)
-	}
-
-	def "updateHostStats updates maxSockets when the socket count changes"() {
-		given:
-		ComputeServer server = serverWithCapacity(maxSockets: 1L)
-
-		when:
-		hostSync.updateHostStats(server, hostStats(cpuCount: '2'))
+		updateMatchedHosts.invoke(sync, [updateItem], [])
 
 		then:
 		server.maxSockets == 2L

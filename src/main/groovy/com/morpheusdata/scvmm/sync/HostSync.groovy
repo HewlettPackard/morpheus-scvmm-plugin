@@ -108,6 +108,11 @@ class HostSync {
                     existingItem.serverOs = fetchedOs
                     existingItem.osType = fetchedOs.platform?.toString() ?: 'windows'
                 }
+                def maxSockets = masterItem.cpuCount?.toLong() ?: 1
+                def maxSocketsChanged = maxSockets != existingItem.maxSockets
+                if (maxSocketsChanged) {
+                    existingItem.maxSockets = maxSockets
+                }
                 if (clusterChanged || osChanged) {
                     def savedServer = context.async.computeServer.save(existingItem).blockingGet()
                     log.debug("savedServer?.id: ${savedServer?.id}")
@@ -115,8 +120,8 @@ class HostSync {
                         updateHostStats(savedServer, masterItem)
                     }
                     log.debug("updated host")
-                } else {
-                    updateHostStats(existingItem, masterItem)
+                } else if (maxSocketsChanged) {
+                    context.async.computeServer.save(existingItem).blockingGet()
                 }
             }
         } catch (e) {
@@ -225,10 +230,6 @@ class HostSync {
             def capacityInfo = server.capacityInfo ?: new ComputeCapacityInfo(maxMemory: maxMemory, maxStorage: maxStorage)
             if (maxCpu != server.maxCpu) {
                 server.maxCpu = maxCpu
-                updates = true
-            }
-            if (maxCpu != server.maxSockets) {
-                server.maxSockets = maxCpu
                 updates = true
             }
             if (maxCores != server.maxCores) {
