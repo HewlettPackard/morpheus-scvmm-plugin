@@ -313,7 +313,7 @@ jar {
             'Morpheus-Logo-Dark': 'assets/scvmm-dark.svg',
             'Morpheus-Labels': 'Plugin, Cloud',
             'Morpheus-Repo': 'https://github.com/HewlettPackard/morpheus-scvmm-plugin',
-            'Morpheus-Min-Appliance-Version': "8.0.3"
+            'Morpheus-Min-Appliance-Version': minVersion
         )
     }
 }

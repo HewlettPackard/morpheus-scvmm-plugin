@@ -115,6 +115,8 @@ class HostSync {
                         updateHostStats(savedServer, masterItem)
                     }
                     log.debug("updated host")
+                } else {
+                    updateHostStats(existingItem, masterItem)
                 }
             }
         } catch (e) {
