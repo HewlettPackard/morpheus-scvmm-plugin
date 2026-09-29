@@ -9,6 +9,8 @@ import com.morpheusdata.model.BackupRestore;
 import com.morpheusdata.model.BackupResult;
 import com.morpheusdata.model.Backup;
 import com.morpheusdata.model.Instance
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
+import com.morpheusdata.scvmm.error.ScvmmException
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
@@ -133,6 +135,10 @@ class ScvmmBackupRestoreProvider implements BackupRestoreProvider {
 				//execute restore
 				def restoreResults = apiService.restoreServer(restoreOpts, vmId, snapshotId)
 				log.debug("restoreResults: ${restoreResults}")
+				if (!restoreResults.success) {
+					throw new ScvmmException("Restore of checkpoint ${snapshotId} on VM ${vmId} failed: ${restoreResults.error ?: restoreResults.msg}".toString(),
+							restoreResults.msg ?: "SCVMM failed to restore checkpoint ${snapshotId}".toString(), null)
+				}
 				sleep(30000)
 				// argh.. why!?  need to restart the server in order for the agent to call back home for some reason
 				provisionProvider.stopWorkload(workload)
@@ -144,9 +150,12 @@ class ScvmmBackupRestoreProvider implements BackupRestoreProvider {
 				log.info("restore results: {}", restoreResults)
 			}
 		} catch (e) {
-			log.error("restoreBackup: ${e}", e)
+			log.error("restoreBackup error for backup result ${backupResult?.id}: ${e.message}", e)
 			rtn.success = false
-			rtn.msg = e.getMessage()
+			rtn.msg = ScvmmErrorTranslator.userMessage(e)
+			rtn.data.backupRestore.status = BackupResult.Status.FAILED
+			rtn.data.backupRestore.errorMessage = rtn.msg
+			rtn.data.updates = true
 		}
 		return rtn
 	}
