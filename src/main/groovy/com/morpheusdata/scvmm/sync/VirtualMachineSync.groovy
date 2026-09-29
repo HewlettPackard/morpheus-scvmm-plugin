@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
@@ -95,9 +97,13 @@ class VirtualMachineSync {
                     removeMissingVirtualMachines(removeItems)
                 }.observe().blockingSubscribe()
             }
+        } catch (ScvmmConnectionException ex) {
+            throw ex
         } catch (ex) {
-            log.error("cacheVirtualMachines error: ${ex}", ex)
+            log.error("VirtualMachineSync error: ${ex.message}", ex)
+            return [success: false, msg: ScvmmErrorTranslator.userMessage(ex)]
         }
+        return [success: true]
     }
 
     def addMissingVirtualMachines(List addList, Collection<ServicePlan> availablePlans, ServicePlan fallbackPlan, Collection<ResourcePermission> availablePlanPermissions, List hosts, Boolean consoleEnabled, ComputeServerType defaultServerType, Map systemNetworks) {
