@@ -8,6 +8,16 @@ import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ComputeUtility
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
+import com.morpheusdata.model.TaskResult
+import com.morpheusdata.scvmm.error.ScvmmCommandException
+import com.morpheusdata.scvmm.error.ScvmmCommandSanitizer
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
+import com.morpheusdata.scvmm.error.ScvmmException
+import com.morpheusdata.scvmm.error.ScvmmJobFailedException
+import com.morpheusdata.scvmm.error.ScvmmKnownErrors
+import com.morpheusdata.scvmm.error.ScvmmResponseParseException
+import com.morpheusdata.scvmm.error.ScvmmTimeoutException
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.json.JsonOutput
@@ -20,11 +30,96 @@ class ScvmmApiService {
         this.morpheusContext = morpheusContext
     }
     static defaultRoot = 'C:\\morpheus'
+    static final int DEFAULT_WINRM_PORT = 5985
 
+    /**
+     * Runs a raw command on the SCVMM host over WinRM and returns the {@link TaskResult} as-is.
+     *
+     * Throws {@link ScvmmConnectionException} when the WinRM session itself cannot be established (transport error,
+     * listener unreachable, authentication rejected). A command that ran but failed is returned with
+     * {@code success == false} so callers that tolerate failure (mkdir, cleanup) can inspect it; use
+     * {@link #wrapExecuteCommand} for commands whose failure should abort the operation.
+     */
     def executeCommand(command, opts) {
-        def winrmPort = opts.sshPort && opts.sshPort != 22 ? opts.sshPort : 5985
-        def output = morpheusContext.executeWindowsCommand(opts.sshHost, winrmPort?.toInteger(), opts.sshUsername, opts.sshPassword, command, null, false).blockingGet()
+        def winrmPort = opts.sshPort && opts.sshPort != 22 ? opts.sshPort : DEFAULT_WINRM_PORT
+        Integer port = winrmPort?.toInteger()
+        String host = opts.sshHost
+        TaskResult output
+        try {
+            output = morpheusContext.executeWindowsCommand(host, port, opts.sshUsername, opts.sshPassword, command, null, false).blockingGet()
+        } catch (ScvmmException e) {
+            throw e
+        } catch (Throwable t) {
+            throw new ScvmmConnectionException("WinRM call to ${host}:${port} failed: ${t.message ?: t.class.simpleName}".toString(), host, port, t)
+        }
+        if (output == null) {
+            throw new ScvmmConnectionException("WinRM call to ${host}:${port} returned no result".toString(), host, port)
+        }
+        // A failed command whose error text is a WinRM transport/auth signature is a connection problem, not a command problem
+        if (output.success != true && !output.data) {
+            def known = ScvmmKnownErrors.match(combinedErrorText(output))
+            if (known?.category == ScvmmKnownErrors.Category.CONNECTION) {
+                throw new ScvmmConnectionException("WinRM call to ${host}:${port} failed: ${ScvmmCommandSanitizer.firstLine(combinedErrorText(output))}".toString(),
+                        known.userMessage, host, port)
+            }
+        }
         return output
+    }
+
+    /**
+     * Executes a command (typically produced by {@link #generateCommandString}) and parses its JSON output into
+     * {@code out.data}.
+     *
+     * @param command      PowerShell to run
+     * @param opts         connection opts (sshHost, sshUsername, sshPassword, sshPort)
+     * @param failOnError  when {@code true} (default) a command that reports {@code success != true} raises a
+     *                     {@link ScvmmCommandException}; pass {@code false} for best-effort / cleanup commands whose
+     *                     failure the caller inspects and tolerates. The returned result then has
+     *                     {@code success == false} and {@code error} populated.
+     * @throws ScvmmConnectionException     WinRM session could not be established
+     * @throws ScvmmCommandException        command failed and {@code failOnError} is true
+     * @throws ScvmmResponseParseException  command output was not valid JSON
+     */
+    def wrapExecuteCommand(String command, Map opts = [:], boolean failOnError = true) {
+        def out = executeCommand(command, opts)
+
+        if (out.success != true) {
+            String errorText = combinedErrorText(out)
+            if (failOnError) {
+                throw ScvmmCommandException.fromOutput(command, errorText, out.exitCode)
+            }
+            if (!out.error) {
+                out.error = errorText ?: 'command failed'
+            }
+            log.debug("SCVMM command failed (tolerated) exitCode=${out.exitCode}: ${ScvmmCommandSanitizer.firstLine(errorText)} [command: ${ScvmmCommandSanitizer.summarize(command)}]")
+        }
+
+        if (out.data) {
+            String payload = out.data.toString()
+            if (!payload.trim().startsWith('[')) {
+                payload = "[${payload}]"
+            }
+            try {
+                out.data = new groovy.json.JsonSlurper().parseText(payload)
+                if (log.isDebugEnabled()) {
+                    log.debug "Received: ${ScvmmCommandSanitizer.truncate(JsonOutput.toJson(out.data), 4000)}"
+                }
+            } catch (Exception e) {
+                if (out.success != true && !failOnError) {
+                    // tolerated failure whose stdout is not JSON (e.g. PowerShell error text); keep the raw text
+                    log.debug("Ignoring unparseable output of tolerated failed command: ${ScvmmCommandSanitizer.payloadSample(payload)}")
+                    out.data = null
+                } else {
+                    throw ScvmmResponseParseException.fromPayload(command, payload, e)
+                }
+            }
+        }
+        out
+    }
+
+    private static String combinedErrorText(TaskResult out) {
+        def parts = [out.error, out.msg, (out.success != true && out.output) ? out.output : null].findAll { it?.toString()?.trim() }
+        parts ? parts.collect { it.toString().trim() }.unique().join('\n') : null
     }
 
     def prepareNode(opts) {
@@ -45,7 +140,7 @@ class ScvmmApiService {
     }
 
     def insertContainerImage(opts) {
-        log.debug "insertContainerImage: ${opts}"
+        log.debug "insertContainerImage: ${ScvmmCommandSanitizer.redactOpts(opts)}"
         def rtn = [success: false, imageExists: false]
         def image = opts.image
         def imageName = image.name
@@ -56,10 +151,6 @@ class ScvmmApiService {
         def tgtFolder = "${rootSharePath}\\images\\$imageFolderName"
         def tgtFullPath = "${tgtFolder}\\$imageName.$imageType"
         def out = wrapExecuteCommand(generateCommandString("Get-SCVirtualHardDisk -VMMServer localhost | where {\$_.SharePath -like \"${tgtFolder}\\*\"} | Select ID"), opts)
-
-        if (!out.success) {
-            throw new Exception("Error in getting Get-SCVirtualHardDisk")
-        }
         def vhdBlocks = out.data ?: []
         if (vhdBlocks?.size() == 0) {
             // Upload it (if needed)
@@ -85,30 +176,26 @@ class ScvmmApiService {
                 def commands = []
                 commands << "\$ignore = Import-SCLibraryPhysicalResource -SourcePath \"$sourcePath\" -SharePath \"$tgtFolder\" -OverwriteExistingFiles -VMMServer localhost"
                 commands << "Get-SCVirtualHardDisk | where {\$_.SharePath -like \"${tgtFolder}\\*\"} | Select ID"
-                def importRes = wrapExecuteCommand(generateCommandString(commands.join(";")), opts)
+                // tolerated: a failed import falls back to Copy-Item below
+                def importRes = wrapExecuteCommand(generateCommandString(commands.join(";")), opts, false)
                 rtn.imageId = importRes.data?.getAt(0)?.ID
 
                 if (importRes.error != null) {
-                    log.info("Import-SCLibraryPhysicalResource failed for error: ${importRes?.error}. Trying with Copy-Item")
+                    log.info("Import-SCLibraryPhysicalResource failed for error: ${ScvmmCommandSanitizer.firstLine(importRes.error)}. Trying with Copy-Item")
                     def copyCommands = []
                     copyCommands << "\$ignore = Copy-Item \"$sourcePath\" \"$tgtFolder\""
                     copyCommands << "\$ignore = Get-SCLibraryShare -VMMServer localhost | Read-SCLibraryShare"
                     copyCommands << "Get-SCVirtualHardDisk | where {\$_.SharePath -like \"${tgtFolder}\\*\"} | Select ID"
-                    def copyResult = wrapExecuteCommand(generateCommandString(copyCommands.join(";")), opts)
+                    def copyResult = wrapExecuteCommand(generateCommandString(copyCommands.join(";")), opts, false)
                     if (copyResult.error != null) {
-                        log.error("Error in Copy-Item: ${copyResult.error}")
-                        out.success = false
+                        throw ScvmmCommandException.fromOutput(copyCommands.join(';'), "Error importing physical resource into the library share (Import-SCLibraryPhysicalResource and Copy-Item both failed): ${copyResult.error}", copyResult.exitCode)
                     } else {
                         rtn.imageId = copyResult.data?.getAt(0)?.ID
                     }
                 }
 
-                if (!out.success) {
-                    throw new Exception("Error in importing physical resource")
-                } else {
-                    // Delete it from the temp directory
-                    deleteImage(opts, imageName)
-                }
+                // Delete it from the temp directory
+                deleteImage(opts, imageName)
             }
         } else {
             rtn.success = true
@@ -119,7 +206,7 @@ class ScvmmApiService {
     }
 
     def createServer(opts) {
-        log.debug("createServer: ${opts}")
+        log.debug("createServer: ${ScvmmCommandSanitizer.redactOpts(opts)}")
 
         def rtn = [success: false]
         try {
@@ -153,32 +240,18 @@ class ScvmmApiService {
             }
 
             launchCommand = createCommands.launchCommand
-            log.info("launchCommand: ${launchCommand}")
-            // throw new Exception('blah')
+            log.debug("launchCommand: ${launchCommand}")
+            // throws ScvmmCommandException on failure; known VMM messages (e.g. generation mismatch) are translated in the catch below
             createData = wrapExecuteCommand(generateCommandString(launchCommand), opts)
             log.debug "run server: ${createData}"
 
-            /*if (removeTemplateCommands) {
-                def command = removeTemplateCommands.join(';')
-                command += "@()"
-                wrapExecuteCommand(generateCommandString(command), opts)
-            }*/
-
-            if (createData.success != true) {
-                if (createData.error?.contains('which includes generation 2')) {
-                    rtn.errorMsg = 'The virtual hard disk selected is not compatible with the template which include generation 2 virtual machine functionality.'
-                } else if (createData.error?.contains('which includes generation 1')) {
-                    rtn.errorMsg = 'The virtual hard disk selected is not compatible with the template which include generation 1 virtual machine functionality.'
-                }
-                throw new Exception("Error in launching VM: ${rtn.errorMsg ?: createData.error}")
-            }
-
             server = morpheusContext.services.computeServer.get(opts.serverId)//ComputeServer.get(opts.serverId)
-            log.info "Create results: ${createData}"
+            log.info "Create results for ${opts.name}: ${createData.data}"
 
             def newServerExternalId = createData.data && createData.data.size() == 1 && createData.data[0].ObjectType?.toString() == '1' ? createData.data[0].ID : null
             if (!newServerExternalId) {
-                throw new Exception("Failed to create VM with command: ${launchCommand}: ${createData.error}")
+                throw new ScvmmException("SCVMM did not return a virtual machine object after New-SCVirtualMachine (returned ${createData.data?.size() ?: 0} object(s))${createData.error ? ': ' + ScvmmCommandSanitizer.firstLine(createData.error) : ''}".toString(),
+                        "SCVMM did not create the virtual machine${createData.error ? ': ' + ScvmmCommandSanitizer.firstLine(createData.error) : '. Check the Jobs view in the VMM console for details.'}".toString(), null)
             }
             opts.externalId = newServerExternalId
             // Make sure we save the externalId ASAP
@@ -189,12 +262,12 @@ class ScvmmApiService {
             def serverCreated = checkServerCreated(opts, opts.externalId)
             log.debug "Servercreated: ${serverCreated}"
 
-            // Server Created - Remove Temporary templates and profiles
+            // Server Created - Remove Temporary templates and profiles (best effort; failure must not abort provisioning)
             if(removeTemplateCommands) {
                 log.info("createServer - removing Temporary Templates and Hardware Profiles")
                 def command = removeTemplateCommands.join(';')
                 command += "@()"
-                wrapExecuteCommand(generateCommandString(command), opts)
+                wrapExecuteCommand(generateCommandString(command), opts, false)
             }
 
             if (serverCreated.success == true) {
@@ -287,7 +360,12 @@ class ScvmmApiService {
                     rtn.success = true
                 } else {
                     rtn.server = [name: opts.name, id: opts.externalId, VMId: serverDetail.server?.VMId, disks: disks]
+                    rtn.errorMsg = serverDetail.msg ?: "Unable to read details of the new virtual machine ${opts.externalId} from SCVMM"
                 }
+            } else {
+                // VM object exists but never reached a usable state (timeout or CreationFailed)
+                rtn.server = [name: opts.name, id: opts.externalId, externalId: opts.externalId]
+                rtn.errorMsg = serverCreated.msg ?: "Virtual machine ${opts.externalId} did not finish creating in SCVMM"
             }
 
             if (cloudInitIsoPath) {
@@ -298,17 +376,19 @@ class ScvmmApiService {
                 deleteUnattend(opts, opts.unattendPath)
             }
 
-            // Perform the remove again... in case they were locked above
+            // Perform the remove again... in case they were locked above (best effort)
             if (removeTemplateCommands) {
                 def command = removeTemplateCommands.join(';')
                 command += "@()"
-                wrapExecuteCommand(generateCommandString(command), opts)
+                wrapExecuteCommand(generateCommandString(command), opts, false)
             }
         } catch (e) {
-            log.error("createServer error: ${e}", e)
+            log.error("createServer error for ${opts.name}: ${e.message}", e)
             if (!rtn.errorMsg) {
-                rtn.errorMsg = e.message
+                rtn.errorMsg = ScvmmErrorTranslator.userMessage(e)
             }
+            rtn.error = e.message
+            rtn.errorDetails = ScvmmErrorTranslator.details(e)
         }
         return rtn
     }
@@ -359,7 +439,9 @@ if(\$vm) {
                 }
             }
         } catch (e) {
-            log.error("getServerDetails error: ${e}", e)
+            log.error("getServerDetails error for VM ${externalId}: ${e.message}", e)
+            rtn.msg = ScvmmErrorTranslator.userMessage(e)
+            rtn.exception = e
         }
         return rtn
     }
@@ -371,13 +453,14 @@ if(\$vm) {
 \$ignore = Read-SCVirtualMachine -VM \$vm """), opts)
             rtn.success = out.success
         } catch (e) {
-            log.error("refreshVM error: ${e}", e)
+            log.error("refreshVM error for VM ${externalId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }
 
     def discardSavedState(opts, externalId) {
-        log.debug "discardSavedState: ${opts}, ${externalId}"
+        log.debug "discardSavedState: ${externalId}"
         def rtn = [success: false, server: null, networkAdapters: []]
         try {
             executeCommand("\$vm = Get-SCVirtualMachine -VMMServer localhost -ID \"${externalId}\"; Use-SCDiscardSavedStateVM -VM \$vm;", opts)
@@ -418,6 +501,10 @@ if(\$vm) {
         def rtn = [success: false]
         def command = 'hostname'
         def out = executeCommand(command, opts)
+        if (out.success != true) {
+            // the very first command failed: the host is reachable but PowerShell is not usable for this account
+            throw ScvmmCommandException.fromOutput(command, combinedErrorText(out) ?: 'hostname returned no output', out.exitCode)
+        }
         log.debug("out: ${out.data}")
         rtn.hostname = cleanData(out.data)
         command = '(Get-ComputerInfo).OsName'
@@ -1096,17 +1183,19 @@ foreach (\$network in \$networks) {
             } else {
                 log.info "Error in fetching network info: ${out}"
                 rtn.success = false
+                rtn.msg = 'SCVMM returned no logical networks (Get-SCLogicalNetwork)'
             }
+        } catch (ScvmmConnectionException ex) {
+            throw ex
         } catch (ex) {
-            rtn.success = false
-            rtn.msg = "Error fetching all networks list from SCVMM Host"
             log.error("An error occurred attempting to list all networks on SCVMM Host: ${ex.message}", ex)
+            ScvmmErrorTranslator.toResultMap(ex, rtn, 'Error fetching all networks list from SCVMM Host')
         }
         return rtn
     }
 
     def removeOrphanedResourceLibraryItems(opts) {
-        log.debug "removeOrphanedResourceLibraryItems: ${opts}"
+        log.debug "removeOrphanedResourceLibraryItems: ${opts.zoneId}"
 
         def command = """
 \$ISOs = Get-SCISO -VMMServer localhost | where { (\$_.State -match "Missing") -and (\$_.Directory.ToString() -like "*morpheus_server_*") }
@@ -1114,9 +1203,10 @@ foreach (\$network in \$networks) {
 
 \$Scripts = Get-SCScript -VMMServer localhost | where { (\$_.State -match "Missing") -and (\$_.Directory.ToString() -like "*morpheus_server_*") }
 \$ignore = \$Scripts | Remove-SCScript -RunAsynchronously"""
-        def out = wrapExecuteCommand(generateCommandString(command), opts)
+        // best effort cleanup
+        def out = wrapExecuteCommand(generateCommandString(command), opts, false)
         if (!out.success) {
-            log.warn "Error in removeOrphanedResourceLibraryItems: ${out}"
+            log.warn "Error in removeOrphanedResourceLibraryItems: ${ScvmmCommandSanitizer.firstLine(out.error)}"
         }
     }
 
@@ -1188,6 +1278,7 @@ foreach (\$network in \$networks) {
                     log.info "Error in fetching network info: ${out}"
                     hasMore = false
                     rtn.success = false
+                    rtn.msg = 'SCVMM returned no logical networks for the cloud (Get-SCLogicalNetwork)'
                 }
             }
             def currentOffset = 0
@@ -1195,10 +1286,11 @@ foreach (\$network in \$networks) {
                 fetch(currentOffset)
                 currentOffset += pageSize
             }
+        } catch (ScvmmConnectionException ex) {
+            throw ex
         } catch (ex) {
-            rtn.success = false
-            rtn.msg = "Error syncing networks list from SCVMM Host"
             log.error("An error occurred attempting to list networks on SCVMM Host: ${ex.message}", ex)
+            ScvmmErrorTranslator.toResultMap(ex, rtn, 'Error syncing networks list from SCVMM Host')
         }
         return rtn
     }
@@ -1267,6 +1359,7 @@ foreach (\$logicalNetwork in \$logicalNetworks) {
                     log.info "Error in fetching network info: ${out}"
                     hasMore = false
                     rtn.success = false
+                    rtn.msg = 'SCVMM returned no logical networks for the cloud (Get-SCLogicalNetwork)'
                 }
             }
             def currentOffset = 0
@@ -1274,10 +1367,11 @@ foreach (\$logicalNetwork in \$logicalNetworks) {
                 fetch(currentOffset)
                 currentOffset += pageSize
             }
+        } catch (ScvmmConnectionException ex) {
+            throw ex
         } catch (ex) {
-            rtn.success = false
-            rtn.msg = "Error syncing isolation networks list from SCVMM Host"
             log.error("An error occurred attempting to list isolation networks on SCVMM Host: ${ex.message}", ex)
+            ScvmmErrorTranslator.toResultMap(ex, rtn, 'Error syncing isolation networks list from SCVMM Host')
         }
         return rtn
     }
@@ -1339,10 +1433,11 @@ foreach (\$network in \$networks) {
                     rtn.success = false
                 }
             }
+        } catch (ScvmmConnectionException ex) {
+            throw ex
         } catch (ex) {
-            rtn.success = false
-            rtn.msg = "Error syncing ip pools list from SCVMM Host"
             log.error("An error occurred attempting to list ip pools on SCVMM Host: ${ex.message}", ex)
+            ScvmmErrorTranslator.toResultMap(ex, rtn, 'Error syncing ip pools list from SCVMM Host')
         }
         return rtn
     }
@@ -1357,14 +1452,16 @@ foreach (\$network in \$networks) {
                 def ipAddressBlock = out.data
                 if (ipAddressBlock) {
                     rtn.ipAddress = ipAddressBlock.first()
+                } else {
+                    rtn.success = false
+                    rtn.msg = "SCVMM did not grant an IP address from pool ${poolId}; the pool may be exhausted"
                 }
             } else {
                 rtn.success = false
             }
         } catch (ex) {
-            rtn.success = false
-            rtn.msg = "Error reserving an IP address from SCVMM"
-            log.error("Error reserving an IP address from SCVMM: ${ex.message}", ex)
+            log.error("Error reserving an IP address from SCVMM pool ${poolId}: ${ex.message}", ex)
+            ScvmmErrorTranslator.toResultMap(ex, rtn, 'Error reserving an IP address from SCVMM')
         }
         return rtn
     }
@@ -1373,22 +1470,21 @@ foreach (\$network in \$networks) {
         def rtn = [success: true]
         try {
             def command = generateCommandString("\$ippool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"$poolId\"; \$ipaddress = Get-SCIPAddress -ID \"$ipId\"; \$ignore = Revoke-SCIPAddress \$ipaddress")
-            def out = wrapExecuteCommand(command, opts)
-            log.info("releaseIPAddress: ${out}")
+            // tolerated so we can recognise an address that was already released
+            def out = wrapExecuteCommand(command, opts, false)
+            log.debug("releaseIPAddress: ${out}")
             if (out.success && out.exitCode == '0') {
                 // Do nothing
+            } else if (ScvmmKnownErrors.match(out.error)?.code == 'vmm.ip-already-released') {
+                // It has already been deleted somehow
+                log.info("releaseIPAddress: IP ${ipId} was already released from pool ${poolId}")
+                rtn.success = true
             } else {
-                if (out.errorData?.contains("Unable to find the specified allocated IP address")) {
-                    // It has already been deleted somehow
-                    rtn.success = true
-                } else {
-                    rtn.success = false
-                }
+                throw ScvmmCommandException.fromOutput(command, out.error, out.exitCode)
             }
         } catch (ex) {
-            rtn.success = false
-            rtn.msg = "Error revoking an IP address from SCVMM"
-            log.error("Error revoking an IP address from SCVMM: ${ex.message}", ex)
+            log.error("Error revoking IP address ${ipId} from SCVMM pool ${poolId}: ${ex.message}", ex)
+            ScvmmErrorTranslator.toResultMap(ex, rtn, 'Error revoking an IP address from SCVMM')
         }
 
         return rtn
@@ -1490,21 +1586,35 @@ foreach (\$network in \$networks) {
                 .replace("<%sizegb%>","${(int)(diskSizeBytes.toLong()).div(ComputeUtility.ONE_GIGABYTE)}")
 
         log.debug "resizeDisk: ${resizeCmd}"
-        def resizeResults = wrapExecuteCommand(generateCommandString(resizeCmd), opts)
+        def resizeResults
+        try {
+            resizeResults = wrapExecuteCommand(generateCommandString(resizeCmd), opts)
+        } catch (e) {
+            log.error("resizeDisk - error resizing disk ${diskId} on VM ${opts.externalId}: ${e.message}", e)
+            def rtn = ScvmmErrorTranslator.toResultMap(e, [:], "Error resizing disk ${diskId}")
+            rtn.errOut = rtn.msg
+            return rtn
+        }
         //resizeResults.data is json payload array - want only the first item
         if (resizeResults.data) {
             def resizeStatus = resizeResults.data.first()
             if (resizeStatus?.success) {
                 //Wait on the jobId to complete
                 def waitResults = waitForJobToComplete(opts, resizeStatus.jobId)
+                if (!waitResults.success) {
+                    waitResults.errOut = waitResults.msg
+                }
                 return waitResults
             } else {
-                log.error("resizeDisk - Error resizing disk. Message : ${resizeStatus.errOut}")
+                log.error("resizeDisk - Error resizing disk ${diskId} on VM ${opts.externalId}. Message : ${resizeStatus.errOut}")
+                resizeStatus.error = resizeStatus.errOut
+                resizeStatus.msg = ScvmmKnownErrors.match(resizeStatus.errOut?.toString())?.userMessage ?: resizeStatus.errOut
                 return resizeStatus
             }
         } else {
             log.warn("resizeDisk - rpc disk not return a usable response - ${resizeResults}")
-            return [success:false,errOut: "resizeDisk - did not receive expected response from rpc"]
+            def msg = "resizeDisk - did not receive expected response from SCVMM host when resizing disk ${diskId}"
+            return [success: false, errOut: msg, error: msg, msg: msg]
         }
     }
 
@@ -1624,10 +1734,28 @@ foreach (\$network in \$networks) {
                 .replace("<%vhdformat%>",diskSpec.vhdFormat ?: "")
                 .replace("<%vhdpath%>",diskSpec.vhdPath ?: "")
         //Execute
-        def out = wrapExecuteCommand(generateCommandString(addDiskCmd), opts)
-        if(out.success && returnDiskDrives) {
-            def listResults = listVirtualDiskDrives(opts, opts.externalId, diskSpec.vhdName)
-            return [success: listResults.success, disk: listResults.disks.first()]
+        try {
+            def out = wrapExecuteCommand(generateCommandString(addDiskCmd), opts)
+            def report = out.data instanceof List ? out.data.find { it instanceof Map } : null
+            if (report != null && report.success != true) {
+                // the script itself reported the failure (no free SCSI slot, VM missing, New-SCVirtualDiskDrive threw)
+                String reason = report.errOut?.toString()
+                log.error("createAndAttachDisk - SCVMM failed to add disk ${diskSpec.vhdName} to VM ${opts.externalId}: ${reason} (jobStatus: ${report.jobStatus})")
+                return [success: false, error: reason, msg: ScvmmKnownErrors.match(reason)?.userMessage ?: "SCVMM failed to add the disk: ${reason}".toString(), jobStatus: report.jobStatus]
+            }
+            if (returnDiskDrives) {
+                def listResults = listVirtualDiskDrives(opts, opts.externalId, diskSpec.vhdName)
+                def disk = listResults.disks ? listResults.disks.first() : null
+                if (!disk) {
+                    String msg = "Disk ${diskSpec.vhdName} was added but could not be found on VM ${opts.externalId}"
+                    return [success: false, error: msg, msg: msg]
+                }
+                return [success: listResults.success, disk: disk]
+            }
+            return [success: true, report: report]
+        } catch (e) {
+            log.error("createAndAttachDisk - error adding disk ${diskSpec.vhdName} to VM ${opts.externalId}: ${e.message}", e)
+            return ScvmmErrorTranslator.toResultMap(e, [:], 'Error creating the volume')
         }
     }
 
@@ -1652,7 +1780,13 @@ foreach (\$network in \$networks) {
         commands << "\$ignore = Set-SCVirtualMachine -VM \$VM -JobGroup ${diskJobGuid}"
         def cmd = commands.join(';')
         log.debug "removeDisk: ${cmd}"
-        return wrapExecuteCommand(generateCommandString(cmd), opts)
+        // callers inspect .success / .error; do not abort on failure
+        def out = wrapExecuteCommand(generateCommandString(cmd), opts, false)
+        if (out.success != true) {
+            log.error("removeDisk - failed to remove disk ${diskId} from VM ${opts.externalId}: ${ScvmmCommandSanitizer.firstLine(out.error)}")
+            out.msg = ScvmmKnownErrors.match(out.error)?.userMessage ?: "SCVMM failed to remove the disk: ${ScvmmCommandSanitizer.firstLine(out.error)}".toString()
+        }
+        return out
     }
 
     def checkServerCreated(opts, vmId) {
@@ -1702,7 +1836,7 @@ foreach (\$network in \$networks) {
     def waitForJobToComplete(opts, jobId) {
         def rtn = [success: false]
         try {
-            log.debug "waitForJobToComplete: ${opts} ${jobId}"
+            log.debug "waitForJobToComplete: ${jobId}"
             def pending = true
             def attempts = 0
             while (pending) {
@@ -1759,7 +1893,7 @@ Status=\$job.Status.toString()
     def checkServerReady(opts, vmId) {
         def rtn = [success: false]
         try {
-            log.debug "checkServerReady: ${opts} ${vmId}"
+            log.debug "checkServerReady: ${vmId}"
             def pending = true
             def attempts = 0
             def notFoundAttempts = 0
@@ -1834,9 +1968,13 @@ Status=\$job.Status.toString()
                     rtn.msg = 'VM is already powered on'
                     rtn.success = true
                 }
+            } else {
+                rtn.msg = serverDetail.msg ?: (serverDetail.error == 'VM_NOT_FOUND' ? ScvmmKnownErrors.match('VM_NOT_FOUND').userMessage : "Unable to read the state of VM ${vmId} from SCVMM")
+                rtn.error = serverDetail.error
             }
         } catch (e) {
-            log.error("startServer error: ${e}", e)
+            log.error("startServer error for VM ${vmId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }
@@ -1851,7 +1989,8 @@ if(\$VM.Status -ne 'PowerOff') {
             def out = wrapExecuteCommand(generateCommandString(command), opts)
             rtn.success = out.success
         } catch (e) {
-            log.error("stopServer error: ${e}", e)
+            log.error("stopServer error for VM ${vmId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }
@@ -1865,7 +2004,7 @@ if(\$VM.Status -ne 'PowerOff') {
                 def serverFolder = "${sharePath}\\${opts.serverFolder}"
                 def diskFolder = "${opts.diskRoot}\\${opts.serverFolder}"
                 if (!opts.serverFolder) {
-                    throw new Exception("serverFolder MUST be specified")
+                    throw new ScvmmException("serverFolder MUST be specified", "Cannot delete VM ${vmId}: the server folder is unknown".toString(), null)
                 }
                 def command = """\$VM = Get-SCVirtualMachine -VMMServer localhost -ID \"${vmId}\"
 if(\$VM) { 
@@ -1874,17 +2013,25 @@ if(\$VM) {
 } 
 \$ignore = Remove-Item -Path  \"${serverFolder}\" -Recurse -Force
 \$ignore = Remove-Item -LiteralPath \"${diskFolder}\" -Recurse -Force"""
-                def out = wrapExecuteCommand(generateCommandString(command), opts)
+                // tolerated: the folder removals routinely fail when the paths no longer exist
+                def out = wrapExecuteCommand(generateCommandString(command), opts, false)
+                if (out.success != true) {
+                    log.warn("deleteServer: SCVMM reported an error while deleting VM ${vmId} (continuing): ${ScvmmCommandSanitizer.firstLine(out.error)}")
+                    rtn.warning = ScvmmCommandSanitizer.firstLine(out.error)
+                }
                 rtn.success = true
+            } else {
+                rtn.msg = 'No SCVMM library share path is configured for this cloud'
             }
         } catch (e) {
-            log.error("deleteServer error: ${e}", e)
+            log.error("deleteServer error for VM ${vmId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }
 
     def importPhysicalResource(opts, sourcePath, imageFolderName, resourceName) {
-        log.debug "importPhysicalResource: ${opts}, ${sourcePath}, ${imageFolderName}, ${resourceName}"
+        log.debug "importPhysicalResource: ${sourcePath}, ${imageFolderName}, ${resourceName}"
         def rtn = [success: false]
         def rootSharePath = opts.rootSharePath ?: getRootSharePath(opts)
 
@@ -1892,19 +2039,22 @@ if(\$VM) {
         def command = "New-Item -ItemType directory -Path \"${sharePath}\";Copy-Item -Path \"$sourcePath\" -Destination \"${sharePath}\\${resourceName}\""
 
         def attempts = 0
+        def lastOut
         def importOpts = [baseBoxProvisionService: opts.scvmmProvisionService, controllerServer: opts.controllerNode] + opts
         while (!rtn.success && attempts < 5) {
-            def out = executeCommand(command, importOpts)
-            rtn.success = out.success
+            lastOut = executeCommand(command, importOpts)
+            rtn.success = lastOut.success
             if (!rtn.success) {
                 attempts++
+                log.warn("importPhysicalResource: copy of ${resourceName} to ${sharePath} failed (attempt ${attempts}/5): ${ScvmmCommandSanitizer.firstLine(combinedErrorText(lastOut))}")
                 sleep(5000)
             }
         }
 
         if (!rtn.success) {
-            throw new Exception("Error in importing physical resource: ${rtn}")
+            throw ScvmmCommandException.fromOutput(command, "Error importing ${resourceName} into library share ${sharePath} after ${attempts} attempts: ${combinedErrorText(lastOut) ?: 'no error output'}", lastOut?.exitCode)
         } else {
+            // best effort: refresh the library share so VMM sees the new file
             executeCommand("\$libraryshare = Get-SCLibraryShare -VMMServer localhost | where { \$_.Path -eq \"${rootSharePath}\" }; Read-SCLibraryShare -Path \"${sharePath}\" -LibraryShare \$libraryshare", importOpts)
         }
         rtn.success = true
@@ -1926,31 +2076,32 @@ foreach(\$share in \$shares) {
 }
 \$report"""
         def out = wrapExecuteCommand(generateCommandString(command), opts)
-        if (!out.success) {
-            throw new Exception("Error in getting library share")
-        }
 
         def shareBlocks = out.data
-        if (shareBlocks.size() == 0) {
-            throw new Exception("No library share found")
+        if (!shareBlocks || shareBlocks.size() == 0) {
+            throw new ScvmmException("No library share found on VMM server (Get-SCLibraryShare returned nothing)",
+                    ScvmmKnownErrors.match('No library share found').userMessage, null)
         }
 
         return shareBlocks.first().Path
     }
 
+    /** Best effort: callers only inspect {@code success}. */
     def deleteIso(opts, sharePath) {
         def commands = []
         commands << "\$iso = Get-SCISO -VMMServer localhost | where {\$_.SharePath -eq \"$sharePath\"}"
         commands << "\$ignore = Remove-SCISO -ISO \$iso -Force"
-        return wrapExecuteCommand(generateCommandString(commands.join(';')), opts)
+        return wrapExecuteCommand(generateCommandString(commands.join(';')), opts, false)
     }
 
+    /** Best effort: callers only inspect {@code success}. */
     def deleteUnattend(opts, unattendPath) {
         def commands = []
         commands << "Remove-Item -Path \"${unattendPath}\" -Force"
-        return wrapExecuteCommand(generateCommandString(commands.join(';')), opts)
+        return wrapExecuteCommand(generateCommandString(commands.join(';')), opts, false)
     }
 
+    /** Best effort: callers only inspect {@code success}. */
     def setCdrom(opts, cdPath = null) {
         log.debug("setCdrom: ${cdPath}")
         def commands = []
@@ -1963,19 +2114,21 @@ foreach(\$share in \$shares) {
         } else {
             commands << "\$ignore = Set-SCVirtualDVDDrive -VirtualDVDDrive \$dvd -Bus \$dvd.Bus -LUN \$dvd.Lun -NoMedia"
         }
-        return wrapExecuteCommand(generateCommandString(commands.join(';')), opts)
+        return wrapExecuteCommand(generateCommandString(commands.join(';')), opts, false)
     }
 
     def importScript(content, diskFolder, imageFolderName, opts) {
-        log.debug "importScript: ${diskFolder}, ${imageFolderName}, ${opts}"
+        log.debug "importScript: ${diskFolder}, ${imageFolderName}"
         def scriptPath
         InputStream inputStream = new ByteArrayInputStream(content.getBytes())
         def command = "\$ignore = mkdir \"${diskFolder}\""
-        def dirResults = wrapExecuteCommand(generateCommandString(command), opts)
+        // mkdir fails when the folder already exists; tolerated
+        def dirResults = wrapExecuteCommand(generateCommandString(command), opts, false)
         def fileResults = morpheusContext.services.fileCopy.copyToServer(opts.hypervisor, "${opts.fileName}", "${diskFolder}\\${opts.fileName}", inputStream, opts.cloudConfigBytes?.size(), null, true)
         log.debug ("importScript: fileResults.success: ${fileResults.success}")
         if (!fileResults.success) {
-            throw new Exception("Script Upload to SCVMM Host Failed. Perhaps an agent communication issue...${opts.hypervisor.name}")
+            throw new ScvmmException("Script upload of ${opts.fileName} to ${diskFolder} on ${opts.hypervisor?.name} failed: ${fileResults.msg ?: fileResults.error ?: 'no details'}".toString(),
+                    "Upload of ${opts.fileName} to the SCVMM host ${opts.hypervisor?.name} failed. Verify the Morpheus agent on the host is connected and the Disk Path is writable.".toString(), null)
         }
         def importResults = importPhysicalResource(opts, "${diskFolder}\\${opts.fileName}".toString(), imageFolderName, opts.fileName)
         scriptPath = importResults.sharePath
@@ -2016,28 +2169,34 @@ For (\$i=0; \$i -le 10; \$i++) {
 	'LUN'=\$lunNumber}
 \$report"""
 
-        def out = wrapExecuteCommand(generateCommandString(command), opts)
+        // best effort: a missing DVD drive only affects cloud-init ISO mounting, which reports its own failure
+        def out = wrapExecuteCommand(generateCommandString(command), opts, false)
         if (!out.success) {
-            log.warn "Error in creating a DVD: ${out}"
+            log.warn "Error in creating a DVD for VM ${opts.externalId}: ${ScvmmCommandSanitizer.firstLine(out.error)}"
         }
     }
 
     def importAndMountIso(cloudConfigBytes, diskFolder, imageFolderName, opts) {
-        log.debug "importAndMountIso: ${diskFolder}, ${imageFolderName}, ${opts}"
+        log.debug "importAndMountIso: ${diskFolder}, ${imageFolderName}"
         def cloudInitIsoPath
         def isoAction = [inline: true, action: 'rawfile', content: cloudConfigBytes.encodeAsBase64(), targetPath: "${diskFolder}\\config.iso".toString(), opts: [:]]
 
         InputStream inputStream = new ByteArrayInputStream(cloudConfigBytes)
         def command = "\$ignore = mkdir \"${diskFolder}\""
-        def dirResults = wrapExecuteCommand(generateCommandString(command), opts)
+        // mkdir fails when the folder already exists; tolerated
+        def dirResults = wrapExecuteCommand(generateCommandString(command), opts, false)
         def fileResults = morpheusContext.services.fileCopy.copyToServer(opts.hypervisor, "config.iso", "${diskFolder}\\config.iso", inputStream, cloudConfigBytes?.size())
         log.debug ("importAndMountIso: fileResults?.success: ${fileResults?.success}")
         if (!fileResults.success) {
-            throw new Exception("ISO Upload to SCVMM Host Failed. Perhaps an agent communication issue...${opts.hypervisor.name}")
+            throw new ScvmmException("ISO upload to ${diskFolder} on ${opts.hypervisor?.name} failed: ${fileResults.msg ?: fileResults.error ?: 'no details'}".toString(),
+                    "Upload of the cloud-init ISO to the SCVMM host ${opts.hypervisor?.name} failed. Verify the Morpheus agent on the host is connected and the Disk Path is writable.".toString(), null)
         }
         def importResults = importPhysicalResource(opts, isoAction.targetPath, imageFolderName, 'config.iso')
         cloudInitIsoPath = importResults.sharePath
-        setCdrom(opts, cloudInitIsoPath)
+        def cdromResults = setCdrom(opts, cloudInitIsoPath)
+        if (cdromResults.success != true) {
+            log.warn("importAndMountIso: failed to mount ${cloudInitIsoPath} on VM ${opts.externalId}: ${ScvmmCommandSanitizer.firstLine(cdromResults.error)}")
+        }
         return cloudInitIsoPath
     }
 
@@ -2046,7 +2205,7 @@ For (\$i=0; \$i -le 10; \$i++) {
     }
 
     def validateServerConfig(Map opts = [:]) {
-        log.debug("validateServerConfig: ${opts}")
+        log.debug("validateServerConfig: ${ScvmmCommandSanitizer.redactOpts(opts)}")
         def rtn = [success: false, errors: []]
         try {
             if (opts.containsKey('scvmmCapabilityProfile') && !opts.scvmmCapabilityProfile) {
@@ -2136,7 +2295,8 @@ For (\$i=0; \$i -le 10; \$i++) {
                 rtn.success = true
             }
         } catch (e) {
-            log.error "updateServer error: ${e}", e
+            log.error "updateServer error for VM ${vmId}: ${e.message}", e
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }
@@ -2300,9 +2460,14 @@ For (\$i=0; \$i -le 10; \$i++) {
         def imageFolderPath = "${zoneRoot}\\images\\${imageFolder}"
         def command = "Remove-Item -LiteralPath \"${imageFolderPath}\" -Recurse -Force"
         log.debug("deleteImage command: ${command}")
-        def out = wrapExecuteCommand(generateCommandString(command), opts)
+        // best effort temp cleanup
+        def out = wrapExecuteCommand(generateCommandString(command), opts, false)
         log.debug("deleteImage: ${out.data}")
         rtn.success = out.success
+        if (!rtn.success) {
+            rtn.error = out.error
+            log.warn("deleteImage: could not remove temporary image folder ${imageFolderPath}: ${ScvmmCommandSanitizer.firstLine(out.error)}")
+        }
         return rtn
     }
 
@@ -2319,7 +2484,8 @@ For (\$i=0; \$i -le 10; \$i++) {
         def cachePath = opts.cachePath
         def command = "\$ignore = mkdir \"${tgtFolder}\""
         log.debug("command: ${command}")
-        def dirResults = wrapExecuteCommand(generateCommandString(command), opts)
+        // mkdir fails when the folder already exists; tolerated
+        def dirResults = wrapExecuteCommand(generateCommandString(command), opts, false)
 
         if (metadataFile) {
             fileList << [inputStream: metadataFile.inputStream, contentLength: metadataFile.contentLength, targetPath: "${tgtFolder}\\metadata.json".toString(), copyRequestFileName: "metadata.json"]
@@ -2348,7 +2514,8 @@ For (\$i=0; \$i -le 10; \$i++) {
             rtn.snapshotId = snapshotId
             log.debug("snapshot server: ${out}")
         } catch (e) {
-            log.error("snapshotServer error: ${e}")
+            log.error("snapshotServer error for VM ${vmId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
 
         return rtn
@@ -2366,7 +2533,8 @@ For (\$i=0; \$i -le 10; \$i++) {
             rtn.snapshotId = snapshotId
             log.debug("delete snapshot: ${out}")
         } catch (e) {
-            log.error("deleteSnapshot error: ${e}")
+            log.error("deleteSnapshot error for VM ${vmId} snapshot ${snapshotId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
 
         return rtn
@@ -2383,7 +2551,8 @@ For (\$i=0; \$i -le 10; \$i++) {
             rtn.success = out.success && out.exitCode == '0'
             log.debug("restore server: ${out}")
         } catch (e) {
-            log.error("restoreServer error: ${e}")
+            log.error("restoreServer error for VM ${vmId} snapshot ${snapshotId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
 
         return rtn
@@ -2403,7 +2572,8 @@ For (\$i=0; \$i -le 10; \$i++) {
             rtn.success = out.success && out.exitCode == '0'
             log.debug("changeVolumeTypeForClonedBootDisk: ${out}")
         } catch (e) {
-            log.error("changeVolumeTypeForClonedBootDisk error: ${e}")
+            log.error("changeVolumeTypeForClonedBootDisk error for VM ${newVMId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
 
         return rtn
@@ -2411,7 +2581,7 @@ For (\$i=0; \$i -le 10; \$i++) {
 
     // TODO needs more error handling
     def buildCreateServerCommands(opts) {
-        log.debug "buildCreateServerCommands: ${opts}"
+        log.debug "buildCreateServerCommands: ${ScvmmCommandSanitizer.redactOpts(opts)}"
         def rtn = [launchCommand: null, hardwareProfileName: '', templateName: '']
         def commands = []
 
@@ -2812,25 +2982,6 @@ For (\$i=0; \$i -le 10; \$i++) {
 
     def getScvmmZoneAndHypervisorOpts(morpheusContext, cloud, hypervisor) {
         getScvmmCloudOpts(morpheusContext, cloud, hypervisor) + getScvmmControllerOpts(cloud, hypervisor)
-    }
-
-    def wrapExecuteCommand(String command, Map opts = [:]) {
-        def out = executeCommand(command, opts)
-
-        if (out.data) {
-            def payload = out.data
-            if (!out.data.startsWith('[')) {
-                payload = "[${out.data}]"
-            }
-            try {
-                log.debug "Received: ${JsonOutput.prettyPrint(payload)}"
-            } catch (e) {
-//				File file = new File("/Users/bob/Desktop/bad.json")
-//				file.write payload
-            }
-            out.data = new groovy.json.JsonSlurper().parseText(payload)
-        }
-        out
     }
 
     def loadControllerServer(opts) {
