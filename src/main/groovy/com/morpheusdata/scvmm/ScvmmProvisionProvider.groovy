@@ -26,6 +26,9 @@ import com.morpheusdata.response.PrepareInstanceResponse
 import com.morpheusdata.response.PrepareWorkloadResponse
 import com.morpheusdata.response.ProvisionResponse
 import com.morpheusdata.response.ServiceResponse
+import com.morpheusdata.scvmm.error.ScvmmCommandSanitizer
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
+import com.morpheusdata.scvmm.error.ScvmmTimeoutException
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import com.morpheusdata.scvmm.util.MorpheusUtil
@@ -92,7 +95,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 }
             }
         } catch (e) {
-            log.error("initialize hypervisor error:${e}", e)
+            log.error("initialize hypervisor error for ${server?.name} (cloud ${cloud?.name}): ${e.message}", e)
+            ServiceResponse translated = ScvmmErrorTranslator.toServiceResponse(e, 'Error initializing the SCVMM controller')
+            rtn.success = false
+            rtn.msg = translated.msg
+            rtn.errors = translated.errors
         }
         return rtn
     }
@@ -617,7 +624,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse<ProvisionResponse> runWorkload(Workload workload, WorkloadRequest workloadRequest, Map opts) {
-        log.info "runWorkload: ${workload} ${workloadRequest} ${opts}"
+        log.info "runWorkload: workload ${workload?.id} (${workload?.server?.name})"
+        log.debug "runWorkload opts: ${ScvmmCommandSanitizer.redactOpts(opts)}"
 		ProvisionResponse provisionResponse = new ProvisionResponse(
 				success: true,
 				installAgent: !opts?.noAgent,
@@ -637,6 +645,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             scvmmOpts = apiService.getScvmmZoneOpts(context, cloud)
             scvmmOpts.name = server.name
             def imageId
+            def imageResults = [:]
             def virtualImage = server.sourceImage
 
             scvmmOpts.controllerServerId = controllerNode.id
@@ -679,7 +688,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 scvmmOpts.volumePath = volumePath
                 scvmmOpts.volumePaths << volumePath
                 scvmmOpts.highlyAvailable = highlyAvailable
-                log.debug("scvmmOpts: ${scvmmOpts}")
+                log.debug("scvmmOpts: ${ScvmmCommandSanitizer.redactOpts(scvmmOpts)}")
 
                 if (rootVolume) {
                     rootVolume.datastore = datastore
@@ -739,8 +748,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     ]
                     scvmmOpts.image = containerImage
                     scvmmOpts.userId = workload.instance.createdBy?.id
-                    log.debug "scvmmOpts: ${scvmmOpts}"
-                    def imageResults = apiService.insertContainerImage(scvmmOpts)
+                    log.debug "scvmmOpts: ${ScvmmCommandSanitizer.redactOpts(scvmmOpts)}"
+                    imageResults = apiService.insertContainerImage(scvmmOpts)
                     log.debug("imageResults: ${imageResults}")
                     if (imageResults.success == true) {
                         imageId = imageResults.imageId
@@ -862,7 +871,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     }
                     scvmmOpts.cloneBaseOpts = cloneBaseOpts
                 }
-                log.debug("create server: ${scvmmOpts}")
+                log.debug("create server: ${ScvmmCommandSanitizer.redactOpts(scvmmOpts)}")
                 def createResults = apiService.createServer(scvmmOpts)
                 log.debug("createResults: ${createResults}")
                 scvmmOpts.deleteDvdOnComplete = createResults.deleteDvdOnComplete
@@ -934,17 +943,18 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                             // we did create a vm though so we need to bind it to the server
                             server.externalId = createResults.server.externalId
                         }
-                        server.statusMessage = 'Failed to create server'
+                        server.statusMessage = createResults.errorMsg ?: 'Failed to create server'
                         context.async.computeServer.save(server).blockingGet()
                         provisionResponse.setError(server.statusMessage)
                     }
                 } else {
                     server.statusMessage = createResults.errorMsg ?: 'Unknown error creating server'
+                    log.error("runWorkload: SCVMM failed to create VM ${server?.name}: ${createResults.error ?: server.statusMessage}")
                     context.async.computeServer.save(server).blockingGet()
                     provisionResponse.setError(server.statusMessage)
                 }
             } else {
-                server.statusMessage = 'Failed to upload image'
+                server.statusMessage = imageResults.msg ? "Failed to upload image: ${imageResults.msg}".toString() : 'Failed to upload image'
                 context.async.computeServer.save(server).blockingGet()
                 provisionResponse.setError(server.statusMessage)
             }
@@ -965,11 +975,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 						new ProcessEvent(type: ProcessEvent.ProcessType.provisionNetwork), status).blockingGet()
 			}
         } catch (e) {
-            log.error("runWorkload error:${e}", e)
-            provisionResponse.setError(e.message)
+            log.error("runWorkload error for ${server?.name} (workload ${containerId}): ${e.message}", e)
+            String userMessage = ScvmmErrorTranslator.userMessage(e)
+            provisionResponse.setError(userMessage)
 			rtn.success = false
-			rtn.msg = e.message
+			rtn.msg = userMessage
 			rtn.error = e.message
+			rtn.errorCode = ScvmmErrorTranslator.details(e).errorCode
 			rtn.data = provisionResponse
         } finally {
 			// Handle cleanup operations for a clone VM
@@ -1186,14 +1198,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 def results = apiService.stopServer(scvmmOpts, scvmmOpts.vmId)
                 if (results.success == true) {
                     rtn.success = true
+                } else {
+                    rtn.msg = results.msg ?: 'Failed to stop vm'
                 }
             } else {
                 rtn.success = false
                 rtn.msg = 'vm not found'
             }
         } catch (e) {
-            log.error("stopWorkload error: ${e}", e)
-            rtn.msg = e.message
+            log.error("stopWorkload error for ${workload?.server?.name} (${workload?.server?.externalId}): ${e.message}", e)
+            rtn = ScvmmErrorTranslator.toServiceResponse(e, "Error stopping ${workload?.server?.name}")
         }
         return rtn
     }
@@ -1328,14 +1342,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 def results = apiService.startServer(scvmmOpts, scvmmOpts.vmId)
                 if (results.success == true) {
                     rtn.success = true
+                } else {
+                    rtn.msg = results.msg ?: 'Failed to start vm'
                 }
             } else {
                 rtn.success = false
                 rtn.msg = 'vm not found'
             }
         } catch (e) {
-            log.error("startWorkload error: ${e}", e)
-            rtn.msg = e.message
+            log.error("startWorkload error for ${workload?.server?.name} (${workload?.server?.externalId}): ${e.message}", e)
+            rtn = ScvmmErrorTranslator.toServiceResponse(e, "Error starting ${workload?.server?.name}")
         }
         return rtn
     }
@@ -1369,7 +1385,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      */
     @Override
     ServiceResponse removeWorkload(Workload workload, Map opts = [:]) {
-        log.debug("removeWorkload: opts: ${opts}")
+        log.debug("removeWorkload: opts: ${ScvmmCommandSanitizer.redactOpts(opts)}")
         ServiceResponse response = ServiceResponse.prepare()
         try {
             log.debug("Removing container: ${workload?.dump()}")
@@ -1380,14 +1396,14 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 if (deleteResults.success == true) {
                     response.success = true
                 } else {
-                    response.msg = 'Failed to remove vm'
+                    response.msg = deleteResults.msg ?: 'Failed to remove vm'
                 }
             } else {
                 response.msg = 'vm not found'
             }
         } catch (e) {
-            log.error("removeWorkload error: ${e}", e)
-            response.msg = e.message
+            log.error("removeWorkload error for ${workload?.server?.name} (${workload?.server?.externalId}): ${e.message}", e)
+            response = ScvmmErrorTranslator.toServiceResponse(e, "Error removing ${workload?.server?.name}")
         }
         return response
     }
@@ -1419,15 +1435,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 			return new ServiceResponse<ProvisionResponse>(true, null, null,
 					new ProvisionResponse(privateIp: fetchedServer.internalIp, publicIp: fetchedServer.externalIp, success: true))
 		} else {
-			return new ServiceResponse(success: false, msg: serverDetails.message ?: 'Failed to get server details',
-					error: serverDetails.message, data: serverDetails)
+			String failure = serverDetails.msg ?: 'Failed to get server details'
+			return new ServiceResponse(success: false, msg: failure, error: failure, data: serverDetails)
 		}
     }
 
 	def waitForAgentInstall(ComputeServer server, int maxAttempts = 1800) {
 	    def rtn = [success: false]
+	    long start = System.currentTimeMillis()
+	    int attempts = 0
 	    try {
-	        int attempts = 0
 	        while (attempts < maxAttempts) {
 	            def fetchedServer = context.async.computeServer.get(server.id).blockingGet()
 	            if (fetchedServer?.agentInstalled) {
@@ -1439,10 +1456,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 	            }
 	        }
 	        if (!rtn.success) {
-	            rtn.msg = "Timed out waiting for agent connectivity from host. Verify the appliance url configuration is correct."
+	            def timeout = new ScvmmTimeoutException("the Morpheus agent on ${server?.name} (${server?.externalId}) to check in".toString(), attempts, System.currentTimeMillis() - start, 'agentInstalled=false')
+	            rtn.msg = "${timeout.message} Verify the appliance URL is reachable from the VM and that the agent install completed.".toString()
+	            rtn.error = timeout.message
+	            rtn.timedOut = true
+	            log.warn("waitForAgentInstall: ${rtn.msg}")
 	        }
 	    } catch (e) {
-	        log.error("waitForAgentInstall error: ${e}", e)
+	        log.error("waitForAgentInstall error for ${server?.name}: ${e.message}", e)
+	        ScvmmErrorTranslator.toResultMap(e, rtn)
 	    }
 	    return rtn
 	}
@@ -1472,13 +1494,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 def stopResults = apiService.stopServer(scvmmOpts, scvmmOpts.externalId)
                 if (stopResults.success == true) {
                     rtn.success = true
+                } else {
+                    rtn.msg = stopResults.msg ?: 'Failed to stop vm'
                 }
             } else {
                 rtn.msg = 'vm not found'
             }
         } catch (e) {
-            log.error("stopServer error: ${e}", e)
-            rtn.msg = e.message
+            log.error("stopServer error for ${computeServer?.name} (${computeServer?.externalId}): ${e.message}", e)
+            return ScvmmErrorTranslator.toServiceResponse(e, "Error stopping ${computeServer?.name}")
         }
         return ServiceResponse.create(rtn)
     }
@@ -1553,12 +1577,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 def results = apiService.startServer(scvmmOpts, scvmmOpts.externalId)
                 if (results.success == true) {
                     rtn.success = true
+                } else {
+                    rtn.msg = results.msg ?: 'Failed to start vm'
                 }
             } else {
                 rtn.msg = 'externalId not found'
             }
         } catch (e) {
-            log.error("startServer error:${e}", e)
+            log.error("startServer error for ${computeServer?.name} (${computeServer?.externalId}): ${e.message}", e)
+            rtn = ScvmmErrorTranslator.toServiceResponse(e, "Error starting ${computeServer?.name}")
         }
         return rtn
     }
@@ -1802,7 +1829,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
     @Override
     ServiceResponse<PrepareHostResponse> prepareHost(ComputeServer server, HostRequest hostRequest, Map opts) {
-        log.debug "prepareHost: ${server} ${hostRequest} ${opts}"
+        log.debug "prepareHost: ${server} ${hostRequest} ${ScvmmCommandSanitizer.redactOpts(opts)}"
 
         def prepareResponse = new PrepareHostResponse(computeServer: server, disableCloudInit: false, options: [sendIp: true])
         ServiceResponse<PrepareHostResponse> rtn = ServiceResponse.prepare(prepareResponse)
@@ -1829,9 +1856,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 rtn.success = true
             }
         } catch (e) {
-            rtn.msg = "Error in prepareHost: ${e}"
-            log.error("${rtn.msg}, ${e}", e)
-
+            log.error("Error in prepareHost for ${server?.name}: ${e.message}", e)
+            rtn = ScvmmErrorTranslator.toServiceResponse(e, 'Error in prepareHost')
         }
         return rtn
     }
@@ -2003,7 +2029,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
     @Override
     ServiceResponse<ProvisionResponse> runHost(ComputeServer server, HostRequest hostRequest, Map opts) {
-        log.debug("runHost: ${server} ${hostRequest} ${opts}")
+        log.debug("runHost: ${server} ${hostRequest} ${ScvmmCommandSanitizer.redactOpts(opts)}")
         ProvisionResponse provisionResponse = new ProvisionResponse()
         try {
             def config = server.getConfigMap()
@@ -2059,6 +2085,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
             scvmmOpts += apiService.getScvmmControllerOpts(cloud, controllerNode)
             def imageId = null
+            def imageResults = [:]
             if (layout && typeSet) {
                 virtualImage = typeSet.workloadType.virtualImage
                 imageId = virtualImage.externalId
@@ -2092,9 +2119,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
                 scvmmOpts.image = containerImage
                 scvmmOpts.userId = server.createdBy?.id
-                log.debug("scvmmOpts: {}", scvmmOpts)
+                log.debug("scvmmOpts: {}", ScvmmCommandSanitizer.redactOpts(scvmmOpts))
 
-                def imageResults = apiService.insertContainerImage(scvmmOpts)
+                imageResults = apiService.insertContainerImage(scvmmOpts)
                 if (imageResults.success == true) {
                     imageId = imageResults.imageId
                 }
@@ -2131,7 +2158,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
                 //save the server
                 server = saveAndGetMorpheusServer(server, true)
-                log.debug("create server:${scvmmOpts}")
+                log.debug("create server:${ScvmmCommandSanitizer.redactOpts(scvmmOpts)}")
 
                 //create it in scvmm
                 def createResults = apiService.createServer(scvmmOpts)
@@ -2197,22 +2224,24 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         server.externalId = createResults.server.id
                         context.async.computeServer.save(server).blockingGet()
                     }
-                    server.statusMessage = 'Error creating server'
-                    //tell someone :)
+                    server.statusMessage = createResults.errorMsg ?: 'Error creating server'
+                    log.error("runHost: SCVMM failed to create VM ${server?.name}: ${createResults.error ?: server.statusMessage}")
                 }
             } else {
-                server.statusMessage = 'Error creating server'
+                server.statusMessage = imageResults.msg ? "Failed to upload image: ${imageResults.msg}".toString() : 'Error creating server'
             }
             if (provisionResponse.success != true) {
-                return new ServiceResponse(success: false, msg: provisionResponse.message ?: 'vm config error', error: provisionResponse.message, data: provisionResponse)
+                provisionResponse.setError(server.statusMessage)
+                return new ServiceResponse(success: false, msg: server.statusMessage ?: 'vm config error', error: server.statusMessage, data: provisionResponse)
             } else {
                 return new ServiceResponse<ProvisionResponse>(success: true, data: provisionResponse)
             }
 
         } catch (Exception e) {
-            log.error("Error in runHost method: ${e.message}", e)
-            provisionResponse.setError(e.message)
-            return new ServiceResponse(success: false, msg: e.message, error: e.message, data: provisionResponse)
+            log.error("Error in runHost for ${server?.name}: ${e.message}", e)
+            String userMessage = ScvmmErrorTranslator.userMessage(e)
+            provisionResponse.setError(userMessage)
+            return new ServiceResponse(success: false, msg: userMessage, error: e.message, data: provisionResponse)
         }
     }
 
@@ -2288,6 +2317,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 				def agentWait = waitForAgentInstall(fetchedServer)
 				if (agentWait.success) {
 					fetchedServer = context.async.computeServer.get(server.id).blockingGet()
+				} else {
+					log.warn("waitForHost: ${agentWait.msg}")
 				}
                 provisionResponse.privateIp = serverDetail.server.ipAddress
                 provisionResponse.publicIp = serverDetail.server.ipAddress
@@ -2296,12 +2327,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 if (finalizeResults.success == true) {
                     provisionResponse.success = true
                     rtn.success = true
+                } else {
+                    rtn.msg = finalizeResults.msg
                 }
+            } else {
+                rtn.msg = serverDetail.msg ?: "Host ${fetchedServer?.name} did not become ready in SCVMM"
             }
         } catch (e) {
-            log.error("Error waitForHost: ${e.message}", e)
+            log.error("Error waitForHost for ${server?.name}: ${e.message}", e)
             rtn.success = false
-            rtn.msg = "Error in waiting for Host: ${e}"
+            rtn.msg = "Error in waiting for Host: ${ScvmmErrorTranslator.userMessage(e)}"
         }
         return rtn
     }
@@ -2332,11 +2367,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 				def savedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
                 context.async.computeServer.save(savedServer).blockingGet()
                 rtn.success = true
+            } else {
+                rtn.msg = serverDetail.msg ?: "Host ${fetchedServer?.name} did not become ready in SCVMM"
             }
         } catch (e) {
-            rtn.success = false
-            rtn.msg = "Error in finalizing server: ${e.message}"
-            log.error("Error in finalizeHost: ${e.message}", e)
+            log.error("Error in finalizeHost for ${server?.name}: ${e.message}", e)
+            rtn = ScvmmErrorTranslator.toServiceResponse(e, 'Error in finalizing server')
         }
         return rtn
     }
@@ -2368,7 +2404,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     }
 
     private ServiceResponse resizeWorkloadAndServer(Workload workload, ComputeServer server, ResizeRequest resizeRequest, Map opts, Boolean isWorkload) {
-        log.debug("resizeWorkloadAndServer workload.id: ${workload?.id} - opts: ${opts}")
+        log.debug("resizeWorkloadAndServer workload.id: ${workload?.id} - opts: ${ScvmmCommandSanitizer.redactOpts(opts)}")
 
         ServiceResponse rtn = ServiceResponse.success()
         ComputeServer computeServer = isWorkload ? getMorpheusServer(workload.server?.id) : getMorpheusServer(server.id)
@@ -2436,8 +2472,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                                 existingVolume.maxStorage = diskSize
                                 context.services.storageVolume.save(existingVolume)
                             } else {
-                                log.error "Error in resizing volume: ${resizeResults}"
-                                rtn.error = resizeResults.error ?: "Error in resizing volume"
+                                log.error "Error in resizing volume ${volumeId}: ${resizeResults.error ?: resizeResults.errOut}"
+                                rtn.error = resizeResults.msg ?: resizeResults.error ?: resizeResults.errOut ?: "Error in resizing volume"
                             }
                         }
                     }
@@ -2477,8 +2513,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                             computeServer = getMorpheusServer(computeServer.id)
                             diskCounter++
                         } else {
-                            log.error "Error in creating the volume: ${diskResults}"
-                            rtn.error = "Error in creating the volume"
+                            log.error "Error in creating the volume: ${diskResults?.error ?: diskResults}"
+                            rtn.error = diskResults?.msg ?: "Error in creating the volume"
                         }
                     }
                     // Delete any removed volumes
@@ -2489,6 +2525,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         if (detachResults.success == true) {
                             context.async.storageVolume.remove([volume], computeServer, true).blockingGet()
                             computeServer = getMorpheusServer(computeServer.id)
+                        } else {
+                            log.error "Error removing volume ${volume.externalId}: ${detachResults.error}"
+                            rtn.error = detachResults.msg ?: "Error removing volume ${volume.name ?: volume.externalId}".toString()
                         }
                     }
                 }
@@ -2505,12 +2544,14 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
             rtn.success = true
         } catch (e) {
-            def resizeError = isWorkload ? "Unable to resize workload: ${e.message}" : "Unable to resize server: ${e.message}"
-            log.error(resizeError, e)
+            String cause = ScvmmErrorTranslator.userMessage(e)
+            def resizeError = isWorkload ? "Unable to resize workload: ${cause}" : "Unable to resize server: ${cause}"
+            log.error("${resizeError} (${computeServer?.name} / ${computeServer?.externalId})", e)
             computeServer.status = 'provisioned'
             computeServer.statusMessage = resizeError
             computeServer = saveAndGet(computeServer)
-            rtn.setError("${e}")
+            rtn.setError(resizeError.toString())
+            rtn.msg = resizeError.toString()
         }
         return rtn
     }

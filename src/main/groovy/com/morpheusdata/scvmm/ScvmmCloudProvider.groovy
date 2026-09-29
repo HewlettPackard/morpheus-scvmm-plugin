@@ -1,5 +1,9 @@
 package com.morpheusdata.scvmm
 
+import com.morpheusdata.scvmm.error.ScvmmCommandSanitizer
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
+import com.morpheusdata.scvmm.error.ScvmmException
 import com.morpheusdata.scvmm.helper.morpheus.types.StorageVolumeTypeHelper
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
@@ -498,16 +502,26 @@ class ScvmmCloudProvider implements CloudProvider {
 					]
 					def vmSitches = apiService.listClouds(scvmmOpts)
 					log.debug("vmSitches: ${vmSitches}")
-					if (vmSitches.success == true)
+					if (vmSitches.success == true) {
 						rtn.success = true
-					if (rtn.success == false)
-						rtn.msg = 'Error connecting to scvmm'
+					} else {
+						rtn.msg = vmSitches.msg ?: 'SCVMM did not return any clouds (Get-SCCloud). Verify the VMM console is installed on the host and the account is a VMM administrator.'
+					}
 				}
 			} else {
-				rtn.message = 'No zone found'
+				rtn.msg = 'No zone found'
 			}
+		} catch (ScvmmException e) {
+			// connection / auth / command failures already carry an actionable message
+			log.warn("validate cloud ${cloudInfo?.name}: ${e.message}")
+			ServiceResponse translated = ScvmmErrorTranslator.toServiceResponse(e)
+			rtn.msg = translated.msg
+			rtn.errors = (rtn.errors ?: [:]) + (translated.errors?.findAll { k, v -> k != 'error' } ?: [:])
+			rtn.data = translated.data
 		} catch (e) {
-			log.error("An Exception Has Occurred", e)
+			log.error("validate cloud ${cloudInfo?.name} error: ${e.message}", e)
+			rtn.msg = ScvmmErrorTranslator.userMessage(e)
+			rtn.data = ScvmmErrorTranslator.details(e)
 		}
 		return ServiceResponse.create(rtn)
 	}
@@ -536,7 +550,8 @@ class ScvmmCloudProvider implements CloudProvider {
 				rtn.msg = 'No zone found'
 			}
 		} catch(e) {
-			log.error("initialize cloud error: {}",e)
+			log.error("initialize cloud ${cloudInfo?.name} error: ${e.message}", e)
+			rtn = ScvmmErrorTranslator.toServiceResponse(e, 'Error initializing the SCVMM controller')
 		}
 		return rtn
 	}
@@ -633,74 +648,133 @@ class ScvmmCloudProvider implements CloudProvider {
 			def scvmmController = getScvmmController(cloudInfo)
 			if (scvmmController) {
 				def scvmmOpts = apiService.getScvmmZoneAndHypervisorOpts(context, cloudInfo, scvmmController)
-				def hostOnline = ConnectionUtils.testHostConnectivity(scvmmOpts.sshHost, 5985, false, true, null)
+				def winrmPort = (scvmmOpts.sshPort && scvmmOpts.sshPort != 22) ? scvmmOpts.sshPort.toInteger() : ScvmmApiService.DEFAULT_WINRM_PORT
+				def hostOnline = ConnectionUtils.testHostConnectivity(scvmmOpts.sshHost, winrmPort, false, true, null)
 				log.debug("hostOnline: {}", hostOnline)
 				if (hostOnline) {
 					def checkResults = checkCommunication(cloudInfo, scvmmController)
 					if (checkResults.success == true) {
 						updateHypervisorStatus(scvmmController, 'provisioned', 'on', '')
-						//updateZoneStatus(zone, 'syncing', null)
 						context.async.cloud.updateCloudStatus(cloudInfo, Cloud.Status.syncing, null, syncDate)
-
-						def now = new Date().time
-						new NetworkSync(context, cloudInfo).execute()
-						log.debug("${cloudInfo.name}: NetworkSync in ${new Date().time - now}ms")
-
-						now = new Date().time
-						new ClustersSync(context, cloudInfo).execute()
-						log.debug("${cloudInfo.name}: ClustersSync in ${new Date().time - now}ms")
-
-						now = new Date().time
-						new IsolationNetworkSync(context, cloudInfo, apiService).execute()
-						log.debug("${cloudInfo.name}: IsolationNetworkSync in ${new Date().time - now}ms")
-
-						now = new Date().time
-						new HostSync(cloudInfo, scvmmController, context).execute()
-						log.debug("${cloudInfo.name}: HostSync in ${new Date().time - now}ms")
-
-						now = new Date().time
-						new DatastoresSync(scvmmController, cloudInfo, context).execute()
-						log.debug("${cloudInfo.name}: DatastoresSync in ${new Date().time - now}ms")
-
-						now = new Date().time
-						new RegisteredStorageFileSharesSync(cloudInfo, scvmmController, context).execute()
-						log.debug("${cloudInfo.name}: RegisteredStorageFileSharesSync in ${new Date().time - now}ms")
-
-						now = new Date().time
-						new CloudCapabilityProfilesSync(context, cloudInfo).execute()
-						log.debug("${cloudInfo.name}: CloudCapabilityProfilesSync in ${new Date().time - now}ms")
-
-						now = new Date().time
-						new TemplatesSync(cloudInfo, scvmmController, context, this).execute()
-						log.debug("${cloudInfo.name}: TemplatesSync in ${new Date().time - now}ms")
-
-						now = new Date().time
-						new IpPoolsSync(context, cloudInfo).execute()
-						log.debug("${cloudInfo.name}: IpPoolsSync in ${new Date().time - now}ms")
 
 						def doInventory = cloudInfo.getConfigProperty('importExisting')
 						def createNew = (doInventory == 'on' || doInventory == 'true' || doInventory == true)
-						now = new Date().time
-						new VirtualMachineSync(scvmmController, cloudInfo, context, this).execute(createNew)
-						log.debug("${cloudInfo.name}: DatastoresSync in ${new Date().time - now}ms")
-						context.async.cloud.updateCloudStatus(cloudInfo, Cloud.Status.ok, null, syncDate)
-						log.debug "complete scvmm zone refresh"
-						response.success = true
+
+						List<Map> workers = [
+								[name: 'NetworkSync', run: { new NetworkSync(context, cloudInfo).execute() }],
+								[name: 'ClustersSync', run: { new ClustersSync(context, cloudInfo).execute() }],
+								[name: 'IsolationNetworkSync', run: { new IsolationNetworkSync(context, cloudInfo, apiService).execute() }],
+								[name: 'HostSync', run: { new HostSync(cloudInfo, scvmmController, context).execute() }],
+								[name: 'DatastoresSync', run: { new DatastoresSync(scvmmController, cloudInfo, context).execute() }],
+								[name: 'RegisteredStorageFileSharesSync', run: { new RegisteredStorageFileSharesSync(cloudInfo, scvmmController, context).execute() }],
+								[name: 'CloudCapabilityProfilesSync', run: { new CloudCapabilityProfilesSync(context, cloudInfo).execute() }],
+								[name: 'TemplatesSync', run: { new TemplatesSync(cloudInfo, scvmmController, context, this).execute() }],
+								[name: 'IpPoolsSync', run: { new IpPoolsSync(context, cloudInfo).execute() }],
+								[name: 'VirtualMachineSync', run: { new VirtualMachineSync(scvmmController, cloudInfo, context, this).execute(createNew) }],
+						]
+						List<Map> results = runSyncWorkers(cloudInfo, workers)
+						def failed = results.findAll { !it.success }
+						def connectionFailure = results.find { it.connectionFailure }
+
+						if (connectionFailure) {
+							String msg = "Lost connection to the SCVMM host during ${connectionFailure.name}: ${connectionFailure.error}"
+							updateHypervisorStatus(scvmmController, 'error', 'unknown', truncateStatus(msg))
+							context.async.cloud.updateCloudStatus(cloudInfo, Cloud.Status.offline, truncateStatus(msg), syncDate)
+							response = ServiceResponse.error(msg, null, [status: Cloud.Status.offline, workers: results])
+						} else if (failed) {
+							String msg = summarizeSyncFailures(results)
+							log.warn("${cloudInfo.name}: ${msg}")
+							context.async.cloud.updateCloudStatus(cloudInfo, Cloud.Status.warning, truncateStatus(msg), syncDate)
+							response = ServiceResponse.error(msg, null, [status: Cloud.Status.warning, workers: results])
+						} else {
+							context.async.cloud.updateCloudStatus(cloudInfo, Cloud.Status.ok, null, syncDate)
+							log.debug "complete scvmm zone refresh"
+							response.success = true
+							response.data = [workers: results]
+						}
 					} else {
-						updateHypervisorStatus(scvmmController, 'error', 'unknown', 'error connecting to controller')
-		                context.async.cloud.updateCloudStatus(cloudInfo, Cloud.Status.error, 'error connecting', syncDate)
+						String msg = checkResults.msg ? "Error connecting to SCVMM controller: ${checkResults.msg}".toString() : 'Error connecting to SCVMM controller'
+						updateHypervisorStatus(scvmmController, 'error', 'unknown', truncateStatus(msg))
+						context.async.cloud.updateCloudStatus(cloudInfo, checkResults.connectionFailure ? Cloud.Status.offline : Cloud.Status.error, truncateStatus(msg), syncDate)
+						response = ServiceResponse.error(msg, null, [status: checkResults.connectionFailure ? Cloud.Status.offline : Cloud.Status.error])
 					}
 				} else {
-					updateHypervisorStatus(scvmmController, 'error', 'unknown', 'error connecting to controller')
-					context.async.cloud.updateCloudStatus(cloudInfo, Cloud.Status.error, 'error connecting', syncDate)
+					String msg = "SCVMM host ${scvmmOpts.sshHost} is not reachable on port ${winrmPort} (WinRM)".toString()
+					updateHypervisorStatus(scvmmController, 'error', 'unknown', msg)
+					context.async.cloud.updateCloudStatus(cloudInfo, Cloud.Status.offline, msg, syncDate)
+					response = ServiceResponse.error(msg, null, [status: Cloud.Status.offline])
 				}
 			} else {
-				context.async.cloud.updateCloudStatus(cloudInfo, Cloud.Status.error, 'controller not found', syncDate)
+				String msg = 'SCVMM controller server not found for this cloud'
+				context.async.cloud.updateCloudStatus(cloudInfo, Cloud.Status.error, msg, syncDate)
+				response = ServiceResponse.error(msg)
 			}
 		} catch (e) {
-			log.error("refresh zone error:${e}", e)
+			log.error("refresh zone ${cloudInfo?.name} error: ${e.message}", e)
+			response = ScvmmErrorTranslator.toServiceResponse(e, 'Cloud refresh failed')
 		}
 		return response
+	}
+
+	/**
+	 * Runs each sync worker in isolation, recording success/failure/duration. A worker failure does not prevent the
+	 * remaining workers from running, except a connection failure, after which the remaining workers are skipped
+	 * because the host is unreachable.
+	 */
+	protected List<Map> runSyncWorkers(Cloud cloud, List<Map> workers) {
+		List<Map> results = []
+		boolean connectionLost = false
+		for (Map worker : workers) {
+			if (connectionLost) {
+				results << [name: worker.name, success: false, skipped: true, durationMs: 0L, error: 'skipped: SCVMM host connection lost']
+				continue
+			}
+			Map result = runSyncWorker(cloud, worker.name as String, worker.run as Closure)
+			results << result
+			if (result.connectionFailure) {
+				connectionLost = true
+			}
+		}
+		results
+	}
+
+	protected Map runSyncWorker(Cloud cloud, String name, Closure work) {
+		long start = System.currentTimeMillis()
+		Map rtn = [name: name, success: false, durationMs: 0L, error: null, connectionFailure: false]
+		try {
+			def result = work.call()
+			if (result instanceof Map && result.success == false) {
+				rtn.error = ScvmmCommandSanitizer.firstLine(result.msg?.toString()) ?: 'sync reported failure'
+			} else {
+				rtn.success = true
+			}
+		} catch (ScvmmConnectionException e) {
+			rtn.connectionFailure = true
+			rtn.error = ScvmmErrorTranslator.summary(e)
+			log.error("${cloud.name}: ${name} failed, SCVMM host unreachable: ${e.message}")
+		} catch (Throwable e) {
+			rtn.error = ScvmmErrorTranslator.summary(e)
+			log.error("${cloud.name}: ${name} failed: ${e.message}", e)
+		}
+		rtn.durationMs = System.currentTimeMillis() - start
+		if (rtn.success) {
+			log.debug("${cloud.name}: ${name} in ${rtn.durationMs}ms")
+		} else {
+			log.warn("${cloud.name}: ${name} FAILED in ${rtn.durationMs}ms: ${rtn.error}")
+		}
+		rtn
+	}
+
+	protected static String summarizeSyncFailures(List<Map> results) {
+		def failed = results.findAll { !it.success && !it.skipped }
+		String details = failed.collect { "${it.name}: ${it.error}" }.join('; ')
+		"Sync completed with ${failed.size()} of ${results.size()} worker(s) failing - ${details}".toString()
+	}
+
+	private static final int MAX_STATUS_MESSAGE_LENGTH = 250
+
+	protected static String truncateStatus(String msg) {
+		ScvmmCommandSanitizer.truncate(msg, MAX_STATUS_MESSAGE_LENGTH)
 	}
 
 	def checkCommunication(cloud, node) {
@@ -711,9 +785,13 @@ class ScvmmCloudProvider implements CloudProvider {
 			def listResults = apiService.listAllNetworks(scvmmOpts)
 			if (listResults.success == true && listResults.networks) {
 				rtn.success = true
+			} else {
+				rtn.msg = listResults.msg ?: 'SCVMM returned no networks (Get-SCLogicalNetwork / Get-SCVMNetwork)'
 			}
 		} catch (e) {
-			log.error("checkCommunication error:${e}", e)
+			log.error("checkCommunication error for cloud ${cloud?.name}: ${e.message}", e)
+			ScvmmErrorTranslator.toResultMap(e, rtn)
+			rtn.connectionFailure = ScvmmErrorTranslator.isConnectionFailure(e)
 		}
 		return rtn
 	}
@@ -927,11 +1005,15 @@ class ScvmmCloudProvider implements CloudProvider {
 				def deleteResults = apiService.deleteServer(scvmmOpts, scvmmOpts.externalId)
 				if(deleteResults.success == true) {
 					rtn.success = true
+				} else {
+					rtn.msg = deleteResults.msg ?: "Failed to delete VM ${scvmmOpts.externalId} from SCVMM"
 				}
+			} else {
+				rtn.msg = stopResults.msg ?: "Failed to stop VM ${scvmmOpts.externalId} before deleting it"
 			}
 		} catch (e) {
-			log.error("deleteServer error: ${e}", e)
-			rtn.msg = e.message
+			log.error("deleteServer error for ${computeServer?.name} (${computeServer?.externalId}): ${e.message}", e)
+			return ScvmmErrorTranslator.toServiceResponse(e, "Error deleting ${computeServer?.name}")
 		}
 		return ServiceResponse.create(rtn)
 	}
@@ -1057,7 +1139,7 @@ class ScvmmCloudProvider implements CloudProvider {
 
 	private updateHypervisorStatus(server, status, powerState, msg) {
 		log.debug("server: {}, status: {}, powerState: {}, msg: {}", server, status, powerState, msg)
-		if (server.status != status || server.powerState != powerState) {
+		if (server.status != status || server.powerState != powerState || (server.statusMessage ?: '') != (msg ?: '')) {
 			server.status = status
 			server.powerState = powerState
 			server.statusDate = new Date()
