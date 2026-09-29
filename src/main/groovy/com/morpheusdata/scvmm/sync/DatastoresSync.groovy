@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
@@ -70,9 +72,13 @@ class DatastoresSync {
                     return context.async.cloud.datastore.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
             }
+        } catch (ScvmmConnectionException ex) {
+            throw ex
         } catch (ex) {
-            log.error("DatastoresSync error: {}", ex.getMessage())
+            log.error("DatastoresSync error: ${ex.message}", ex)
+            return [success: false, msg: ScvmmErrorTranslator.userMessage(ex)]
         }
+        return [success: true]
     }
 
     private removeMissingDatastores(List<DatastoreIdentityProjection> removeList) {
