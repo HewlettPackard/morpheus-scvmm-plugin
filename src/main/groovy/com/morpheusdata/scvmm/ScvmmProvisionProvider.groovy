@@ -1442,8 +1442,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
 	def waitForAgentInstall(ComputeServer server, int maxAttempts = 1800) {
 	    def rtn = [success: false]
+	    long start = System.currentTimeMillis()
+	    int attempts = 0
 	    try {
-	        int attempts = 0
 	        while (attempts < maxAttempts) {
 	            def fetchedServer = context.async.computeServer.get(server.id).blockingGet()
 	            if (fetchedServer?.agentInstalled) {
@@ -1455,10 +1456,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 	            }
 	        }
 	        if (!rtn.success) {
-	            rtn.msg = "Timed out waiting for agent connectivity from host. Verify the appliance url configuration is correct."
+	            def timeout = new ScvmmTimeoutException("the Morpheus agent on ${server?.name} (${server?.externalId}) to check in".toString(), attempts, System.currentTimeMillis() - start, 'agentInstalled=false')
+	            rtn.msg = "${timeout.message} Verify the appliance URL is reachable from the VM and that the agent install completed.".toString()
+	            rtn.error = timeout.message
+	            rtn.timedOut = true
+	            log.warn("waitForAgentInstall: ${rtn.msg}")
 	        }
 	    } catch (e) {
-	        log.error("waitForAgentInstall error: ${e}", e)
+	        log.error("waitForAgentInstall error for ${server?.name}: ${e.message}", e)
+	        ScvmmErrorTranslator.toResultMap(e, rtn)
 	    }
 	    return rtn
 	}

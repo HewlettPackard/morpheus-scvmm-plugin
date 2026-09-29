@@ -1789,16 +1789,25 @@ foreach (\$network in \$networks) {
         return out
     }
 
+    static final long POLL_INTERVAL_MS = 5000L
+    static final int SERVER_CREATED_MAX_ATTEMPTS = 600
+    static final int JOB_MAX_ATTEMPTS = 350
+    static final int SERVER_READY_MAX_ATTEMPTS = 300
+    static final int SERVER_READY_MAX_NOT_FOUND = 10
+
     def checkServerCreated(opts, vmId) {
         log.debug "checkServerCreated: ${vmId}"
         def rtn = [success: false]
+        long start = System.currentTimeMillis()
+        int attempts = 0
+        String lastState = 'not yet observed'
         try {
             def pending = true
-            def attempts = 0
             while (pending) {
-                sleep(1000l * 5l)
+                sleep(POLL_INTERVAL_MS)
                 def serverDetail = getServerDetails(opts, vmId)
                 if (serverDetail.success == true) {
+                    lastState = "Status=${serverDetail.server?.Status}, disks=${serverDetail.server?.VirtualDiskDrives?.size()}".toString()
                     // There isn't a state on the VM to tell us it is created.. but, if the disk size matches
                     // the expected count.. we are good
                     log.debug "serverStatus: ${serverDetail.server?.Status}, opts.dataDisks: ${opts.dataDisks?.size()}, additionalTemplateDisks: ${opts.additionalTemplateDisks?.size()}"
@@ -1820,45 +1829,79 @@ foreach (\$network in \$networks) {
                         }
                     } else if (serverDetail.server?.Status == 'CreationFailed') {
                         rtn.success = false
+                        rtn.server = serverDetail.server
+                        rtn.msg = "SCVMM reports virtual machine ${vmId} (${opts.name}) as CreationFailed. Check the Jobs view in the VMM console for the failed 'Create virtual machine' job.".toString()
+                        log.error("checkServerCreated: ${rtn.msg}")
                         pending = false
                     }
+                } else {
+                    lastState = serverDetail.error == 'VM_NOT_FOUND' ? 'VM not found in SCVMM' : "details unavailable: ${ScvmmCommandSanitizer.firstLine(serverDetail.msg) ?: serverDetail.error ?: 'unknown'}".toString()
                 }
                 attempts++
-                if (attempts > 600)
+                if (pending && attempts > SERVER_CREATED_MAX_ATTEMPTS) {
                     pending = false
+                    def timeout = new ScvmmTimeoutException("virtual machine ${vmId} (${opts.name}) to finish creating in SCVMM".toString(), attempts, System.currentTimeMillis() - start, lastState)
+                    log.error("checkServerCreated: ${timeout.message}")
+                    ScvmmErrorTranslator.toResultMap(timeout, rtn)
+                    rtn.timedOut = true
+                }
             }
         } catch (e) {
-            log.error("An Exception Has Occurred", e)
+            log.error("checkServerCreated error for VM ${vmId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }
 
+    /**
+     * Polls a VMM job until it reaches a terminal state.
+     *
+     * @return {@code [success: true]} on Completed/SucceedWithInfo; on failure or timeout {@code success == false} with
+     *         {@code msg} (user facing), {@code error}, {@code jobStatus}, {@code errorInfo} and {@code timedOut} populated.
+     */
     def waitForJobToComplete(opts, jobId) {
-        def rtn = [success: false]
+        def rtn = [success: false, jobId: jobId]
+        long start = System.currentTimeMillis()
+        int attempts = 0
+        String lastState = 'not yet observed'
         try {
             log.debug "waitForJobToComplete: ${jobId}"
             def pending = true
-            def attempts = 0
             while (pending) {
-                sleep(1000l * 5l)
+                sleep(POLL_INTERVAL_MS)
                 log.debug "waitForJobToComplete: ${jobId}"
                 def getJobResults = getJob(opts, jobId)
                 if (getJobResults.success == true && getJobResults.jobDetail) {
-
-                    def status = getJobResults.jobDetail?.Status?.toLowerCase()
-                    if (['completed', 'failed', 'succeedwithinfo'].indexOf(status) > -1) {
+                    def jobDetail = getJobResults.jobDetail
+                    def status = jobDetail?.Status?.toString()?.toLowerCase()
+                    lastState = "Status=${jobDetail?.Status}, Progress=${jobDetail?.Progress}".toString()
+                    if (['completed', 'failed', 'succeedwithinfo', 'canceled', 'cancelled'].indexOf(status) > -1) {
                         pending = false
+                        rtn.jobStatus = jobDetail?.Status
                         if (status == 'completed' || status == 'succeedwithinfo') {
                             rtn.success = true
+                        } else {
+                            def failure = new ScvmmJobFailedException(jobId?.toString(), jobDetail?.Name?.toString(), jobDetail?.Status?.toString(), jobDetail?.ErrorInfo?.toString())
+                            log.error("waitForJobToComplete: ${failure.message}")
+                            ScvmmErrorTranslator.toResultMap(failure, rtn)
+                            rtn.errorInfo = jobDetail?.ErrorInfo
                         }
                     }
+                } else {
+                    lastState = "job details unavailable: ${ScvmmCommandSanitizer.firstLine(getJobResults.msg) ?: 'unknown'}".toString()
                 }
                 attempts++
-                if (attempts > 350)
+                if (pending && attempts > JOB_MAX_ATTEMPTS) {
                     pending = false
+                    def timeout = new ScvmmTimeoutException("SCVMM job ${jobId} to complete".toString(), attempts, System.currentTimeMillis() - start, lastState)
+                    log.error("waitForJobToComplete: ${timeout.message}")
+                    ScvmmErrorTranslator.toResultMap(timeout, rtn)
+                    rtn.timedOut = true
+                }
             }
         } catch (e) {
-            log.error("An Exception Has Occurred", e)
+            log.error("waitForJobToComplete error for job ${jobId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }
@@ -1869,22 +1912,25 @@ foreach (\$network in \$networks) {
 
         try {
             def command = """\$job = Get-SCJob -VMMServer localhost -ID \"${jobId}\"
+\$errorInfo = \$null
+if (\$job.ErrorInfo -and \$job.ErrorInfo.Code -ne 0) {
+  \$errorInfo = "[" + \$job.ErrorInfo.Code + "] " + \$job.ErrorInfo.Problem
+  if (\$job.ErrorInfo.RecommendedAction) { \$errorInfo += " Recommended action: " + \$job.ErrorInfo.RecommendedAction }
+}
 \$report = New-Object PSObject -property @{
 ID=\$job.ID
 Name=\$job.Name
 Progress=\$job.Progress
 Status=\$job.Status.toString()
+ErrorInfo=\$errorInfo
 }
 \$report"""
             def out = wrapExecuteCommand(generateCommandString(command), opts)
-            if (!out.success) {
-                throw new Exception("Error in getting job")
-            }
-
-            rtn.jobDetail = out.data.getAt(0)
+            rtn.jobDetail = out.data?.getAt(0)
             rtn.success = true
         } catch (e) {
-            log.error "error in calling job detail: ${e}", e
+            log.error("error reading SCVMM job ${jobId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
 
         return rtn
@@ -1892,15 +1938,17 @@ Status=\$job.Status.toString()
 
     def checkServerReady(opts, vmId) {
         def rtn = [success: false]
+        long start = System.currentTimeMillis()
+        int attempts = 0
+        int notFoundAttempts = 0
+        String lastState = 'not yet observed'
         try {
             log.debug "checkServerReady: ${vmId}"
             def pending = true
-            def attempts = 0
-            def notFoundAttempts = 0
             def serverId = opts.server.id
             def waitForIp = opts.waitForIp
             while (pending) {
-                sleep(1000l * 5l)
+                sleep(POLL_INTERVAL_MS)
                 log.debug "checkServerReady: ${vmId}"
                 ComputeServer server = morpheusContext.services.computeServer.get(serverId)
                 opts.server = server
@@ -1909,6 +1957,7 @@ Status=\$job.Status.toString()
                 def serverDetail = getServerDetails(opts, vmId)
                 if (serverDetail.success == true && serverDetail.server) {
                     def ipAddress = serverDetail.server?.internalIp ?: server?.externalIp
+                    lastState = "VirtualMachineState=${serverDetail.server?.VirtualMachineState}, Status=${serverDetail.server?.Status}, ip=${ipAddress ?: 'none'}".toString()
                     log.debug "ipAddress found: ${ipAddress}"
                     if (ipAddress) {
                         server.internalIp = ipAddress
@@ -1928,6 +1977,8 @@ Status=\$job.Status.toString()
                             rtn.success = false
                             rtn.server = serverDetail.server
                             rtn.server.ipAddress = ipAddress ?: server?.internalIp
+                            rtn.msg = "SCVMM reports virtual machine ${vmId} (${server?.name}) as CreationFailed. Check the Jobs view in the VMM console for the failed job.".toString()
+                            log.error("checkServerReady: ${rtn.msg}")
                             pending = false
                         } else {
                             log.debug("check server loading server: ip: ${server.internalIp}")
@@ -1942,15 +1993,30 @@ Status=\$job.Status.toString()
                 } else {
                     if (serverDetail.error == 'VM_NOT_FOUND') {
                         notFoundAttempts++
+                        lastState = "VM not found in SCVMM (${notFoundAttempts} consecutive lookups)".toString()
+                    } else {
+                        lastState = "details unavailable: ${ScvmmCommandSanitizer.firstLine(serverDetail.msg) ?: serverDetail.error ?: 'unknown'}".toString()
                     }
                 }
 
                 attempts++
-                if (attempts > 300 || notFoundAttempts > 10)
+                if (pending && notFoundAttempts > SERVER_READY_MAX_NOT_FOUND) {
                     pending = false
+                    rtn.msg = "Virtual machine ${vmId} (${server?.name}) was not found in SCVMM after ${notFoundAttempts} lookups over ${ScvmmTimeoutException.formatDuration(System.currentTimeMillis() - start)}. It may have been deleted or the creation job failed.".toString()
+                    rtn.error = 'VM_NOT_FOUND'
+                    log.error("checkServerReady: ${rtn.msg}")
+                } else if (pending && attempts > SERVER_READY_MAX_ATTEMPTS) {
+                    pending = false
+                    String awaited = waitForIp ? "virtual machine ${vmId} (${server?.name}) to be Running with an IP address" : "virtual machine ${vmId} (${server?.name}) to be Running"
+                    def timeout = new ScvmmTimeoutException(awaited.toString(), attempts, System.currentTimeMillis() - start, lastState)
+                    log.error("checkServerReady: ${timeout.message}")
+                    ScvmmErrorTranslator.toResultMap(timeout, rtn)
+                    rtn.timedOut = true
+                }
             }
         } catch (e) {
-            log.error("An Exception Has Occurred", e)
+            log.error("checkServerReady error for VM ${vmId}: ${e.message}", e)
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }
