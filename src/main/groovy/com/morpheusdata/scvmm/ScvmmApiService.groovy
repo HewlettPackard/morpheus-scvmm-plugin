@@ -50,7 +50,9 @@ class ScvmmApiService {
         } catch (ScvmmException e) {
             throw e
         } catch (Throwable t) {
-            throw new ScvmmConnectionException("WinRM call to ${host}:${port} failed: ${t.message ?: t.class.simpleName}".toString(), host, port, t)
+            // RxJava / reflection wrap checked exceptions; report the root cause so the message is meaningful
+            Throwable root = ScvmmErrorTranslator.rootCause(t)
+            throw new ScvmmConnectionException("WinRM call to ${host}:${port} failed: ${root.message ?: root.class.simpleName}".toString(), host, port, root)
         }
         if (output == null) {
             throw new ScvmmConnectionException("WinRM call to ${host}:${port} returned no result".toString(), host, port)

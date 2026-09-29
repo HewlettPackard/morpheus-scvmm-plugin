@@ -54,7 +54,9 @@ class ScvmmErrorTranslator {
     static ServiceResponse toServiceResponse(Throwable t, String context = null) {
         String message = userMessage(t)
         String fullMessage = context ? "${context}: ${message}".toString() : message
+        // ServiceResponse.error(msg) only populates errors.error; the UI reads msg, so set both
         ServiceResponse rtn = ServiceResponse.error(fullMessage)
+        rtn.msg = fullMessage
         rtn.data = details(t, context)
         ScvmmKnownErrors.KnownError known = ScvmmKnownErrors.match(t)
         if (known) {
@@ -116,6 +118,10 @@ class ScvmmErrorTranslator {
         }
         if (t instanceof ScvmmConnectionException) {
             return true
+        }
+        // our own polling timeouts / parse failures mean the host answered; they are not connection failures
+        if (t instanceof ScvmmTimeoutException || t instanceof ScvmmResponseParseException) {
+            return false
         }
         ScvmmKnownErrors.match(t)?.category == ScvmmKnownErrors.Category.CONNECTION
     }
