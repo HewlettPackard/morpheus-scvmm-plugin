@@ -1,5 +1,8 @@
 package com.morpheusdata.scvmm
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
+import com.morpheusdata.scvmm.error.ScvmmException
 import com.morpheusdata.scvmm.helper.morpheus.types.StorageVolumeTypeHelper
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
@@ -498,16 +501,26 @@ class ScvmmCloudProvider implements CloudProvider {
 					]
 					def vmSitches = apiService.listClouds(scvmmOpts)
 					log.debug("vmSitches: ${vmSitches}")
-					if (vmSitches.success == true)
+					if (vmSitches.success == true) {
 						rtn.success = true
-					if (rtn.success == false)
-						rtn.msg = 'Error connecting to scvmm'
+					} else {
+						rtn.msg = vmSitches.msg ?: 'SCVMM did not return any clouds (Get-SCCloud). Verify the VMM console is installed on the host and the account is a VMM administrator.'
+					}
 				}
 			} else {
-				rtn.message = 'No zone found'
+				rtn.msg = 'No zone found'
 			}
+		} catch (ScvmmException e) {
+			// connection / auth / command failures already carry an actionable message
+			log.warn("validate cloud ${cloudInfo?.name}: ${e.message}")
+			ServiceResponse translated = ScvmmErrorTranslator.toServiceResponse(e)
+			rtn.msg = translated.msg
+			rtn.errors = (rtn.errors ?: [:]) + (translated.errors?.findAll { k, v -> k != 'error' } ?: [:])
+			rtn.data = translated.data
 		} catch (e) {
-			log.error("An Exception Has Occurred", e)
+			log.error("validate cloud ${cloudInfo?.name} error: ${e.message}", e)
+			rtn.msg = ScvmmErrorTranslator.userMessage(e)
+			rtn.data = ScvmmErrorTranslator.details(e)
 		}
 		return ServiceResponse.create(rtn)
 	}
@@ -536,7 +549,8 @@ class ScvmmCloudProvider implements CloudProvider {
 				rtn.msg = 'No zone found'
 			}
 		} catch(e) {
-			log.error("initialize cloud error: {}",e)
+			log.error("initialize cloud ${cloudInfo?.name} error: ${e.message}", e)
+			rtn = ScvmmErrorTranslator.toServiceResponse(e, 'Error initializing the SCVMM controller')
 		}
 		return rtn
 	}
@@ -711,9 +725,13 @@ class ScvmmCloudProvider implements CloudProvider {
 			def listResults = apiService.listAllNetworks(scvmmOpts)
 			if (listResults.success == true && listResults.networks) {
 				rtn.success = true
+			} else {
+				rtn.msg = listResults.msg ?: 'SCVMM returned no networks (Get-SCLogicalNetwork / Get-SCVMNetwork)'
 			}
 		} catch (e) {
-			log.error("checkCommunication error:${e}", e)
+			log.error("checkCommunication error for cloud ${cloud?.name}: ${e.message}", e)
+			ScvmmErrorTranslator.toResultMap(e, rtn)
+			rtn.connectionFailure = ScvmmErrorTranslator.isConnectionFailure(e)
 		}
 		return rtn
 	}
@@ -927,11 +945,15 @@ class ScvmmCloudProvider implements CloudProvider {
 				def deleteResults = apiService.deleteServer(scvmmOpts, scvmmOpts.externalId)
 				if(deleteResults.success == true) {
 					rtn.success = true
+				} else {
+					rtn.msg = deleteResults.msg ?: "Failed to delete VM ${scvmmOpts.externalId} from SCVMM"
 				}
+			} else {
+				rtn.msg = stopResults.msg ?: "Failed to stop VM ${scvmmOpts.externalId} before deleting it"
 			}
 		} catch (e) {
-			log.error("deleteServer error: ${e}", e)
-			rtn.msg = e.message
+			log.error("deleteServer error for ${computeServer?.name} (${computeServer?.externalId}): ${e.message}", e)
+			return ScvmmErrorTranslator.toServiceResponse(e, "Error deleting ${computeServer?.name}")
 		}
 		return ServiceResponse.create(rtn)
 	}
