@@ -2226,6 +2226,114 @@ For (\$i=0; \$i -le 10; \$i++) {
         return rtn
     }
 
+    /**
+     * Adds a new virtual network adapter to an existing VM.
+     * @param opts scvmm connection opts
+     * @param vmId the SCVMM VM ID
+     * @param nicProps map with keys:
+     *        networkExternalId (VMNetwork ID), subnetExternalId (optional VMSubnet ID),
+     *        vlanEnabled (Boolean), vlanId (Integer)
+     * @return map with success flag and, on success, adapterId / macAddress of the created adapter
+     */
+    def addNetworkInterface(opts, vmId, Map nicProps = [:]) {
+        log.debug("addNetworkInterface: vmId: ${vmId}, nicProps: ${nicProps}")
+        def rtn = [success: false]
+        try {
+            def networkExternalId = nicProps.networkExternalId?.toString()?.take(36)
+            def subnetExternalId = nicProps.subnetExternalId?.toString()?.take(36)
+            def vlanEnabled = nicProps.vlanEnabled == true && nicProps.vlanId != null
+            def vlanId = nicProps.vlanId
+
+            if (!networkExternalId) {
+                rtn.error = 'No target network provided for NIC add'
+                log.error("addNetworkInterface: ${rtn.error}")
+                return rtn
+            }
+
+            def commands = []
+            commands << "\$VM = Get-SCVirtualMachine -VMMServer localhost -ID \"${vmId}\""
+            commands << "if (-not \$VM) { Write-Error \"Virtual machine ${vmId} not found\"; Exit 23 }"
+            commands << "\$VMNetwork = Get-SCVMNetwork -VMMServer localhost -ID \"${networkExternalId}\""
+            commands << "if (-not \$VMNetwork) { Write-Error \"VM network ${networkExternalId} not found\"; Exit 25 }"
+            if (subnetExternalId) {
+                commands << "\$VMSubnet = Get-SCVMSubnet -VMMServer localhost -ID \"${subnetExternalId}\""
+                commands << "if (-not \$VMSubnet) { Write-Error \"VM subnet ${subnetExternalId} not found\"; Exit 26 }"
+            }
+            def vlanArgs = vlanEnabled ? "-VLanEnabled \$true -VLanID ${vlanId}" : "-VLanEnabled \$false"
+            def subnetArg = subnetExternalId ? "-VMSubnet \$VMSubnet" : ""
+            commands << "\$NIC = New-SCVirtualNetworkAdapter -VM \$VM -VMNetwork \$VMNetwork ${subnetArg} ${vlanArgs} -Synthetic -MACAddressType Dynamic -IPv4AddressType Dynamic -IPv6AddressType Dynamic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false"
+            commands << "if (-not \$? -or -not \$NIC) { Exit 27 }"
+            commands << "\$NIC | Select-Object ID, MACAddress, SlotId, Name"
+
+            def command = commands.join(';')
+            log.debug "addNetworkInterface: ${command}"
+            def out = wrapExecuteCommand(generateCommandString(command), opts)
+            log.debug "addNetworkInterface results: ${out}"
+            rtn.success = out.success && out.exitCode == '0'
+            if (rtn.success) {
+                def nic = out.data instanceof List ? out.data.find { it } : out.data
+                rtn.adapterId = nic?.ID?.toString()
+                rtn.macAddress = nic?.MACAddress?.toString()
+                rtn.slotId = nic?.SlotId
+                if (!rtn.adapterId) {
+                    rtn.success = false
+                    rtn.error = 'Network adapter created but no adapter ID was returned'
+                }
+            } else {
+                rtn.error = out.error ?: out.msg ?: 'Failed to add network adapter'
+            }
+        } catch (e) {
+            log.error "addNetworkInterface error: ${e}", e
+            rtn.error = e.message
+        }
+        return rtn
+    }
+
+    /**
+     * Removes a virtual network adapter from an existing VM.
+     * @param opts scvmm connection opts
+     * @param vmId the SCVMM VM ID
+     * @param nicProps map with keys: adapterId (SCVMM adapter ID) and/or macAddress
+     * @return map with success flag
+     */
+    def removeNetworkInterface(opts, vmId, Map nicProps = [:]) {
+        log.debug("removeNetworkInterface: vmId: ${vmId}, nicProps: ${nicProps}")
+        def rtn = [success: false]
+        try {
+            def adapterId = nicProps.adapterId
+            def macAddress = nicProps.macAddress
+
+            if (!adapterId && !macAddress) {
+                rtn.error = 'No adapter identifier provided for NIC removal'
+                log.error("removeNetworkInterface: ${rtn.error}")
+                return rtn
+            }
+
+            def commands = []
+            commands << "\$VM = Get-SCVirtualMachine -VMMServer localhost -ID \"${vmId}\""
+            commands << "if (-not \$VM) { Write-Error \"Virtual machine ${vmId} not found\"; Exit 23 }"
+            def adapterFilter = adapterId ? "\$_.ID -eq \"${adapterId}\"" : "\$_.MACAddress -eq \"${macAddress}\""
+            commands << "\$VirtualNetworkAdapter = Get-SCVirtualNetworkAdapter -VMMServer localhost -VM \$VM | where { ${adapterFilter} } | Select-Object -First 1"
+            commands << "if (-not \$VirtualNetworkAdapter) { Write-Error \"Network adapter not found\"; Exit 24 }"
+            commands << "\$ignore = Remove-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter"
+            commands << "if (-not \$?) { Exit 27 }"
+            commands << "\$true"
+
+            def command = commands.join(';')
+            log.debug "removeNetworkInterface: ${command}"
+            def out = wrapExecuteCommand(generateCommandString(command), opts)
+            log.debug "removeNetworkInterface results: ${out}"
+            rtn.success = out.success && out.exitCode == '0'
+            if (!rtn.success) {
+                rtn.error = out.error ?: out.msg ?: 'Failed to remove network adapter'
+            }
+        } catch (e) {
+            log.error "removeNetworkInterface error: ${e}", e
+            rtn.error = e.message
+        }
+        return rtn
+    }
+
     def cleanData(data, ignoreString = null) {
         def rtn = ''
         if(data){
