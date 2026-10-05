@@ -16,6 +16,7 @@ import com.morpheusdata.model.NetworkPoolServer
 import com.morpheusdata.model.NetworkPoolType
 import com.morpheusdata.model.OptionType
 import com.morpheusdata.response.ServiceResponse
+import com.morpheusdata.scvmm.helper.NetworkPoolServerHelper
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 
@@ -23,8 +24,10 @@ import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
  * Owns the SCVMM {@link NetworkPoolType} and brokers static IP address leases against SCVMM static IP address pools.
  *
  * SCVMM pools are discovered per cloud by {@link com.morpheusdata.scvmm.sync.IpPoolsSync} rather than through a
- * standalone IPAM integration, so the {@code NetworkPoolServer} lifecycle methods are unsupported and the cloud is
- * resolved from the pool's {@code refId} instead.
+ * standalone IPAM integration. Each cloud owns a hidden {@link NetworkPoolServer} of this provider's type (see
+ * {@link NetworkPoolServerHelper}) purely so the appliance can dispatch lease/release calls here; the pool server
+ * lifecycle methods therefore accept the hidden server but do nothing, and the cloud is resolved from the pool's
+ * {@code refId} (falling back to the pool server's internal id).
  */
 class ScvmmIPAMProvider implements IPAMProvider {
 
@@ -93,22 +96,28 @@ class ScvmmIPAMProvider implements IPAMProvider {
 
     @Override
     ServiceResponse verifyNetworkPoolServer(NetworkPoolServer poolServer, Map opts) {
-        return error(NOT_AN_INTEGRATION)
+        return poolServerResponse(poolServer)
     }
 
     @Override
     ServiceResponse createNetworkPoolServer(NetworkPoolServer poolServer, Map opts) {
-        return error(NOT_AN_INTEGRATION)
+        return poolServerResponse(poolServer)
     }
 
     @Override
     ServiceResponse updateNetworkPoolServer(NetworkPoolServer poolServer, Map opts) {
-        return error(NOT_AN_INTEGRATION)
+        return poolServerResponse(poolServer)
     }
 
     @Override
     ServiceResponse initializeNetworkPoolServer(NetworkPoolServer poolServer, Map opts) {
-        return error(NOT_AN_INTEGRATION)
+        return poolServerResponse(poolServer)
+    }
+
+    // Only the hidden per-cloud server is legitimate; anything user-created is rejected
+    private static ServiceResponse poolServerResponse(NetworkPoolServer poolServer) {
+        return NetworkPoolServerHelper.getCloudId(poolServer) != null ?
+                ServiceResponse.success(poolServer) : error(NOT_AN_INTEGRATION)
     }
 
     @Override
@@ -118,18 +127,20 @@ class ScvmmIPAMProvider implements IPAMProvider {
 
     /**
      * Grants an IP address from the SCVMM static IP address pool backing {@code networkPool} and stamps the result onto
-     * {@code networkPoolIp}. SCVMM performs no DNS registration, so the A/PTR record flags are ignored.
+     * {@code networkPoolIp}. When the appliance has already populated {@code networkPoolIp.ipAddress} (a user-chosen
+     * address) that specific address is granted; otherwise SCVMM picks the next free one. SCVMM performs no DNS
+     * registration, so the A/PTR record flags are ignored.
      */
     @Override
     ServiceResponse createHostRecord(NetworkPoolServer poolServer, NetworkPool networkPool, NetworkPoolIp networkPoolIp,
                                      NetworkDomain domain, Boolean createARecord, Boolean createPtrRecord) {
-        log.debug("createHostRecord: pool ${networkPool?.externalId}")
+        log.debug("createHostRecord: pool ${networkPool?.externalId} requested ip ${networkPoolIp?.ipAddress}")
         try {
-            def scvmmOpts = getScvmmOpts(networkPool)
+            def scvmmOpts = getScvmmOpts(networkPool, poolServer)
             if (!scvmmOpts) {
                 return error("Unable to resolve an SCVMM controller for network pool ${networkPool?.id}")
             }
-            def results = apiService.reserveIPAddress(scvmmOpts, networkPool.externalId)
+            def results = apiService.reserveIPAddress(scvmmOpts, networkPool.externalId, networkPoolIp?.ipAddress)
             if (!results.success || !results.ipAddress) {
                 return error(results.msg ?:
                         "Unable to reserve an IP address from SCVMM pool ${networkPool.externalId}")
@@ -160,7 +171,7 @@ class ScvmmIPAMProvider implements IPAMProvider {
             if (!poolIp?.externalId) {
                 return ServiceResponse.success()
             }
-            def scvmmOpts = getScvmmOpts(networkPool)
+            def scvmmOpts = getScvmmOpts(networkPool, networkPool?.poolServer)
             if (!scvmmOpts) {
                 return error("Unable to resolve an SCVMM controller for network pool ${networkPool?.id}")
             }
@@ -181,16 +192,24 @@ class ScvmmIPAMProvider implements IPAMProvider {
         return ServiceResponse.error(msg, [:])
     }
 
-    protected Map getScvmmOpts(NetworkPool networkPool) {
-        if (networkPool?.refType != 'ComputeZone' || !networkPool.refId) {
+    protected Map getScvmmOpts(NetworkPool networkPool, NetworkPoolServer poolServer = null) {
+        Long cloudId = resolveCloudId(networkPool, poolServer)
+        if (cloudId == null) {
             return null
         }
-        Cloud cloud = morpheusContext.services.cloud.get(networkPool.refId.toLong())
+        Cloud cloud = morpheusContext.services.cloud.get(cloudId)
         ComputeServer controller = cloud ? getScvmmController(cloud) : null
         if (!controller) {
             return null
         }
         return apiService.getScvmmZoneAndHypervisorOpts(morpheusContext, cloud, controller) as Map
+    }
+
+    protected static Long resolveCloudId(NetworkPool networkPool, NetworkPoolServer poolServer) {
+        if (networkPool?.refType == 'ComputeZone' && networkPool.refId?.isLong()) {
+            return networkPool.refId.toLong()
+        }
+        return NetworkPoolServerHelper.getCloudId(poolServer ?: networkPool?.poolServer)
     }
 
     protected ComputeServer getScvmmController(Cloud cloud) {

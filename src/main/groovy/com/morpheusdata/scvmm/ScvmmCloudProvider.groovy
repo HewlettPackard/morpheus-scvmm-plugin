@@ -1,5 +1,6 @@
 package com.morpheusdata.scvmm
 
+import com.morpheusdata.scvmm.helper.NetworkPoolServerHelper
 import com.morpheusdata.scvmm.helper.morpheus.types.StorageVolumeTypeHelper
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
@@ -675,7 +676,7 @@ class ScvmmCloudProvider implements CloudProvider {
 						log.debug("${cloudInfo.name}: TemplatesSync in ${new Date().time - now}ms")
 
 						now = new Date().time
-						new IpPoolsSync(context, cloudInfo).execute()
+						new IpPoolsSync(context, cloudInfo, ensureNetworkPoolServer(cloudInfo)).execute()
 						log.debug("${cloudInfo.name}: IpPoolsSync in ${new Date().time - now}ms")
 
 						def doInventory = cloudInfo.getConfigProperty('importExisting')
@@ -783,7 +784,25 @@ class ScvmmCloudProvider implements CloudProvider {
 	 */
 	@Override
 	ServiceResponse deleteCloud(Cloud cloudInfo) {
+		try {
+			new NetworkPoolServerHelper(context).removePoolServer(cloudInfo)
+		} catch (e) {
+			log.error("deleteCloud: error removing SCVMM network pool server for cloud ${cloudInfo?.id}: ${e}", e)
+		}
 		return ServiceResponse.success()
+	}
+
+	/**
+	 * Ensures the hidden {@link NetworkPoolServer} that SCVMM IP pools are parented to exists for this cloud, so the
+	 * appliance can route IP lease/release calls to {@link ScvmmIPAMProvider}. Returns null if it cannot be created.
+	 */
+	protected NetworkPoolServer ensureNetworkPoolServer(Cloud cloudInfo) {
+		try {
+			return new NetworkPoolServerHelper(context).ensurePoolServer(cloudInfo)
+		} catch (e) {
+			log.error("error ensuring SCVMM network pool server for cloud ${cloudInfo?.id}: ${e}", e)
+			return null
+		}
 	}
 
 	/**

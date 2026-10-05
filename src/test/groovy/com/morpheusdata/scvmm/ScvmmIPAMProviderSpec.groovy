@@ -5,6 +5,7 @@ package com.morpheusdata.scvmm
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.model.NetworkPool
 import com.morpheusdata.model.NetworkPoolIp
+import com.morpheusdata.model.NetworkPoolServer
 import spock.lang.Specification
 import spock.lang.Subject
 
@@ -49,14 +50,30 @@ class ScvmmIPAMProviderSpec extends Specification {
         }
     }
 
-    def "pool server lifecycle methods report that SCVMM is not a standalone integration"() {
+    def "pool server lifecycle methods reject anything but the hidden per-cloud server"() {
         expect:
         [
-                provider.verifyNetworkPoolServer(null, [:]),
-                provider.createNetworkPoolServer(null, [:]),
-                provider.updateNetworkPoolServer(null, [:]),
-                provider.initializeNetworkPoolServer(null, [:])
+                provider.verifyNetworkPoolServer(poolServer, [:]),
+                provider.createNetworkPoolServer(poolServer, [:]),
+                provider.updateNetworkPoolServer(poolServer, [:]),
+                provider.initializeNetworkPoolServer(poolServer, [:])
         ].every { !it.success && it.msg.contains('cannot be managed as a standalone IPAM integration') }
+
+        where:
+        poolServer << [null, new NetworkPoolServer(internalId: null), new NetworkPoolServer(internalId: 'infoblox.3')]
+    }
+
+    def "pool server lifecycle methods accept the hidden per-cloud server"() {
+        given:
+        def poolServer = new NetworkPoolServer(internalId: 'scvmm-ipam.3')
+
+        expect:
+        [
+                provider.verifyNetworkPoolServer(poolServer, [:]),
+                provider.createNetworkPoolServer(poolServer, [:]),
+                provider.updateNetworkPoolServer(poolServer, [:]),
+                provider.initializeNetworkPoolServer(poolServer, [:])
+        ].every { it.success }
     }
 
     def "createHostRecord grants an address from the SCVMM pool and stamps it on the pool ip"() {
@@ -68,14 +85,33 @@ class ScvmmIPAMProviderSpec extends Specification {
         def response = provider.createHostRecord(null, pool, poolIp, null, false, false)
 
         then:
-        1 * provider.getScvmmOpts(pool) >> SCVMM_OPTS
-        1 * apiService.reserveIPAddress(SCVMM_OPTS, 'pool-1') >> [success: true, ipAddress: [ID: 'ip-99', Address: '10.0.0.5']]
+        1 * provider.getScvmmOpts(pool, null) >> SCVMM_OPTS
+        1 * apiService.reserveIPAddress(SCVMM_OPTS, 'pool-1', null) >> [success: true, ipAddress: [ID: 'ip-99', Address: '10.0.0.5']]
 
         and:
         response.success
         poolIp.ipAddress == '10.0.0.5'
         poolIp.externalId == 'ip-99'
         poolIp.staticIp
+    }
+
+    def "createHostRecord requests the user-chosen address when one is already on the pool ip"() {
+        given:
+        def poolServer = new NetworkPoolServer(internalId: 'scvmm-ipam.3')
+        def pool = new NetworkPool(externalId: 'pool-1')
+        def poolIp = new NetworkPoolIp(ipAddress: '10.0.0.42')
+
+        when:
+        def response = provider.createHostRecord(poolServer, pool, poolIp, null, false, false)
+
+        then:
+        1 * provider.getScvmmOpts(pool, poolServer) >> SCVMM_OPTS
+        1 * apiService.reserveIPAddress(SCVMM_OPTS, 'pool-1', '10.0.0.42') >> [success: true, ipAddress: [ID: 'ip-42', Address: '10.0.0.42']]
+
+        and:
+        response.success
+        poolIp.ipAddress == '10.0.0.42'
+        poolIp.externalId == 'ip-42'
     }
 
     def "createHostRecord fails when SCVMM grants no address"() {
@@ -86,8 +122,8 @@ class ScvmmIPAMProviderSpec extends Specification {
         def response = provider.createHostRecord(null, pool, new NetworkPoolIp(), null, false, false)
 
         then:
-        1 * provider.getScvmmOpts(pool) >> SCVMM_OPTS
-        1 * apiService.reserveIPAddress(SCVMM_OPTS, 'pool-1') >> [success: false, msg: 'boom']
+        1 * provider.getScvmmOpts(pool, null) >> SCVMM_OPTS
+        1 * apiService.reserveIPAddress(SCVMM_OPTS, 'pool-1', null) >> [success: false, msg: 'boom']
 
         and:
         !response.success
@@ -102,8 +138,8 @@ class ScvmmIPAMProviderSpec extends Specification {
         def response = provider.createHostRecord(null, pool, new NetworkPoolIp(), null, false, false)
 
         then:
-        1 * provider.getScvmmOpts(pool) >> null
-        0 * apiService.reserveIPAddress(_, _)
+        1 * provider.getScvmmOpts(pool, null) >> null
+        0 * apiService.reserveIPAddress(_, _, _)
 
         and:
         !response.success
@@ -119,7 +155,7 @@ class ScvmmIPAMProviderSpec extends Specification {
         def response = provider.deleteHostRecord(pool, poolIp, true)
 
         then:
-        1 * provider.getScvmmOpts(pool) >> SCVMM_OPTS
+        1 * provider.getScvmmOpts(pool, null) >> SCVMM_OPTS
         1 * apiService.releaseIPAddress(SCVMM_OPTS, 'pool-1', 'ip-99') >> [success: true]
 
         and:
@@ -131,7 +167,7 @@ class ScvmmIPAMProviderSpec extends Specification {
         def response = provider.deleteHostRecord(new NetworkPool(externalId: 'pool-1'), new NetworkPoolIp(), true)
 
         then:
-        0 * provider.getScvmmOpts(_)
+        0 * provider.getScvmmOpts(_, _)
         0 * apiService.releaseIPAddress(_, _, _)
 
         and:
@@ -147,7 +183,7 @@ class ScvmmIPAMProviderSpec extends Specification {
         def response = provider.deleteHostRecord(pool, poolIp, true)
 
         then:
-        1 * provider.getScvmmOpts(pool) >> SCVMM_OPTS
+        1 * provider.getScvmmOpts(pool, null) >> SCVMM_OPTS
         1 * apiService.releaseIPAddress(SCVMM_OPTS, 'pool-1', 'ip-99') >> [success: false]
 
         and:
@@ -157,12 +193,26 @@ class ScvmmIPAMProviderSpec extends Specification {
 
     def "getScvmmOpts ignores pools that are not scoped to a cloud"() {
         expect:
-        provider.getScvmmOpts(new NetworkPool(refType: refType, refId: refId)) == null
+        provider.getScvmmOpts(new NetworkPool(refType: refType, refId: refId), null) == null
 
         where:
         refType             | refId
         'NetworkPoolServer' | '7'
         'ComputeZone'       | null
         null                | null
+    }
+
+    def "resolveCloudId prefers the pool's cloud ref and falls back to the pool server"() {
+        expect:
+        ScvmmIPAMProvider.resolveCloudId(pool, poolServer) == expected
+
+        where:
+        pool                                                                              | poolServer                                      | expected
+        new NetworkPool(refType: 'ComputeZone', refId: '5')                               | null                                            | 5L
+        new NetworkPool(refType: 'ComputeZone', refId: '5')                               | new NetworkPoolServer(internalId: 'scvmm-ipam.9') | 5L
+        new NetworkPool()                                                                 | new NetworkPoolServer(internalId: 'scvmm-ipam.9') | 9L
+        new NetworkPool(poolServer: new NetworkPoolServer(internalId: 'scvmm-ipam.11'))   | null                                            | 11L
+        new NetworkPool()                                                                 | new NetworkPoolServer(internalId: 'other.9')    | null
+        new NetworkPool()                                                                 | null                                            | null
     }
 }

@@ -11,10 +11,12 @@ import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.Network
 import com.morpheusdata.model.NetworkPool
 import com.morpheusdata.model.NetworkPoolRange
+import com.morpheusdata.model.NetworkPoolServer
 import com.morpheusdata.model.NetworkPoolType
 import com.morpheusdata.model.NetworkSubnet
 import com.morpheusdata.model.ResourcePermission
 import com.morpheusdata.model.projection.NetworkPoolIdentityProjection
+import com.morpheusdata.scvmm.helper.NetworkPoolServerHelper
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
@@ -25,12 +27,17 @@ class IpPoolsSync {
     private MorpheusContext morpheusContext
     private Cloud cloud
     private ScvmmApiService apiService
+    private NetworkPoolServer poolServer
     private LogInterface log = PrefixedLoggerFactory.getLogger(IpPoolsSync)
 
-    IpPoolsSync(MorpheusContext morpheusContext, Cloud cloud) {
+    /**
+     * @param poolServer the hidden per-cloud pool server SCVMM pools are parented to; resolved from the cloud when null
+     */
+    IpPoolsSync(MorpheusContext morpheusContext, Cloud cloud, NetworkPoolServer poolServer = null) {
         this.cloud = cloud
         this.morpheusContext = morpheusContext
         this.apiService = new ScvmmApiService(morpheusContext)
+        this.poolServer = poolServer
     }
 
     def execute() {
@@ -54,13 +61,19 @@ class IpPoolsSync {
             def listResults = apiService.listNetworkIPPools(scvmmOpts)
 
             if (listResults.success == true) {
+                if (!poolServer) {
+                    poolServer = new NetworkPoolServerHelper(morpheusContext).ensurePoolServer(cloud)
+                }
+                if (!poolServer) {
+                    log.warn("IpPoolsSync: no SCVMM network pool server for cloud ${cloud.id}; IP leases will not be routed to the plugin")
+                }
                 def poolType = new NetworkPoolType(code: ScvmmConstants.NETWORK_POOL_TYPE_CODE)
                 def objList = listResults.ipPools
                 def networkMapping = listResults.networkMapping
 
                 def existingItems = morpheusContext.async.cloud.network.pool.listIdentityProjections(new DataQuery()
                         .withFilter('account.id', cloud.account.id)
-                        .withFilter('category', "scvmm.ipPool.${cloud.id}"))
+                        .withFilter('category', NetworkPoolServerHelper.getPoolCategory(cloud)))
 
                 SyncTask<NetworkPoolIdentityProjection, Map, NetworkPool> syncTask = new SyncTask<>(existingItems, objList as Collection<Map>)
                 syncTask.addMatchFunction { NetworkPoolIdentityProjection networkPool, poolItem ->
@@ -95,7 +108,7 @@ class IpPoolsSync {
                 def addConfig = [
                         account      : cloud.account,
                         typeCode     : "scvmm.ipPool.${cloud.id}.${it.ID}",
-                        category     : "scvmm.ipPool.${cloud.id}",
+                        category     : NetworkPoolServerHelper.getPoolCategory(cloud),
                         name         : it.Name,
                         displayName  : "${it.Name} (${it.Subnet})",
                         externalId   : it.ID,
@@ -111,6 +124,7 @@ class IpPoolsSync {
                         refId        : "${cloud.id}"
                 ]
                 NetworkPool add = new NetworkPool(addConfig)
+                NetworkPoolServerHelper.bindPool(add, poolServer)
                 networkPoolAdds << add
 
                 if(it.IPAddressRangeStart && it.IPAddressRangeEnd) {
@@ -128,7 +142,11 @@ class IpPoolsSync {
             }
 
             if(networkPoolAdds.size() > 0){
-                morpheusContext.async.cloud.network.pool.bulkCreate(networkPoolAdds).blockingGet()
+                if (poolServer?.id) {
+                    morpheusContext.async.cloud.network.pool.create(poolServer.id, networkPoolAdds).blockingGet()
+                } else {
+                    morpheusContext.async.cloud.network.pool.bulkCreate(networkPoolAdds).blockingGet()
+                }
             }
 
             if(poolRangeAdds.size() > 0){
@@ -274,6 +292,10 @@ class IpPoolsSync {
 
                     // Update the pool (if needed)
                     def doSave = false
+                    // Pools created by the embedded SCVMM service (or an older plugin) have no pool server
+                    if (NetworkPoolServerHelper.bindPool(existingItem, poolServer)) {
+                        doSave = true
+                    }
                     if(existingItem.name != masterItem.Name) {
                         existingItem.name = masterItem.Name
                         doSave = true
