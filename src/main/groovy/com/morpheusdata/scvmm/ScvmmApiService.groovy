@@ -2486,6 +2486,52 @@ For (\$i=0; \$i -le 10; \$i++) {
         commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddressType \$MACAddressType -VLanEnabled ${vlanEnabled ? "\$true" : "\$false"} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${doStatic && doPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${subnetExternalId ? '-VMSubnet \$VMSubnet' : ''} -VMNetwork \$VMNetwork"
         commands << "}"
 
+        // Additional (secondary) network interfaces. Only for fresh provisioning - clones inherit
+        // their adapters from the source VM and reconfigure them below. Each extra interface is
+        // attached to the same hardware profile via the shared JobGroup, mirroring the primary NIC.
+        // Adapters are created in order (primary first), so the adapter configuration index on the
+        // resulting VM configuration is tracked here for the static pool IP assignment further down.
+        def extraPoolInterfaces = []
+        def createdAdapterCount = 1
+        if (!cloneVMId) {
+            (networkConfig?.extraInterfaces ?: []).eachWithIndex { extraInterface, extraIndex ->
+                def extraNetworkExternalId = extraInterface?.network?.externalId?.take(36)
+                if (!extraNetworkExternalId) {
+                    return
+                }
+                def extraSubnetExternalId = extraInterface?.subnet?.externalId?.take(36)
+                def extraIpAddress = extraInterface?.ipAddress
+                def extraPoolId = extraInterface?.networkPool?.externalId
+                def extraDoPool = (doStatic && extraInterface?.poolType == 'scvmm' && extraIpAddress && extraPoolId) as boolean
+                if (extraDoPool) {
+                    extraPoolInterfaces << [index: extraIndex, adapterIndex: createdAdapterCount, ipAddress: extraIpAddress, poolId: extraPoolId]
+                }
+                createdAdapterCount++
+                def extraVlanEnabled = (extraInterface?.vlanId ?: 0) > 0
+                def extraVlanId = extraInterface?.vlanId
+                def netVar = "\$VMNetworkExtra${extraIndex}"
+                def subnetVar = "\$VMSubnetExtra${extraIndex}"
+                def macVar = "\$MACAddressExtra${extraIndex}"
+                def macTypeVar = "\$MACAddressTypeExtra${extraIndex}"
+                if (extraDoPool) {
+                    commands << "${macVar} = \"00:00:00:00:00:00\""
+                    commands << "${macTypeVar} = \"Static\""
+                } else {
+                    commands << "${macVar} = \"\""
+                    commands << "${macTypeVar} = \"Dynamic\""
+                }
+                commands << "${netVar} = Get-SCVMNetwork -VMMServer localhost -ID \"${extraNetworkExternalId}\""
+                if (extraSubnetExternalId) {
+                    commands << "${subnetVar} = Get-SCVMSubnet -VMMServer localhost -ID \"${extraSubnetExternalId}\""
+                }
+                commands << "If (-not ([string]::IsNullOrEmpty(${macVar}))) {"
+                commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddress ${macVar} -MACAddressType ${macTypeVar} -VLanEnabled ${extraVlanEnabled ? "\$true" : "\$false"} ${extraVlanEnabled ? "-VLanID ${extraVlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${extraDoPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${extraSubnetExternalId ? "-VMSubnet ${subnetVar}" : ''} -VMNetwork ${netVar}"
+                commands << "} else {"
+                commands << "\$ignore = New-SCVirtualNetworkAdapter -VMMServer localhost -JobGroup $hardwareGuid -MACAddressType ${macTypeVar} -VLanEnabled ${extraVlanEnabled ? "\$true" : "\$false"} ${extraVlanEnabled ? "-VLanID ${extraVlanId}" : ''} -Synthetic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false -IPv4AddressType ${extraDoPool ? 'Static' : 'Dynamic'} -IPv6AddressType Dynamic ${extraSubnetExternalId ? "-VMSubnet ${subnetVar}" : ''} -VMNetwork ${netVar}"
+                commands << "}"
+            }
+        }
+
         if (scvmmCapabilityProfile) {
             commands << "\$CapabilityProfile = Get-SCCapabilityProfile -VMMServer localhost | where {\$_.Name -eq \"${scvmmCapabilityProfile?.trim()}\"}"
         }
@@ -2610,16 +2656,26 @@ For (\$i=0; \$i -le 10; \$i++) {
 
             commands << "\$virtualMachineConfiguration = New-SCVMConfiguration -VMTemplate \$template -Name \"$vmId\""
 
-            if (doStatic && doPool) {
-                commands << "\$VNAConfig = Get-SCVirtualNetworkAdapterConfiguration -VMConfiguration \$virtualMachineConfiguration"
-                if (doPool) {
+            if ((doStatic && doPool) || extraPoolInterfaces) {
+                // The VM configuration carries one adapter configuration per NIC in the hardware profile,
+                // in creation order. Index into it so each pool IP lands on its own adapter rather than
+                // applying the primary's IP/MAC to every adapter at once.
+                commands << "\$VNAConfigs = @(Get-SCVirtualNetworkAdapterConfiguration -VMConfiguration \$virtualMachineConfiguration)"
+                if (doStatic && doPool) {
+                    commands << "\$VNAConfig = \$VNAConfigs[0]"
                     commands << "\$ippool = Get-SCStaticIPAddressPool -ID \"$poolId\""
                     commands << "\$ipaddress = Get-SCIPAddress -IPAddress \"$ipAddress\""
-                } else {
-                    commands << "\$ipaddress = \"$ipAddress\""
+                    commands << "\$ignore = Set-SCVirtualNetworkAdapterConfiguration -VirtualNetworkAdapterConfiguration \$VNAConfig -IPv4Address \$ipaddress -IPv4AddressPool \$ippool -MACAddress \"00:00:00:00:00:00\""
                 }
-
-                commands << "\$ignore = Set-SCVirtualNetworkAdapterConfiguration -VirtualNetworkAdapterConfiguration \$VNAConfig ${doPool ? "-IPv4Address \$ipaddress -IPv4AddressPool \$ippool" : "-IPv4Address \$ipAddress"} -MACAddress \"00:00:00:00:00:00\""
+                extraPoolInterfaces.each { extraPool ->
+                    def configVar = "\$VNAConfigExtra${extraPool.index}"
+                    def poolVar = "\$ippoolExtra${extraPool.index}"
+                    def ipVar = "\$ipaddressExtra${extraPool.index}"
+                    commands << "${configVar} = \$VNAConfigs[${extraPool.adapterIndex}]"
+                    commands << "${poolVar} = Get-SCStaticIPAddressPool -ID \"${extraPool.poolId}\""
+                    commands << "${ipVar} = Get-SCIPAddress -IPAddress \"${extraPool.ipAddress}\""
+                    commands << "\$ignore = Set-SCVirtualNetworkAdapterConfiguration -VirtualNetworkAdapterConfiguration ${configVar} -IPv4Address ${ipVar} -IPv4AddressPool ${poolVar} -MACAddress \"00:00:00:00:00:00\""
+                }
             }
 
 //			commands << "Write-Output \$virtualMachineConfiguration"
