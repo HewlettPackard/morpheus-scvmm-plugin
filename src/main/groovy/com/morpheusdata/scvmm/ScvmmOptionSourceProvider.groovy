@@ -263,7 +263,11 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 			return null
 		}
 		if(value.startsWith('pool-')) {
-			value = value.substring('pool-'.length())
+			// the wizard's blank "Select" option can arrive as a bare 'pool-' prefix with no id
+			value = value.substring('pool-'.length()).trim()
+			if(!value) {
+				return null
+			}
 		} else if(value.startsWith('poolGroup-')) {
 			// a pool group spans several pools; the host list can not be narrowed to a single one
 			return null
