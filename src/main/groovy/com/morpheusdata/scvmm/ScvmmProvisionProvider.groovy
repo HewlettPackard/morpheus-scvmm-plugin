@@ -1614,6 +1614,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 	}
 
     @Override
+    Boolean canReconfigureNetwork() {
+        return true
+    }
+
+    @Override
     Boolean canAddVolumes() {
         return true
     }
@@ -2492,6 +2497,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         }
                     }
                 }
+                // Handle network interface network reassignment
+                if (resizeRequest.interfacesUpdate && !rtn.error) {
+                    def interfaceResults = updateResizedInterfaces(computeServer, scvmmOpts, vmId, resizeRequest)
+                    if (!interfaceResults.success) {
+                        rtn.error = interfaceResults.error ?: 'Failed to update network interfaces'
+                    }
+                }
                 computeServer = getMorpheusServer(computeServer.id)
                 rtn.success = true
             } else {
@@ -2511,6 +2523,79 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             computeServer.statusMessage = resizeError
             computeServer = saveAndGet(computeServer)
             rtn.setError("${e}")
+        }
+        return rtn
+    }
+
+    /**
+     * Reassigns the network (and optional subnet) for existing virtual NICs during a reconfigure/resize operation.
+     * For each interface update whose target network/subnet differs from the current one, the change is
+     * applied in SCVMM and then persisted on the ComputeServerInterface model. Processing stops at the first failure.
+     * @param computeServer the server whose NICs are being updated (interfaces must be loaded)
+     * @param scvmmOpts SCVMM connection options
+     * @param vmId the SCVMM VM external id
+     * @param resizeRequest the resize request carrying interfacesUpdate entries; each updateProps map is the desired
+     *        interface from the UI and carries the target as network.id and/or network.subnet
+     * @return success when every requested NIC change was applied, otherwise an error describing the first failure
+     */
+    protected ServiceResponse updateResizedInterfaces(ComputeServer computeServer, Map scvmmOpts, vmId, ResizeRequest resizeRequest) {
+        ServiceResponse rtn = ServiceResponse.success()
+        for (interfaceUpdate in (resizeRequest.interfacesUpdate ?: [])) {
+            ComputeServerInterface existing = interfaceUpdate.existingModel
+            Map updateProps = interfaceUpdate.updateProps ?: [:]
+            if (!existing) {
+                continue
+            }
+            Long targetNetworkId = updateProps.network?.id ? updateProps.network.id.toLong() : null
+            Long targetSubnetId = updateProps.network?.subnet ? updateProps.network.subnet.toLong() : null
+            if (!targetNetworkId && !targetSubnetId) {
+                // nothing to reassign (e.g. only a 'connected' toggle) - not supported on SCVMM, skip
+                continue
+            }
+            if (existing.network?.id == targetNetworkId && existing.subnet?.id == targetSubnetId) {
+                log.debug("updateResizedInterfaces - NIC ${existing.id} already on network ${targetNetworkId} / subnet ${targetSubnetId}, skipping")
+                continue
+            }
+
+            NetworkSubnet targetSubnet = targetSubnetId ? context.services.networkSubnet.get(targetSubnetId) : null
+            if (targetSubnetId && !targetSubnet) {
+                rtn.error = "Unable to find subnet ${targetSubnetId} for NIC ${existing.id} update"
+                log.error("updateResizedInterfaces - ${rtn.error}")
+                break
+            }
+            // a subnet-only selection implies its parent network
+            targetNetworkId = targetNetworkId ?: targetSubnet?.networkId
+            Network targetNetwork = targetNetworkId ? context.services.cloud.network.get(targetNetworkId) : null
+            if (!targetNetwork) {
+                rtn.error = "Unable to find network ${targetNetworkId} for NIC ${existing.id} update"
+                log.error("updateResizedInterfaces - ${rtn.error}")
+                break
+            }
+
+            // mirror provisioning: the subnet VLAN wins over the network VLAN, and 0 means "no VLAN"
+            Integer vlanId = targetSubnet?.vlanId ?: targetNetwork.vlanId
+            def nicProps = [
+                    adapterId        : existing.externalId,
+                    macAddress       : existing.macAddress,
+                    networkExternalId: targetNetwork.externalId,
+                    subnetExternalId : targetSubnet?.externalId,
+                    vlanEnabled      : vlanId != null && vlanId > 0,
+                    vlanId           : vlanId
+            ]
+            def updateResults = apiService.updateNetworkInterface(scvmmOpts, vmId, nicProps)
+            if (updateResults.success != true) {
+                rtn.error = updateResults.error ?: "Failed to update network for NIC ${existing.id}"
+                log.error("updateResizedInterfaces - ${rtn.error}")
+                break
+            }
+            def iface = computeServer.interfaces?.find { it.id == existing.id }
+            if (iface) {
+                iface.network = targetNetwork
+                iface.subnet = targetSubnet
+                context.async.computeServer.computeServerInterface.save([iface]).blockingGet()
+            } else {
+                log.warn("updateResizedInterfaces - NIC ${existing.id} updated in SCVMM but not found on server ${computeServer.id}, skipping persist")
+            }
         }
         return rtn
     }
