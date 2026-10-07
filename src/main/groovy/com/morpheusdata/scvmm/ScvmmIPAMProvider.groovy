@@ -148,6 +148,7 @@ class ScvmmIPAMProvider implements IPAMProvider {
             networkPoolIp.ipAddress = results.ipAddress.Address
             networkPoolIp.externalId = results.ipAddress.ID
             networkPoolIp.staticIp = true
+            log.info("createHostRecord: granted ${networkPoolIp.ipAddress} (scvmm id ${networkPoolIp.externalId}) from pool ${networkPool.externalId}")
             return ServiceResponse.success(networkPoolIp)
         } catch (e) {
             log.error("createHostRecord error: ${e}", e)

@@ -353,8 +353,16 @@ if(\$vm) {
 		VirtualDiskDrives=@(\$vm.VirtualDiskDrives.ID)
 		ipAddress=''
 		internalIp=''
+		NetworkAdapters=@()
 	}
 	foreach (\$na in \$networkAdapters) {
+		\$data.NetworkAdapters += New-Object PSObject -property @{
+			ID=\$na.ID
+			MACAddress=\$na.MACAddress
+			IPv4AddressType=\$na.IPv4AddressType.toString()
+			IPv4Addresses=@(\$na.IPv4Addresses)
+			VMNetwork=\$na.VMNetwork.Name
+		}
 		foreach (\$ip in \$na.IPv4Addresses) {
 			if([string]::IsNullOrEmpty(\$data.ipAddress)) {
 				\$data.ipAddress = \$ip
@@ -1808,6 +1816,10 @@ Status=\$job.Status.toString()
 
                     if (waitForIp && !ipAddress) {
                         // Keep waiting
+                        if (attempts % 12 == 0) {
+                            log.info("checkServerReady: ${vmId} still waiting for an IP after ${attempts} attempts; " +
+                                    "state=${serverDetail.server?.VirtualMachineState}, adapters=${serverDetail.server?.NetworkAdapters}")
+                        }
                     } else {
                         // Most likely, server gets its IP from cloud-init calling back to cloudconfigcontroller/ipaddress... wait for that to happen
                         // Or... if the desire is to NOT install the agent, then we are not expecting an IP address
@@ -2538,6 +2550,8 @@ For (\$i=0; \$i -le 10; \$i++) {
         def doPool = doStatic && networkConfig?.primaryInterface?.poolType == 'scvmm'
         def ipAddress = networkConfig?.primaryInterface?.ipAddress
         def poolId = networkConfig?.primaryInterface?.networkPool?.externalId
+        log.info("buildCreateServerCommands: primary NIC doStatic=${doStatic}, poolType=${networkConfig?.primaryInterface?.poolType}, " +
+                "doPool=${doPool}, poolId=${poolId}, ipAddress=${ipAddress}")
         def vlanEnabled = networkConfig.primaryInterface?.vlanId > 0
         def vlanId = networkConfig.primaryInterface?.vlanId
         // network may be a vlan network... therefore, the externalId includes the VLAN id.. need to remove it
@@ -2592,7 +2606,12 @@ For (\$i=0; \$i -le 10; \$i++) {
                 def extraSubnetExternalId = extraInterface?.subnet?.externalId?.take(36)
                 def extraIpAddress = extraInterface?.ipAddress
                 def extraPoolId = extraInterface?.networkPool?.externalId
-                def extraDoPool = (doStatic && extraInterface?.poolType == 'scvmm' && extraIpAddress && extraPoolId) as boolean
+                // Each NIC carries its own static/dhcp mode; networkConfig.doStatic only reflects the primary NIC.
+                def extraDoStatic = (extraInterface?.doStatic != null ? extraInterface.doStatic :
+                        (extraInterface?.networkType ? extraInterface.networkType == 'static' : doStatic)) as boolean
+                def extraDoPool = (extraDoStatic && extraInterface?.poolType == 'scvmm' && extraIpAddress && extraPoolId) as boolean
+                log.info("buildCreateServerCommands: extra NIC ${extraIndex} (${extraInterface?.name}) doStatic=${extraDoStatic}, " +
+                        "poolType=${extraInterface?.poolType}, doPool=${extraDoPool}, poolId=${extraPoolId}, ipAddress=${extraIpAddress}")
                 if (extraDoPool) {
                     extraPoolInterfaces << [index: extraIndex, adapterIndex: createdAdapterCount, ipAddress: extraIpAddress, poolId: extraPoolId]
                 }
@@ -2961,6 +2980,7 @@ For (\$i=0; \$i -le 10; \$i++) {
     }
 
     def wrapExecuteCommand(String command, Map opts = [:]) {
+        log.debug "Executing command: ${command} with opts: ${opts}"
         def out = executeCommand(command, opts)
 
         if (out.data) {
@@ -2968,12 +2988,9 @@ For (\$i=0; \$i -le 10; \$i++) {
             if (!out.data.startsWith('[')) {
                 payload = "[${out.data}]"
             }
-            try {
-                log.debug "Received: ${JsonOutput.prettyPrint(payload)}"
-            } catch (e) {
-//				File file = new File("/Users/bob/Desktop/bad.json")
-//				file.write payload
-            }
+
+            log.debug "Received: ${JsonOutput.prettyPrint(payload)}"
+            
             out.data = new groovy.json.JsonSlurper().parseText(payload)
         }
         out
