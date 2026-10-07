@@ -13,6 +13,8 @@ import com.morpheusdata.core.synchronous.network.MorpheusSynchronousNetworkSubne
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.ComputeServerInterface
 import com.morpheusdata.model.Network
+import com.morpheusdata.model.NetworkPool
+import com.morpheusdata.model.NetworkPoolType
 import com.morpheusdata.model.NetworkSubnet
 import com.morpheusdata.request.ResizeRequest
 import com.morpheusdata.request.UpdateModel
@@ -150,8 +152,60 @@ class ScvmmProvisionProviderUpdateResizedInterfacesSpec extends Specification {
         capturedProps.subnetExternalId == null
         capturedProps.vlanEnabled == false
         capturedProps.vlanId == null
+        // target has no IP pool, so the adapter is switched to DHCP (SCVMM error 15046 otherwise)
+        capturedProps.ipv4AddressType == 'Dynamic'
         nic.network.is(targetNetwork)
         nic.subnet == null
+        nic.dhcp == true
+    }
+
+    def "moving a NIC to a network with an SCVMM IP pool leaves the adapter address type and dhcp flag unchanged"() {
+        given:
+        targetNetwork.pool = new NetworkPool(id: 5L, externalId: 'pool-1', type: new NetworkPoolType(code: 'scvmm'))
+        nic.dhcp = false
+        Map capturedProps
+
+        when:
+        ServiceResponse rtn = provider.updateResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                resizeRequestFor([update(nic, [network: [id: '20']])]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * apiService.updateNetworkInterface(SCVMM_OPTS, VM_ID, _ as Map) >> { o, v, Map props ->
+            capturedProps = props
+            [success: true]
+        }
+        1 * interfaceService.save(_) >> Single.just(true)
+
+        and:
+        rtn.success
+        capturedProps.ipv4AddressType == null
+        nic.network.is(targetNetwork)
+        nic.dhcp == false
+    }
+
+    def "moving a static NIC from a pool network to a DHCP network switches it to Dynamic and marks it dhcp"() {
+        given:
+        currentNetwork.pool = new NetworkPool(id: 5L, externalId: 'pool-1', type: new NetworkPoolType(code: 'scvmm'))
+        nic.dhcp = false
+        Map capturedProps
+
+        when:
+        ServiceResponse rtn = provider.updateResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                resizeRequestFor([update(nic, [network: [id: '20']])]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * apiService.updateNetworkInterface(SCVMM_OPTS, VM_ID, _ as Map) >> { o, v, Map props ->
+            capturedProps = props
+            [success: true]
+        }
+        1 * interfaceService.save(_) >> Single.just(true)
+
+        and:
+        rtn.success
+        capturedProps.ipv4AddressType == 'Dynamic'
+        nic.dhcp == true
     }
 
     def "a VLAN network enables the VLAN only when the VLAN id is positive"() {

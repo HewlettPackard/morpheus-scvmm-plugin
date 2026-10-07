@@ -2169,7 +2169,10 @@ For (\$i=0; \$i -le 10; \$i++) {
      * @param vmId the SCVMM VM external id
      * @param nicProps map with: adapterId (SCVMM adapter ID), macAddress (fallback matcher),
      *        networkExternalId (VMNetwork ID), subnetExternalId (optional VMSubnet ID),
-     *        vlanEnabled (Boolean), vlanId (Integer)
+     *        vlanEnabled (Boolean), vlanId (Integer),
+     *        ipv4AddressType (optional, 'Dynamic' or 'Static'; when omitted the adapter keeps its current type).
+     *        Pass 'Dynamic' when the target network has no SCVMM IP pool: SCVMM refuses to attach a Static adapter
+     *        to a network without a pool (error 15046).
      * @return map with success flag
      */
     def updateNetworkInterface(opts, vmId, Map nicProps = [:]) {
@@ -2182,6 +2185,12 @@ For (\$i=0; \$i -le 10; \$i++) {
             def subnetExternalId = nicProps.subnetExternalId?.toString()?.take(36)
             def vlanEnabled = nicProps.vlanEnabled == true && nicProps.vlanId != null
             def vlanId = nicProps.vlanId
+            def ipv4AddressType = nicProps.ipv4AddressType?.toString()
+            if (ipv4AddressType && !(ipv4AddressType in ['Dynamic', 'Static'])) {
+                rtn.error = "Invalid IPv4 address type ${ipv4AddressType} for NIC update"
+                log.error("updateNetworkInterface: ${rtn.error}")
+                return rtn
+            }
 
             if (!networkExternalId) {
                 rtn.error = 'No target network provided for NIC update'
@@ -2207,7 +2216,8 @@ For (\$i=0; \$i -le 10; \$i++) {
             }
             def vlanArgs = vlanEnabled ? "-VLanEnabled \$true -VLanID ${vlanId}" : "-VLanEnabled \$false"
             def subnetArg = subnetExternalId ? "-VMSubnet \$VMSubnet" : ""
-            commands << "\$ignore = Set-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter -VMNetwork \$VMNetwork ${subnetArg} ${vlanArgs}"
+            def addressTypeArg = ipv4AddressType ? "-IPv4AddressType ${ipv4AddressType}" : ""
+            commands << "\$ignore = Set-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter -VMNetwork \$VMNetwork ${subnetArg} ${vlanArgs} ${addressTypeArg}"
             commands << "if (-not \$?) { Exit 27 }"
             commands << "\$true"
 

@@ -2622,13 +2622,18 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             NetworkSubnet targetSubnet = target.subnet
 
             Integer vlanId = target.vlanId
+            // SCVMM only allows a Static adapter on a network that has an IP pool (error 15046 otherwise), so a
+            // move to a pool-less (DHCP) network must switch the adapter to Dynamic. When the target has a pool the
+            // type is left unchanged and SCVMM re-allocates a static address from that pool itself.
+            boolean targetHasPool = targetNetwork.pool != null
             def nicProps = [
                     adapterId        : existing.externalId,
                     macAddress       : existing.macAddress,
                     networkExternalId: targetNetwork.externalId,
                     subnetExternalId : targetSubnet?.externalId,
                     vlanEnabled      : vlanId != null && vlanId > 0,
-                    vlanId           : vlanId
+                    vlanId           : vlanId,
+                    ipv4AddressType  : targetHasPool ? null : 'Dynamic'
             ]
             def updateResults = apiService.updateNetworkInterface(scvmmOpts, vmId, nicProps)
             if (updateResults.success != true) {
@@ -2640,6 +2645,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             if (iface) {
                 iface.network = targetNetwork
                 iface.subnet = targetSubnet
+                if (!targetHasPool) {
+                    iface.dhcp = true
+                }
                 context.async.computeServer.computeServerInterface.save([iface]).blockingGet()
             } else {
                 log.warn("updateResizedInterfaces - NIC ${existing.id} updated in SCVMM but not found on server ${computeServer.id}, skipping persist")

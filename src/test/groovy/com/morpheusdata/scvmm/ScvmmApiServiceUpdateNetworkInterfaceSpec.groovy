@@ -80,6 +80,8 @@ class ScvmmApiServiceUpdateNetworkInterfaceSpec extends Specification {
         !capturedCommand.contains('-VLanID')
         !capturedCommand.contains('Get-SCVMSubnet')
         !capturedCommand.contains('-VMSubnet')
+        // address type is left unchanged unless explicitly requested
+        !capturedCommand.contains('-IPv4AddressType')
         // guards for missing objects and a failing Set call
         capturedCommand.contains('if (-not $VirtualNetworkAdapter) { Write-Error "Network adapter not found"; Exit 24 }')
         capturedCommand.contains("if (-not \$VMNetwork) { Write-Error \"VM network ${NETWORK_ID} not found\"; Exit 25 }")
@@ -130,6 +132,47 @@ class ScvmmApiServiceUpdateNetworkInterfaceSpec extends Specification {
         then:
         capturedCommand.contains('-VLanEnabled $false')
         !capturedCommand.contains('-VLanID')
+    }
+
+    def "switches the adapter to a #type IPv4 address type when requested"() {
+        given:
+        stubExecute(success: true, exitCode: '0')
+
+        when:
+        def rtn = service.updateNetworkInterface(opts, VM_ID, [adapterId: ADAPTER_ID, networkExternalId: NETWORK_ID, ipv4AddressType: type])
+
+        then:
+        rtn.success
+        capturedCommand.contains("-VMNetwork \$VMNetwork")
+        capturedCommand.contains("-IPv4AddressType ${type}")
+
+        where:
+        type << ['Dynamic', 'Static']
+    }
+
+    def "a null or empty IPv4 address type leaves the adapter type untouched"() {
+        given:
+        stubExecute(success: true, exitCode: '0')
+
+        when:
+        def rtn = service.updateNetworkInterface(opts, VM_ID, [adapterId: ADAPTER_ID, networkExternalId: NETWORK_ID, ipv4AddressType: type])
+
+        then:
+        rtn.success
+        !capturedCommand.contains('-IPv4AddressType')
+
+        where:
+        type << [null, '']
+    }
+
+    def "rejects an unknown IPv4 address type without calling SCVMM"() {
+        when:
+        def rtn = service.updateNetworkInterface(opts, VM_ID, [adapterId: ADAPTER_ID, networkExternalId: NETWORK_ID, ipv4AddressType: 'Bogus'])
+
+        then:
+        0 * service.wrapExecuteCommand(*_)
+        !rtn.success
+        rtn.error == 'Invalid IPv4 address type Bogus for NIC update'
     }
 
     def "strips the VLAN suffix from network and subnet external ids (first 36 chars only)"() {
