@@ -2519,7 +2519,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     }
                 }
                 computeServer = getMorpheusServer(computeServer.id)
-                rtn.success = true
+                rtn.success = !rtn.error
             } else {
                 rtn.success = false
                 rtn.error = 'Server never stopped so resize could not be performed'
@@ -2529,7 +2529,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             if (stopRequired) {
                 def startResults = isWorkload ? startWorkload(workload) : startServer(computeServer)
             }
-            rtn.success = true
+            if (rtn.error) {
+                log.error("resizeWorkloadAndServer - resize failed: ${rtn.error}")
+                rtn.success = false
+                rtn.msg = rtn.error
+            } else {
+                rtn.success = true
+            }
         } catch (e) {
             def resizeError = isWorkload ? "Unable to resize workload: ${e.message}" : "Unable to resize server: ${e.message}"
             log.error(resizeError, e)
@@ -2927,6 +2933,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 def cpuHotAdd = (rtn.neededCores == 0) || (serverObj?.cpuHotResize == true && rtn.neededCores > 0)
                 // Disk operations on SCSI are always hot-addable (both gen 1 and gen 2)
                 rtn.hotResize = memoryHotAdd && cpuHotAdd
+            }
+
+            // Hyper-V only hot-adds/removes synthetic network adapters on Generation 2 VMs; on Generation 1
+            // SCVMM rejects the change with Error 640 unless the VM is powered off. Network reassignment is
+            // fine while running on either generation.
+            def nicHardwareChange = resizeRequest.interfacesAdd || resizeRequest.interfacesDelete
+            if (nicHardwareChange && serverObj?.getConfigProperty('generation') != 'generation2') {
+                log.info("getResizeConfig - NIC add/remove on a ${serverObj?.getConfigProperty('generation') ?: 'unknown generation'} VM requires a stop")
+                rtn.hotResize = false
             }
 
             // Disk changes.. see if stop is required

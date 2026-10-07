@@ -2260,7 +2260,7 @@ For (\$i=0; \$i -le 10; \$i++) {
             log.debug "updateNetworkInterface results: ${out}"
             rtn.success = out.success && out.exitCode == '0'
             if (!rtn.success) {
-                rtn.error = out.error ?: out.msg ?: 'Failed to update network adapter'
+                rtn.error = cleanPowerShellError(out.error) ?: out.msg ?: 'Failed to update network adapter'
             }
         } catch (e) {
             log.error "updateNetworkInterface error: ${e}", e
@@ -2278,6 +2278,33 @@ For (\$i=0; \$i -le 10; \$i++) {
      *        vlanEnabled (Boolean), vlanId (Integer)
      * @return map with success flag and, on success, adapterId / macAddress of the created adapter
      */
+    /**
+     * Converts a PowerShell remoting error stream into a readable message. PowerShell emits errors as CLIXML
+     * ({@code #< CLIXML <Objs ...><S S="Error">...</S>}) with CR/LF encoded as {@code _x000D__x000A_}; this
+     * extracts the error strings and drops the "To restart the job" / stack-position noise so the UI shows
+     * the actual SCVMM message (e.g. "The virtual machine must be in either the Poweroff or Stored state ...").
+     * Non-CLIXML input is returned trimmed.
+     */
+    static String cleanPowerShellError(raw) {
+        def text = raw?.toString()?.trim()
+        if (!text) return null
+        if (!text.contains('<Objs') || !text.contains('<S S=')) return text
+        def lines = []
+        def matcher = text =~ /(?s)<S S="(?:Error|Warning)">(.*?)<\/S>/
+        while (matcher.find()) {
+            def line = matcher.group(1)
+                .replace('_x000D__x000A_', '\n').replace('_x000D_', '\n').replace('_x000A_', '\n')
+                .replace('&gt;', '>').replace('&lt;', '<').replace('&quot;', '"').replace('&apos;', "'").replace('&amp;', '&')
+                .trim()
+            if (line) lines << line
+        }
+        def noise = ~/^(To restart the job|PS>|At line:|\+ |\s*\+ CategoryInfo|\s*\+ FullyQualifiedErrorId)/
+        def cutoff = lines.findIndexOf { it ==~ /^To restart the job.*/ }
+        def kept = (cutoff >= 0 ? lines.take(cutoff) : lines).findAll { !(it =~ noise) }
+        def message = kept.join(' ').replaceAll(/\s+/, ' ').trim()
+        return message ?: text
+    }
+
     def addNetworkInterface(opts, vmId, Map nicProps = [:]) {
         log.debug("addNetworkInterface: vmId: ${vmId}, nicProps: ${nicProps}")
         def rtn = [success: false]
@@ -2323,7 +2350,7 @@ For (\$i=0; \$i -le 10; \$i++) {
                     rtn.error = 'Network adapter created but no adapter ID was returned'
                 }
             } else {
-                rtn.error = out.error ?: out.msg ?: 'Failed to add network adapter'
+                rtn.error = cleanPowerShellError(out.error) ?: out.msg ?: 'Failed to add network adapter'
             }
         } catch (e) {
             log.error "addNetworkInterface error: ${e}", e
@@ -2368,7 +2395,7 @@ For (\$i=0; \$i -le 10; \$i++) {
             log.debug "removeNetworkInterface results: ${out}"
             rtn.success = out.success && out.exitCode == '0'
             if (!rtn.success) {
-                rtn.error = out.error ?: out.msg ?: 'Failed to remove network adapter'
+                rtn.error = cleanPowerShellError(out.error) ?: out.msg ?: 'Failed to remove network adapter'
             }
         } catch (e) {
             log.error "removeNetworkInterface error: ${e}", e
