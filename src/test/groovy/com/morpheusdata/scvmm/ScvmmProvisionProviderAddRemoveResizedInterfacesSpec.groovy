@@ -15,10 +15,14 @@ import com.morpheusdata.core.synchronous.network.MorpheusSynchronousNetworkSubne
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.ComputeServerInterface
 import com.morpheusdata.model.Network
+import com.morpheusdata.model.NetworkPool
+import com.morpheusdata.model.NetworkPoolIp
+import com.morpheusdata.model.NetworkPoolType
 import com.morpheusdata.model.NetworkSubnet
 import com.morpheusdata.request.ResizeRequest
 import com.morpheusdata.request.UpdateModel
 import com.morpheusdata.response.ServiceResponse
+import com.morpheusdata.scvmm.helper.ReconfigurePoolIpHelper
 import io.reactivex.rxjava3.core.Single
 import spock.lang.Specification
 import spock.lang.Subject
@@ -42,6 +46,7 @@ class ScvmmProvisionProviderAddRemoveResizedInterfacesSpec extends Specification
     MorpheusComputeServerService computeServerService = Mock()
     MorpheusComputeServerInterfaceService interfaceService = Mock()
     ScvmmApiService apiService = Mock()
+    ReconfigurePoolIpHelper poolIpHelper = Mock()
 
     @Subject
     ScvmmProvisionProvider provider
@@ -53,6 +58,8 @@ class ScvmmProvisionProviderAddRemoveResizedInterfacesSpec extends Specification
     ComputeServerInterface primaryNic
     ComputeServerInterface secondNic
     ComputeServer server
+    /** when set, getMorpheusServer() returns this instead of the original server (simulates a reload after create/remove) */
+    ComputeServer reloadedServer
 
     def setup() {
         context.services >> services
@@ -66,6 +73,10 @@ class ScvmmProvisionProviderAddRemoveResizedInterfacesSpec extends Specification
 
         provider = new ScvmmProvisionProvider(null, context)
         provider.apiService = apiService
+        provider.poolIpHelper = poolIpHelper
+        poolIpHelper.releaseLeases(_, _ as ComputeServer, _) >> [success: true]
+        poolIpHelper.releaseLeases(_, _ as List) >> [success: true]
+        poolIpHelper.findLeases(_, _) >> []
 
         primaryNic = new ComputeServerInterface(id: 1L, name: 'eth0', externalId: 'adapter-1', macAddress: '00:15:5D:00:00:01',
                 network: currentNetwork, primaryInterface: true, displayOrder: 1)
@@ -73,8 +84,8 @@ class ScvmmProvisionProviderAddRemoveResizedInterfacesSpec extends Specification
                 network: currentNetwork, primaryInterface: false, displayOrder: 2)
         server = new ComputeServer(id: 100L)
         server.interfaces = [primaryNic, secondNic]
-        // getMorpheusServer reloads the server; return the same in-memory server by default
-        syncComputeServerService.find(_ as DataQuery) >> { server }
+        // getMorpheusServer reloads the server; return the same in-memory server unless a test provides a reloaded one
+        syncComputeServerService.find(_ as DataQuery) >> { reloadedServer ?: server }
     }
 
     private static ResizeRequest addRequest(List<Map> adds) {
@@ -286,7 +297,7 @@ class ScvmmProvisionProviderAddRemoveResizedInterfacesSpec extends Specification
         List<ComputeServerInterface> created = []
         def reloaded = new ComputeServer(id: 100L)
         reloaded.interfaces = [primaryNic, secondNic, new ComputeServerInterface(id: 3L, externalId: 'adapter-new-1')]
-        syncComputeServerService.find(_ as DataQuery) >> { reloaded }
+        reloadedServer = reloaded
 
         when:
         ServiceResponse rtn = provider.addResizedInterfaces(server, SCVMM_OPTS, VM_ID, addRequest([
@@ -309,6 +320,164 @@ class ScvmmProvisionProviderAddRemoveResizedInterfacesSpec extends Specification
         created.size() == 1
         created[0].name == 'eth2'
         created[0].displayOrder == 3
+    }
+
+    def "add: on a pool-backed network the adapter is created Dynamic, then a pool address is granted, bound Static and recorded"() {
+        given:
+        NetworkPool pool = new NetworkPool(id: 5L, externalId: 'pool-1', name: 'Pool 1', type: new NetworkPoolType(code: 'scvmm'))
+        targetNetwork.pool = pool
+        ComputeServerInterface persisted = new ComputeServerInterface(id: 3L, externalId: 'adapter-new', macAddress: 'aa', network: targetNetwork)
+        def reloaded = new ComputeServer(id: 100L)
+        reloaded.interfaces = [primaryNic, secondNic, persisted]
+        reloadedServer = reloaded
+        NetworkPoolIp grant = new NetworkPoolIp(ipAddress: '10.0.0.60', externalId: 'ip-60', networkPool: pool)
+        List<ComputeServerInterface> created
+        Map bindProps
+
+        when:
+        ServiceResponse rtn = provider.addResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                addRequest([[id: -1, network: [id: '20'], ipMode: 'pool']]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> pool
+        1 * apiService.addNetworkInterface(SCVMM_OPTS, VM_ID, { Map p -> !p.containsKey('ipv4AddressType') && !p.containsKey('ipAddress') }) >>
+                [success: true, adapterId: 'adapter-new', macAddress: 'aa']
+        1 * interfaceService.create(_ as List, server) >> { List ifaces, ComputeServer s -> created = ifaces; Single.just(true) }
+
+        then:
+        1 * poolIpHelper.leasePoolIp(SCVMM_OPTS, pool, targetNetwork, reloaded, persisted, null) >> [success: true, poolIp: grant]
+        1 * apiService.updateNetworkInterface(SCVMM_OPTS, VM_ID, _ as Map) >> { o, v, Map p -> bindProps = p; [success: true] }
+        1 * poolIpHelper.persistLease(grant) >> true
+        1 * interfaceService.save({ List l -> l == [persisted] }) >> Single.just(true)
+        0 * poolIpHelper.revokeLease(*_)
+        0 * apiService.removeNetworkInterface(*_)
+
+        and:
+        rtn.success
+        created[0].ipMode == 'pool'
+        bindProps.adapterId == 'adapter-new'
+        bindProps.macAddress == 'aa'
+        bindProps.networkExternalId == 'net-target'
+        bindProps.ipv4AddressType == 'Static'
+        bindProps.ipAddress == '10.0.0.60'
+        bindProps.poolExternalId == 'pool-1'
+        persisted.ipAddress == '10.0.0.60'
+        persisted.dhcp == false
+        persisted.poolAssigned == true
+        persisted.networkPool.is(pool)
+        persisted.ipMode == 'pool'
+    }
+
+    def "add: a static row passes the user-entered address to the pool"() {
+        given:
+        NetworkPool pool = new NetworkPool(id: 5L, externalId: 'pool-1', type: new NetworkPoolType(code: 'scvmm'))
+        targetNetwork.pool = pool
+        ComputeServerInterface persisted = new ComputeServerInterface(id: 3L, externalId: 'adapter-new', macAddress: 'aa')
+        def reloaded = new ComputeServer(id: 100L)
+        reloaded.interfaces = [primaryNic, secondNic, persisted]
+        reloadedServer = reloaded
+        NetworkPoolIp grant = new NetworkPoolIp(ipAddress: '10.0.0.88', externalId: 'ip-88', networkPool: pool)
+
+        when:
+        ServiceResponse rtn = provider.addResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                addRequest([[id: -1, network: [id: '20', ipMode: 'static', ipAddress: '10.0.0.88']]]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> pool
+        1 * apiService.addNetworkInterface(*_) >> [success: true, adapterId: 'adapter-new', macAddress: 'aa']
+        1 * interfaceService.create(_ as List, server) >> Single.just(true)
+        1 * poolIpHelper.leasePoolIp(SCVMM_OPTS, pool, targetNetwork, reloaded, persisted, '10.0.0.88') >> [success: true, poolIp: grant]
+        1 * apiService.updateNetworkInterface(SCVMM_OPTS, VM_ID, { Map p -> p.ipAddress == '10.0.0.88' }) >> [success: true]
+        1 * poolIpHelper.persistLease(grant) >> true
+        1 * interfaceService.save(_) >> Single.just(true)
+        rtn.success
+    }
+
+    def "add: a dhcp row on a pool-backed network stays Dynamic and never touches the pool"() {
+        given:
+        NetworkPool pool = new NetworkPool(id: 5L, externalId: 'pool-1', type: new NetworkPoolType(code: 'scvmm'))
+        targetNetwork.pool = pool
+        List<ComputeServerInterface> created
+
+        when:
+        ServiceResponse rtn = provider.addResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                addRequest([[id: -1, network: [id: '20'], ipMode: 'dhcp']]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> pool
+        1 * apiService.addNetworkInterface(*_) >> [success: true, adapterId: 'adapter-new', macAddress: 'aa']
+        1 * interfaceService.create(_ as List, server) >> { List ifaces, ComputeServer s -> created = ifaces; Single.just(true) }
+        0 * poolIpHelper.leasePoolIp(*_)
+        0 * apiService.updateNetworkInterface(*_)
+        0 * interfaceService.save(_)
+        rtn.success
+        created[0].dhcp == true
+        created[0].ipMode == 'dhcp'
+    }
+
+    def "add: when the pool has no free address the new adapter and interface are rolled back"() {
+        given:
+        NetworkPool pool = new NetworkPool(id: 5L, externalId: 'pool-1', name: 'Pool 1', type: new NetworkPoolType(code: 'scvmm'))
+        targetNetwork.pool = pool
+        ComputeServerInterface persisted = new ComputeServerInterface(id: 3L, externalId: 'adapter-new', macAddress: 'aa')
+        def reloaded = new ComputeServer(id: 100L)
+        reloaded.interfaces = [primaryNic, secondNic, persisted]
+        reloadedServer = reloaded
+
+        when:
+        ServiceResponse rtn = provider.addResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                addRequest([[id: -1, network: [id: '20']]]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> pool
+        1 * apiService.addNetworkInterface(*_) >> [success: true, adapterId: 'adapter-new', macAddress: 'aa']
+        1 * interfaceService.create(_ as List, server) >> Single.just(true)
+        1 * poolIpHelper.leasePoolIp(*_) >> [success: false, error: 'No free IP in pool']
+
+        then:
+        1 * apiService.removeNetworkInterface(SCVMM_OPTS, VM_ID, [adapterId: 'adapter-new', macAddress: 'aa']) >> [success: true]
+        1 * interfaceService.remove({ List l -> l == [persisted] }, reloaded) >> Single.just(true)
+        0 * apiService.updateNetworkInterface(*_)
+        0 * poolIpHelper.persistLease(_)
+        0 * interfaceService.save(_)
+        !rtn.success
+        rtn.error == 'No free IP in pool'
+    }
+
+    def "add: when SCVMM rejects the bind the grant is revoked and the adapter and interface are rolled back"() {
+        given:
+        NetworkPool pool = new NetworkPool(id: 5L, externalId: 'pool-1', type: new NetworkPoolType(code: 'scvmm'))
+        targetNetwork.pool = pool
+        ComputeServerInterface persisted = new ComputeServerInterface(id: 3L, externalId: 'adapter-new', macAddress: 'aa')
+        def reloaded = new ComputeServer(id: 100L)
+        reloaded.interfaces = [primaryNic, secondNic, persisted]
+        reloadedServer = reloaded
+        NetworkPoolIp grant = new NetworkPoolIp(ipAddress: '10.0.0.60', externalId: 'ip-60', networkPool: pool)
+
+        when:
+        ServiceResponse rtn = provider.addResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                addRequest([[id: -1, network: [id: '20']]]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> pool
+        1 * apiService.addNetworkInterface(*_) >> [success: true, adapterId: 'adapter-new', macAddress: 'aa']
+        1 * interfaceService.create(_ as List, server) >> Single.just(true)
+        1 * poolIpHelper.leasePoolIp(*_) >> [success: true, poolIp: grant]
+        1 * apiService.updateNetworkInterface(SCVMM_OPTS, VM_ID, _ as Map) >> [success: false, error: 'bind failed']
+
+        then:
+        1 * poolIpHelper.revokeLease(SCVMM_OPTS, pool, grant) >> [success: true]
+        1 * apiService.removeNetworkInterface(SCVMM_OPTS, VM_ID, [adapterId: 'adapter-new', macAddress: 'aa']) >> [success: true]
+        1 * interfaceService.remove({ List l -> l == [persisted] }, reloaded) >> Single.just(true)
+        0 * poolIpHelper.persistLease(_)
+        0 * interfaceService.save(_)
+        !rtn.success
+        rtn.error == 'bind failed'
     }
 
     // ---------------------------------------------------------------- removeResizedInterfaces
@@ -410,6 +579,43 @@ class ScvmmProvisionProviderAddRemoveResizedInterfacesSpec extends Specification
         0 * interfaceService.remove(*_)
         !rtn.success
         rtn.error == 'boom'
+    }
+
+    def "remove: releases any SCVMM pool address held by the NIC after the adapter is gone and before the interface is removed"() {
+        given:
+        List<String> order = []
+
+        when:
+        ServiceResponse rtn = provider.removeResizedInterfaces(server, SCVMM_OPTS, VM_ID, deleteRequest([secondNic]))
+
+        then:
+        1 * apiService.removeNetworkInterface(SCVMM_OPTS, VM_ID, _ as Map) >> { order << 'adapter'; [success: true] }
+        1 * poolIpHelper.releaseLeases(SCVMM_OPTS, server, secondNic) >> { order << 'release'; [success: true] }
+        1 * interfaceService.remove(_ as List, server) >> { order << 'iface'; Single.just(true) }
+        rtn.success
+        order == ['adapter', 'release', 'iface']
+    }
+
+    def "remove: a failed pool release is only a warning - the interface is still removed"() {
+        when:
+        ServiceResponse rtn = provider.removeResizedInterfaces(server, SCVMM_OPTS, VM_ID, deleteRequest([secondNic]))
+
+        then:
+        1 * apiService.removeNetworkInterface(*_) >> [success: true]
+        1 * poolIpHelper.releaseLeases(SCVMM_OPTS, server, secondNic) >> [success: false, error: 'pool server unreachable']
+        1 * interfaceService.remove(_ as List, server) >> Single.just(true)
+        rtn.success
+    }
+
+    def "remove: the pool is not touched when the SCVMM adapter removal fails"() {
+        when:
+        ServiceResponse rtn = provider.removeResizedInterfaces(server, SCVMM_OPTS, VM_ID, deleteRequest([secondNic]))
+
+        then:
+        1 * apiService.removeNetworkInterface(*_) >> [success: false, error: 'boom']
+        0 * poolIpHelper.releaseLeases(*_)
+        0 * interfaceService.remove(*_)
+        !rtn.success
     }
 
     // ---------------------------------------------------------------- reconfigureResizedInterfaces

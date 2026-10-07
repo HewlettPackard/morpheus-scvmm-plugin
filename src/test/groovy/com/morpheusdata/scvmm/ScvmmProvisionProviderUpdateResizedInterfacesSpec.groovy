@@ -14,11 +14,13 @@ import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.ComputeServerInterface
 import com.morpheusdata.model.Network
 import com.morpheusdata.model.NetworkPool
+import com.morpheusdata.model.NetworkPoolIp
 import com.morpheusdata.model.NetworkPoolType
 import com.morpheusdata.model.NetworkSubnet
 import com.morpheusdata.request.ResizeRequest
 import com.morpheusdata.request.UpdateModel
 import com.morpheusdata.response.ServiceResponse
+import com.morpheusdata.scvmm.helper.ReconfigurePoolIpHelper
 import io.reactivex.rxjava3.core.Single
 import spock.lang.Specification
 import spock.lang.Subject
@@ -37,6 +39,7 @@ class ScvmmProvisionProviderUpdateResizedInterfacesSpec extends Specification {
     MorpheusComputeServerService computeServerService = Mock()
     MorpheusComputeServerInterfaceService interfaceService = Mock()
     ScvmmApiService apiService = Mock()
+    ReconfigurePoolIpHelper poolIpHelper = Mock()
 
     @Subject
     ScvmmProvisionProvider provider
@@ -57,6 +60,10 @@ class ScvmmProvisionProviderUpdateResizedInterfacesSpec extends Specification {
 
         provider = new ScvmmProvisionProvider(null, context)
         provider.apiService = apiService
+        provider.poolIpHelper = poolIpHelper
+        poolIpHelper.findLeases(_, _) >> []
+        poolIpHelper.releaseLeases(_, _ as List) >> [success: true]
+        poolIpHelper.releaseLeases(_, _ as ComputeServer, _) >> [success: true]
 
         nic = new ComputeServerInterface(id: 1L, externalId: 'adapter-1', macAddress: '00:15:5D:00:00:01', network: currentNetwork)
         server = new ComputeServer(id: 100L)
@@ -159,35 +166,182 @@ class ScvmmProvisionProviderUpdateResizedInterfacesSpec extends Specification {
         nic.dhcp == true
     }
 
-    def "moving a NIC to a network with an SCVMM IP pool leaves the adapter address type and dhcp flag unchanged"() {
+    def "moving a NIC onto a network with an SCVMM IP pool leases an address, binds it Static and records the lease"() {
         given:
-        targetNetwork.pool = new NetworkPool(id: 5L, externalId: 'pool-1', type: new NetworkPoolType(code: 'scvmm'))
-        nic.dhcp = false
+        NetworkPool pool = new NetworkPool(id: 5L, externalId: 'pool-1', name: 'Pool 1', type: new NetworkPoolType(code: 'scvmm'))
+        targetNetwork.pool = pool
+        NetworkPoolIp grant = new NetworkPoolIp(ipAddress: '10.0.0.50', externalId: 'ip-50', networkPool: pool)
         Map capturedProps
 
         when:
         ServiceResponse rtn = provider.updateResizedInterfaces(server, SCVMM_OPTS, VM_ID,
-                resizeRequestFor([update(nic, [network: [id: '20']])]))
+                resizeRequestFor([update(nic, [network: [id: '20'], ipMode: 'pool'])]))
 
         then:
         1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.findLeases(server, nic) >> []
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> pool
+        1 * poolIpHelper.leasePoolIp(SCVMM_OPTS, pool, targetNetwork, server, nic, null) >> [success: true, poolIp: grant]
         1 * apiService.updateNetworkInterface(SCVMM_OPTS, VM_ID, _ as Map) >> { o, v, Map props ->
             capturedProps = props
             [success: true]
         }
+        1 * poolIpHelper.persistLease(grant) >> true
+        1 * poolIpHelper.releaseLeases(SCVMM_OPTS, []) >> [success: true]
+        0 * poolIpHelper.revokeLease(*_)
         1 * interfaceService.save(_) >> Single.just(true)
 
         and:
         rtn.success
-        capturedProps.ipv4AddressType == null
+        capturedProps.ipv4AddressType == 'Static'
+        capturedProps.ipAddress == '10.0.0.50'
+        capturedProps.poolExternalId == 'pool-1'
         nic.network.is(targetNetwork)
+        nic.ipAddress == '10.0.0.50'
         nic.dhcp == false
+        nic.poolAssigned == true
+        nic.networkPool.is(pool)
+        nic.ipMode == 'pool'
     }
 
-    def "moving a static NIC from a pool network to a DHCP network switches it to Dynamic and marks it dhcp"() {
+    def "a static row with a user-entered address asks the pool for that specific address"() {
         given:
-        currentNetwork.pool = new NetworkPool(id: 5L, externalId: 'pool-1', type: new NetworkPoolType(code: 'scvmm'))
+        NetworkPool pool = new NetworkPool(id: 5L, externalId: 'pool-1', type: new NetworkPoolType(code: 'scvmm'))
+        targetNetwork.pool = pool
+        NetworkPoolIp grant = new NetworkPoolIp(ipAddress: '10.0.0.77', externalId: 'ip-77', networkPool: pool)
+
+        when:
+        ServiceResponse rtn = provider.updateResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                resizeRequestFor([update(nic, [network: [id: '20', ipMode: 'static', ipAddress: ' 10.0.0.77 ']])]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.findLeases(server, nic) >> []
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> pool
+        1 * poolIpHelper.leasePoolIp(SCVMM_OPTS, pool, targetNetwork, server, nic, '10.0.0.77') >> [success: true, poolIp: grant]
+        1 * apiService.updateNetworkInterface(SCVMM_OPTS, VM_ID, { Map p -> p.ipAddress == '10.0.0.77' && p.ipv4AddressType == 'Static' }) >> [success: true]
+        1 * poolIpHelper.persistLease(grant) >> true
+        1 * poolIpHelper.releaseLeases(SCVMM_OPTS, []) >> [success: true]
+        1 * interfaceService.save(_) >> Single.just(true)
+        rtn.success
+        nic.ipAddress == '10.0.0.77'
+    }
+
+    def "a dhcp row on a pool-backed network does not lease and switches the adapter to Dynamic"() {
+        given:
+        NetworkPool pool = new NetworkPool(id: 5L, externalId: 'pool-1', type: new NetworkPoolType(code: 'scvmm'))
+        targetNetwork.pool = pool
+        Map capturedProps
+
+        when:
+        ServiceResponse rtn = provider.updateResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                resizeRequestFor([update(nic, [network: [id: '20'], ipMode: 'dhcp'])]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.findLeases(server, nic) >> []
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> pool
+        0 * poolIpHelper.leasePoolIp(*_)
+        1 * apiService.updateNetworkInterface(SCVMM_OPTS, VM_ID, _ as Map) >> { o, v, Map props ->
+            capturedProps = props
+            [success: true]
+        }
+        1 * poolIpHelper.releaseLeases(SCVMM_OPTS, []) >> [success: true]
+        1 * interfaceService.save(_) >> Single.just(true)
+        rtn.success
+        capturedProps.ipv4AddressType == 'Dynamic'
+        capturedProps.ipAddress == null
+        capturedProps.poolExternalId == null
+        nic.dhcp == true
+        nic.ipMode == 'dhcp'
+    }
+
+    def "moving between two pool networks releases the old lease only after the new one is bound"() {
+        given:
+        NetworkPool oldPool = new NetworkPool(id: 4L, externalId: 'pool-old', type: new NetworkPoolType(code: 'scvmm'))
+        NetworkPool newPool = new NetworkPool(id: 5L, externalId: 'pool-new', type: new NetworkPoolType(code: 'scvmm'))
+        currentNetwork.pool = oldPool
+        targetNetwork.pool = newPool
+        NetworkPoolIp oldLease = new NetworkPoolIp(id: 900L, ipAddress: '10.0.0.5', externalId: 'ip-5', networkPool: oldPool)
+        NetworkPoolIp grant = new NetworkPoolIp(ipAddress: '10.1.0.5', externalId: 'ip-new', networkPool: newPool)
+        List<String> order = []
+
+        when:
+        ServiceResponse rtn = provider.updateResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                resizeRequestFor([update(nic, [network: [id: '20'], ipMode: 'pool'])]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.findLeases(server, nic) >> [oldLease]
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> newPool
+        1 * poolIpHelper.leasePoolIp(SCVMM_OPTS, newPool, targetNetwork, server, nic, null) >> { order << 'lease'; [success: true, poolIp: grant] }
+        1 * apiService.updateNetworkInterface(SCVMM_OPTS, VM_ID, _ as Map) >> { order << 'bind'; [success: true] }
+        1 * poolIpHelper.persistLease(grant) >> { order << 'persist'; true }
+        1 * poolIpHelper.releaseLeases(SCVMM_OPTS, [oldLease]) >> { order << 'release'; [success: true] }
+        1 * interfaceService.save(_) >> Single.just(true)
+        rtn.success
+        order == ['lease', 'bind', 'persist', 'release']
+        nic.ipAddress == '10.1.0.5'
+        nic.networkPool.is(newPool)
+    }
+
+    def "fails and stops when the pool has no free address"() {
+        given:
+        NetworkPool pool = new NetworkPool(id: 5L, externalId: 'pool-1', name: 'Pool 1', type: new NetworkPoolType(code: 'scvmm'))
+        targetNetwork.pool = pool
+
+        when:
+        ServiceResponse rtn = provider.updateResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                resizeRequestFor([update(nic, [network: [id: '20']])]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.findLeases(server, nic) >> []
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> pool
+        1 * poolIpHelper.leasePoolIp(SCVMM_OPTS, pool, targetNetwork, server, nic, null) >> [success: false, error: 'No free IP in pool']
+        0 * apiService.updateNetworkInterface(*_)
+        0 * poolIpHelper.releaseLeases(*_)
+        0 * interfaceService.save(_)
+        !rtn.success
+        rtn.error == 'No free IP in pool'
+        nic.network.is(currentNetwork)
+    }
+
+    def "revokes the new grant and keeps the old lease when SCVMM rejects the bind"() {
+        given:
+        NetworkPool pool = new NetworkPool(id: 5L, externalId: 'pool-1', type: new NetworkPoolType(code: 'scvmm'))
+        targetNetwork.pool = pool
+        NetworkPoolIp oldLease = new NetworkPoolIp(id: 900L, ipAddress: '10.0.0.5')
+        NetworkPoolIp grant = new NetworkPoolIp(ipAddress: '10.1.0.5', externalId: 'ip-new', networkPool: pool)
+
+        when:
+        ServiceResponse rtn = provider.updateResizedInterfaces(server, SCVMM_OPTS, VM_ID,
+                resizeRequestFor([update(nic, [network: [id: '20']])]))
+
+        then:
+        1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.findLeases(server, nic) >> [oldLease]
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> pool
+        1 * poolIpHelper.leasePoolIp(*_) >> [success: true, poolIp: grant]
+        1 * apiService.updateNetworkInterface(SCVMM_OPTS, VM_ID, _ as Map) >> [success: false, error: 'Error 15046']
+        1 * poolIpHelper.revokeLease(SCVMM_OPTS, pool, grant) >> [success: true]
+        0 * poolIpHelper.persistLease(_)
+        0 * poolIpHelper.releaseLeases(*_)
+        0 * interfaceService.save(_)
+        !rtn.success
+        rtn.error == 'Error 15046'
+        nic.network.is(currentNetwork)
+    }
+
+    def "moving a static NIC from a pool network to a DHCP network switches it to Dynamic, marks it dhcp and releases its lease"() {
+        given:
+        NetworkPool oldPool = new NetworkPool(id: 5L, externalId: 'pool-1', type: new NetworkPoolType(code: 'scvmm'))
+        currentNetwork.pool = oldPool
+        NetworkPoolIp oldLease = new NetworkPoolIp(id: 900L, ipAddress: '10.0.0.5', externalId: 'ip-5', networkPool: oldPool)
         nic.dhcp = false
+        nic.ipAddress = '10.0.0.5'
+        nic.poolAssigned = true
+        nic.networkPool = oldPool
         Map capturedProps
 
         when:
@@ -196,16 +350,23 @@ class ScvmmProvisionProviderUpdateResizedInterfacesSpec extends Specification {
 
         then:
         1 * networkService.get(20L) >> targetNetwork
+        1 * poolIpHelper.findLeases(server, nic) >> [oldLease]
+        1 * poolIpHelper.resolveScvmmPool(targetNetwork) >> null
+        0 * poolIpHelper.leasePoolIp(*_)
         1 * apiService.updateNetworkInterface(SCVMM_OPTS, VM_ID, _ as Map) >> { o, v, Map props ->
             capturedProps = props
             [success: true]
         }
+        1 * poolIpHelper.releaseLeases(SCVMM_OPTS, [oldLease]) >> [success: true]
         1 * interfaceService.save(_) >> Single.just(true)
 
         and:
         rtn.success
         capturedProps.ipv4AddressType == 'Dynamic'
         nic.dhcp == true
+        nic.poolAssigned == false
+        nic.networkPool == null
+        nic.ipMode == 'dhcp'
     }
 
     def "a VLAN network enables the VLAN only when the VLAN id is positive"() {

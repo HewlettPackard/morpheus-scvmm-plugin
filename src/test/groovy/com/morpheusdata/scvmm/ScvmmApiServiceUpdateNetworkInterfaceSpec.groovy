@@ -175,6 +175,97 @@ class ScvmmApiServiceUpdateNetworkInterfaceSpec extends Specification {
         rtn.error == 'Invalid IPv4 address type Bogus for NIC update'
     }
 
+    def "binds a granted static pool address: looks up the pool, forces Static and passes -IPv4Addresses / -IPv4AddressPools"() {
+        given:
+        stubExecute(success: true, exitCode: '0')
+        String poolId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+
+        when:
+        def rtn = service.updateNetworkInterface(opts, VM_ID, [adapterId: ADAPTER_ID, networkExternalId: NETWORK_ID,
+                ipv4AddressType: type, ipAddress: ' 10.20.30.40 ', poolExternalId: poolId])
+
+        then:
+        rtn.success
+        capturedCommand.contains("\$IPPool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"${poolId}\"")
+        capturedCommand.contains('if (-not $IPPool) { Write-Error "Static IP address pool ' + poolId + ' not found"; Exit 28 }')
+        capturedCommand.contains('-IPv4AddressType Static')
+        !capturedCommand.contains('-IPv4AddressType Dynamic')
+        capturedCommand.contains('-IPv4Addresses "10.20.30.40" -IPv4AddressPools $IPPool')
+        // pool lookup must happen before the Set call
+        capturedCommand.indexOf('Get-SCStaticIPAddressPool') < capturedCommand.indexOf('Set-SCVirtualNetworkAdapter')
+
+        where:
+        type << [null, 'Static']
+    }
+
+    def "a pool id carrying a VLAN suffix is trimmed to the first 36 chars"() {
+        given:
+        stubExecute(success: true, exitCode: '0')
+
+        when:
+        def rtn = service.updateNetworkInterface(opts, VM_ID, [adapterId: ADAPTER_ID, networkExternalId: NETWORK_ID,
+                ipAddress: '10.0.0.1', poolExternalId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.200'])
+
+        then:
+        rtn.success
+        capturedCommand.contains('-ID "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"')
+        !capturedCommand.contains('eeeeeeeeeeee.200')
+    }
+
+    def "does not emit any pool lookup or address binding when no pool address is given"() {
+        given:
+        stubExecute(success: true, exitCode: '0')
+
+        when:
+        def rtn = service.updateNetworkInterface(opts, VM_ID, [adapterId: ADAPTER_ID, networkExternalId: NETWORK_ID, ipv4AddressType: 'Dynamic'])
+
+        then:
+        rtn.success
+        !capturedCommand.contains('Get-SCStaticIPAddressPool')
+        !capturedCommand.contains('-IPv4Addresses')
+        !capturedCommand.contains('-IPv4AddressPools')
+    }
+
+    def "rejects a pool binding when only #given is supplied"() {
+        when:
+        def rtn = service.updateNetworkInterface(opts, VM_ID, [adapterId: ADAPTER_ID, networkExternalId: NETWORK_ID] + props)
+
+        then:
+        0 * service.wrapExecuteCommand(*_)
+        !rtn.success
+        rtn.error == 'Both ipAddress and poolExternalId are required to bind a static pool address'
+
+        where:
+        given            | props
+        'ipAddress'      | [ipAddress: '10.0.0.1']
+        'poolExternalId' | [poolExternalId: 'pool-1']
+    }
+
+    def "rejects an invalid IPv4 address for a pool binding"() {
+        when:
+        def rtn = service.updateNetworkInterface(opts, VM_ID, [adapterId: ADAPTER_ID, networkExternalId: NETWORK_ID,
+                ipAddress: ip, poolExternalId: 'pool-1'])
+
+        then:
+        0 * service.wrapExecuteCommand(*_)
+        !rtn.success
+        rtn.error == "Invalid IPv4 address ${ip} for NIC update"
+
+        where:
+        ip << ['10.0.0', 'fe80::1', '10.0.0.1; Remove-SCVirtualMachine', 'abc']
+    }
+
+    def "refuses to bind a pool address to a Dynamic adapter"() {
+        when:
+        def rtn = service.updateNetworkInterface(opts, VM_ID, [adapterId: ADAPTER_ID, networkExternalId: NETWORK_ID,
+                ipv4AddressType: 'Dynamic', ipAddress: '10.0.0.1', poolExternalId: 'pool-1'])
+
+        then:
+        0 * service.wrapExecuteCommand(*_)
+        !rtn.success
+        rtn.error == 'A static pool address cannot be bound to a Dynamic adapter'
+    }
+
     def "strips the VLAN suffix from network and subnet external ids (first 36 chars only)"() {
         given:
         stubExecute(success: true, exitCode: '0')
