@@ -2536,6 +2536,20 @@ For (\$i=0; \$i -le 10; \$i++) {
         return rtn
     }
 
+    /**
+     * Whether a marshalled interface map wants static addressing. Prefers the interface's own
+     * doStatic/networkType; falls back to the supplied default only when the map declares neither.
+     */
+    protected static boolean interfaceIsStatic(Map networkInterface, fallback) {
+        if (networkInterface?.doStatic != null) {
+            return networkInterface.doStatic as boolean
+        }
+        if (networkInterface?.networkType) {
+            return networkInterface.networkType == 'static'
+        }
+        return fallback as boolean
+    }
+
     // TODO needs more error handling
     def buildCreateServerCommands(opts) {
         log.debug "buildCreateServerCommands: ${opts}"
@@ -2570,12 +2584,14 @@ For (\$i=0; \$i -le 10; \$i++) {
         def deployingToCloud = opts.zone.regionCode ? true : false
         def volumePaths = (opts.volumePaths && opts.volumePaths?.size() == 1 + dataDisks?.size()) ? opts.volumePaths : null
 
-        // Static v DHCP
-        def doStatic = networkConfig?.doStatic
-        def doPool = doStatic && networkConfig?.primaryInterface?.poolType == 'scvmm'
-        def ipAddress = networkConfig?.primaryInterface?.ipAddress
-        def poolId = networkConfig?.primaryInterface?.networkPool?.externalId
-        log.info("buildCreateServerCommands: primary NIC doStatic=${doStatic}, poolType=${networkConfig?.primaryInterface?.poolType}, " +
+        // Static v DHCP. The appliance marks networkConfig.doStatic deprecated and leaves it false;
+        // the authoritative per-NIC mode lives on the interface map.
+        def primaryInterface = networkConfig?.primaryInterface
+        def doStatic = interfaceIsStatic(primaryInterface, networkConfig?.doStatic)
+        def doPool = doStatic && primaryInterface?.poolType == 'scvmm'
+        def ipAddress = primaryInterface?.ipAddress
+        def poolId = primaryInterface?.networkPool?.externalId
+        log.info("buildCreateServerCommands: primary NIC doStatic=${doStatic}, poolType=${primaryInterface?.poolType}, " +
                 "doPool=${doPool}, poolId=${poolId}, ipAddress=${ipAddress}")
         def vlanEnabled = networkConfig.primaryInterface?.vlanId > 0
         def vlanId = networkConfig.primaryInterface?.vlanId
@@ -2632,8 +2648,7 @@ For (\$i=0; \$i -le 10; \$i++) {
                 def extraIpAddress = extraInterface?.ipAddress
                 def extraPoolId = extraInterface?.networkPool?.externalId
                 // Each NIC carries its own static/dhcp mode; networkConfig.doStatic only reflects the primary NIC.
-                def extraDoStatic = (extraInterface?.doStatic != null ? extraInterface.doStatic :
-                        (extraInterface?.networkType ? extraInterface.networkType == 'static' : doStatic)) as boolean
+                def extraDoStatic = interfaceIsStatic(extraInterface, doStatic)
                 def extraDoPool = (extraDoStatic && extraInterface?.poolType == 'scvmm' && extraIpAddress && extraPoolId) as boolean
                 log.info("buildCreateServerCommands: extra NIC ${extraIndex} (${extraInterface?.name}) doStatic=${extraDoStatic}, " +
                         "poolType=${extraInterface?.poolType}, doPool=${extraDoPool}, poolId=${extraPoolId}, ipAddress=${extraIpAddress}")

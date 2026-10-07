@@ -217,6 +217,33 @@ class ScvmmApiServiceBuildCreateServerCommandsSpec extends Specification {
         ]
     }
 
+    def "primary pool NIC is bound even though the appliance leaves networkConfig.doStatic false"() {
+        given: "the exact shape the appliance sends: deprecated top-level flag false, mode on the interface"
+        def networkConfig = [
+            doStatic        : false,
+            doDhcp          : false,
+            havePool        : false,
+            primaryInterface: [
+                network    : [externalId: PRIMARY_NET],
+                networkType: 'static',
+                doStatic   : true,
+                poolType   : 'scvmm',
+                ipAddress  : '10.157.232.119',
+                networkPool: [externalId: PRIMARY_POOL],
+                vlanId     : 0,
+            ],
+        ]
+
+        when:
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(networkConfig)))
+
+        then:
+        adapterCommands(cmds).every { it.contains('-IPv4AddressType Static') }
+        cmds.contains('$VNAConfig = $VNAConfigs[0]')
+        cmds.contains("\$ipaddress = Get-SCIPAddress -IPAddress \"10.157.232.119\"".toString())
+        adapterConfigSets(cmds).size() == 1
+    }
+
     def "extra pool interface is configured when the primary NIC is DHCP"() {
         given: "the exact shape the appliance sends for a DHCP primary + static pool secondary"
         def networkConfig = [
