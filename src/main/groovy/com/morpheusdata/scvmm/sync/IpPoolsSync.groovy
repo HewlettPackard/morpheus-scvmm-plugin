@@ -119,6 +119,7 @@ class IpPoolsSync {
                         poolEnabled  : true,
                         netmask      : netmask,
                         subnetAddress: subnetAddress,
+                        dnsServers   : normalizeDnsServers(it.DNSServers),
                         type         : poolType,
                         refType      : 'ComputeZone',
                         refId        : "${cloud.id}"
@@ -177,17 +178,42 @@ class IpPoolsSync {
         }
     }
 
+    /**
+     * Links the Morpheus network served by an SCVMM static IP pool to that pool (parity with embedded: only pools
+     * that report a VM network, i.e. pools on VM subnets, are linked; pools on "No isolation" VM networks report no
+     * VM network and are left for the user to attach to a network).
+     */
     def updateNetworkForPool(List<Network> networks, NetworkPool pool, networkId, subnetId, networkMapping) {
-        log.debug "updateNetworkForPool: ${networks} ${pool} ${networkId} ${subnetId} ${networkMapping}"
+        log.debug "updateNetworkForPool: pool=${pool?.externalId} networkId=${networkId} subnetId=${subnetId}"
         try {
-            // Find the matching network for the pool
             def networkExternalId = networkMapping?.find { it.ID == networkId }?.ID
             Network network = networks?.find { it.externalId == networkExternalId }
+            if (network) {
+                linkNetworkToPool(network, pool, subnetId)
+            } else {
+                log.debug("updateNetworkForPool: SCVMM pool ${pool?.name} (${pool?.externalId}) reports no VM network (networkId=${networkId}); not linking")
+            }
+        } catch (e) {
+            log.error("Error in updateNetworkForPool: ${e}", e)
+        }
+    }
 
+    /** SCVMM returns DNSServers as a single string, a list, or nothing depending on the pool. */
+    protected static List<String> normalizeDnsServers(dnsServers) {
+        if (!dnsServers) {
+            return []
+        }
+        def list = dnsServers instanceof Collection ? dnsServers : [dnsServers]
+        return list.collect { it?.toString()?.trim() }.findAll { it } as List<String>
+    }
+
+    protected void linkNetworkToPool(Network network, NetworkPool pool, subnetId) {
+        try {
             if(network) {
                 def doSave = false
 
-                if(network.pool != pool) {
+                if(network.pool?.id != pool.id) {
+                    log.info("linkNetworkToPool: linking network ${network.name} (${network.externalId}) to SCVMM pool ${pool.name} (${pool.externalId})")
                     network.pool = pool
                     doSave = true
                 }
@@ -229,7 +255,7 @@ class IpPoolsSync {
                 if(subnet) {
                     def doSave = false
 
-                    if(subnet.pool != pool) {
+                    if(subnet.pool?.id != pool.id) {
                         subnet.pool = pool
                         doSave = true
                     }
@@ -256,7 +282,7 @@ class IpPoolsSync {
                 }
             }
         } catch (e) {
-            log.error("Error in updateNetworkForPool: ${e}", e)
+            log.error("Error in linkNetworkToPool: ${e}", e)
         }
     }
 
@@ -331,6 +357,12 @@ class IpPoolsSync {
 
                     if(existingItem.subnetAddress != info.networkAddress) {
                         existingItem.subnetAddress = info.networkAddress
+                        doSave = true
+                    }
+
+                    List<String> dnsServers = normalizeDnsServers(masterItem.DNSServers)
+                    if((existingItem.dnsServers ?: []) != dnsServers) {
+                        existingItem.dnsServers = dnsServers
                         doSave = true
                     }
 
