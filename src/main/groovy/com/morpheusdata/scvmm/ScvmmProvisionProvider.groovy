@@ -1139,7 +1139,17 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
         def interfacePool = networkInterface.networkPool
         def networkPool = networkInterface.network?.pool
-        networkInterface.poolType = interfacePool?.type?.code ?: networkPool?.type?.code ?: networkInterface.poolType
+        def poolType = interfacePool?.type?.code ?: networkPool?.type?.code
+        def poolId = interfacePool?.id ?: networkPool?.id
+        if (!poolType && poolId) {
+            // The marshalled pool may not carry its type; the DB record always does.
+            try {
+                poolType = context.services.network.pool.get(poolId as Long)?.type?.code
+            } catch (e) {
+                log.warn("resolveInterfacePoolType[${label}]: unable to load pool ${poolId}: ${e.message}")
+            }
+        }
+        networkInterface.poolType = poolType ?: networkInterface.poolType
         log.info("resolveInterfacePoolType[${label}]: name=${networkInterface.name}, doStatic=${networkInterface.doStatic}, " +
                 "networkType=${networkInterface.networkType}, network=${networkInterface.network?.id}/${networkInterface.network?.externalId}, " +
                 "network.pool=${networkPool?.id}, interface.networkPool=${interfacePool?.id}/${interfacePool?.externalId}, " +

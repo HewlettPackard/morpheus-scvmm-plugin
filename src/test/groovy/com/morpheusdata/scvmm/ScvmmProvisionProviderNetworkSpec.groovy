@@ -3,6 +3,11 @@
 package com.morpheusdata.scvmm
 
 import com.morpheusdata.core.MorpheusContext
+import com.morpheusdata.core.MorpheusServices
+import com.morpheusdata.core.synchronous.network.MorpheusSynchronousNetworkPoolService
+import com.morpheusdata.core.synchronous.network.MorpheusSynchronousNetworkService
+import com.morpheusdata.model.NetworkPool
+import com.morpheusdata.model.NetworkPoolType
 import spock.lang.Specification
 
 class ScvmmProvisionProviderNetworkSpec extends Specification {
@@ -46,6 +51,24 @@ class ScvmmProvisionProviderNetworkSpec extends Specification {
         provider.resolveInterfacePoolType(networkInterface, 'primary')
 
         then:
+        networkInterface.poolType == 'scvmm'
+    }
+
+    def "resolveInterfacePoolType loads the pool type from the appliance when the marshalled pool has none"() {
+        given:
+        def poolService = Mock(MorpheusSynchronousNetworkPoolService)
+        def networkService = Mock(MorpheusSynchronousNetworkService) { getPool() >> poolService }
+        def services = Mock(MorpheusServices) { getNetwork() >> networkService }
+        def context = Mock(MorpheusContext) { getServices() >> services }
+        def provider = new ScvmmProvisionProvider(Mock(ScvmmPlugin), context)
+        def networkInterface = [name: 'eth1', doStatic: true, ipAddress: '10.157.232.118',
+                                networkPool: [id: 1L, externalId: '4784149f-a6ed-4944-8868-9a0df5185f4d']]
+
+        when:
+        provider.resolveInterfacePoolType(networkInterface, 'extra0')
+
+        then:
+        1 * poolService.get(1L) >> new NetworkPool(id: 1L, type: new NetworkPoolType(code: 'scvmm'))
         networkInterface.poolType == 'scvmm'
     }
 }
