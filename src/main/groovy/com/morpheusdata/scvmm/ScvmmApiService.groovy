@@ -1808,18 +1808,26 @@ Status=\$job.Status.toString()
                 refreshVM(opts, vmId)
                 def serverDetail = getServerDetails(opts, vmId)
                 if (serverDetail.success == true && serverDetail.server) {
-                    def ipAddress = serverDetail.server?.internalIp ?: server?.externalIp
-                    log.debug "ipAddress found: ${ipAddress}"
+                    def scvmmIp = serverDetail.server?.internalIp
+                    def ipAddress = scvmmIp ?: server?.externalIp
+                    def adapterSummary = describeAdapters(serverDetail.server?.NetworkAdapters)
                     if (ipAddress) {
+                        log.debug("checkServerReady: ${vmId} ip ${ipAddress} found via ${scvmmIp ? 'SCVMM adapter' : 'Morpheus externalIp'}; adapters=${adapterSummary}")
                         server.internalIp = ipAddress
+                    } else {
+                        def waitMsg = "checkServerReady: ${vmId} (${server?.name}) attempt ${attempts + 1}/300 - waiting for SCVMM to report a guest IPv4 " +
+                                "on any enabled adapter (reported via Hyper-V integration services); state=${serverDetail.server?.VirtualMachineState}, " +
+                                "status=${serverDetail.server?.Status}, morpheus externalIp=${server?.externalIp ?: 'none'}, adapters=${adapterSummary}"
+                        // Surface progress at INFO roughly once a minute without flooding the log
+                        if (attempts % 12 == 0) {
+                            log.info(waitMsg)
+                        } else {
+                            log.debug(waitMsg)
+                        }
                     }
 
                     if (waitForIp && !ipAddress) {
                         // Keep waiting
-                        if (attempts % 12 == 0) {
-                            log.info("checkServerReady: ${vmId} still waiting for an IP after ${attempts} attempts; " +
-                                    "state=${serverDetail.server?.VirtualMachineState}, adapters=${serverDetail.server?.NetworkAdapters}")
-                        }
                     } else {
                         // Most likely, server gets its IP from cloud-init calling back to cloudconfigcontroller/ipaddress... wait for that to happen
                         // Or... if the desire is to NOT install the agent, then we are not expecting an IP address
@@ -1850,13 +1858,30 @@ Status=\$job.Status.toString()
                 }
 
                 attempts++
-                if (attempts > 300 || notFoundAttempts > 10)
+                if (attempts > 300 || notFoundAttempts > 10) {
+                    log.warn("checkServerReady: ${vmId} giving up after ${attempts} attempts (vm not found ${notFoundAttempts}x); " +
+                            "no IPv4 address was reported by SCVMM for the guest")
                     pending = false
+                }
             }
         } catch (e) {
             log.error("An Exception Has Occurred", e)
         }
         return rtn
+    }
+
+    /**
+     * Compact one-line view of the adapters returned by getServerDetails, e.g.
+     * {@code [00:15:5D:E9:36:1F type=Dynamic ips=[] net=cxo-1, 00:15:5D:E9:36:20 type=Static ips=[10.157.232.117] net=cxo-1]}.
+     */
+    protected String describeAdapters(adapters) {
+        if (!adapters) {
+            return '[none]'
+        }
+        def parts = adapters.collect { na ->
+            "${na?.MACAddress ?: '?'} type=${na?.IPv4AddressType ?: '?'} ips=${na?.IPv4Addresses ?: []} net=${na?.VMNetwork ?: '?'}"
+        }
+        return "[${parts.join(', ')}]"
     }
 
     def startServer(opts, vmId) {
