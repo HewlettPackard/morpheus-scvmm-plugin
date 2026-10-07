@@ -1403,21 +1403,29 @@ foreach (\$network in \$networks) {
         return rtn
     }
 
+    static final String RELEASE_IP_REVOKED = 'revoked'
+    static final String RELEASE_IP_ALREADY_RELEASED = 'already-released'
+
+    /**
+     * Revokes a granted SCVMM pool address back to its pool. SCVMM returns {@code Assigned} addresses itself when the
+     * owning VM is removed, so by the time the appliance asks us to release the grant it is often already gone; a
+     * missing grant is therefore treated as success rather than an error.
+     */
     def releaseIPAddress(opts, poolId, ipId) {
         def rtn = [success: true]
         try {
-            def command = generateCommandString("\$ippool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"$poolId\"; \$ipaddress = Get-SCIPAddress -ID \"$ipId\"; \$ignore = Revoke-SCIPAddress \$ipaddress")
+            def command = generateCommandString("""\$ipaddress = Get-SCIPAddress -VMMServer localhost -ID \"$ipId\" -ErrorAction SilentlyContinue; \$result = \"${RELEASE_IP_ALREADY_RELEASED}\"; if (\$ipaddress) { \$ignore = Revoke-SCIPAddress \$ipaddress -ReturnToPool \$true; \$result = \"${RELEASE_IP_REVOKED}\" }; \$result""")
             def out = wrapExecuteCommand(command, opts)
-            log.info("releaseIPAddress: ${out}")
+            log.info("releaseIPAddress ${ipId} (pool ${poolId}): success=${out.success} exitCode=${out.exitCode} data=${out.data} error=${out.error}")
             if (out.success && out.exitCode == '0') {
-                // Do nothing
-            } else {
-                if (out.errorData?.contains("Unable to find the specified allocated IP address")) {
-                    // It has already been deleted somehow
-                    rtn.success = true
-                } else {
-                    rtn.success = false
+                rtn.released = out.data?.first() == RELEASE_IP_REVOKED
+                if (!rtn.released) {
+                    log.info("releaseIPAddress ${ipId}: grant not present in SCVMM (already released)")
                 }
+            } else {
+                rtn.success = false
+                rtn.msg = out.error ?: out.output ?: "Error revoking an IP address from SCVMM"
+                log.warn("releaseIPAddress ${ipId} failed: ${rtn.msg}")
             }
         } catch (ex) {
             rtn.success = false
