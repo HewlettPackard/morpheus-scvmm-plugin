@@ -2173,6 +2173,9 @@ For (\$i=0; \$i -le 10; \$i++) {
      *        ipv4AddressType (optional, 'Dynamic' or 'Static'; when omitted the adapter keeps its current type).
      *        Pass 'Dynamic' when the target network has no SCVMM IP pool: SCVMM refuses to attach a Static adapter
      *        to a network without a pool (error 15046).
+     *        ipAddress + poolExternalId (optional, must be given together): binds the adapter to that static IPv4
+     *        address from the given SCVMM static IP address pool (implies ipv4AddressType Static). The address is
+     *        expected to have been granted already via {@link #reserveIPAddress}.
      * @return map with success flag
      */
     def updateNetworkInterface(opts, vmId, Map nicProps = [:]) {
@@ -2185,7 +2188,27 @@ For (\$i=0; \$i -le 10; \$i++) {
             def subnetExternalId = nicProps.subnetExternalId?.toString()?.take(36)
             def vlanEnabled = nicProps.vlanEnabled == true && nicProps.vlanId != null
             def vlanId = nicProps.vlanId
+            def ipAddress = nicProps.ipAddress?.toString()?.trim() ?: null
+            def poolExternalId = nicProps.poolExternalId?.toString()?.take(36) ?: null
             def ipv4AddressType = nicProps.ipv4AddressType?.toString()
+            if (ipAddress || poolExternalId) {
+                if (!ipAddress || !poolExternalId) {
+                    rtn.error = 'Both ipAddress and poolExternalId are required to bind a static pool address'
+                    log.error("updateNetworkInterface: ${rtn.error}")
+                    return rtn
+                }
+                if (!(ipAddress ==~ /^[0-9]{1,3}(\.[0-9]{1,3}){3}$/)) {
+                    rtn.error = "Invalid IPv4 address ${ipAddress} for NIC update"
+                    log.error("updateNetworkInterface: ${rtn.error}")
+                    return rtn
+                }
+                if (ipv4AddressType == 'Dynamic') {
+                    rtn.error = 'A static pool address cannot be bound to a Dynamic adapter'
+                    log.error("updateNetworkInterface: ${rtn.error}")
+                    return rtn
+                }
+                ipv4AddressType = 'Static'
+            }
             if (ipv4AddressType && !(ipv4AddressType in ['Dynamic', 'Static'])) {
                 rtn.error = "Invalid IPv4 address type ${ipv4AddressType} for NIC update"
                 log.error("updateNetworkInterface: ${rtn.error}")
@@ -2214,10 +2237,15 @@ For (\$i=0; \$i -le 10; \$i++) {
                 commands << "\$VMSubnet = Get-SCVMSubnet -VMMServer localhost -ID \"${subnetExternalId}\""
                 commands << "if (-not \$VMSubnet) { Write-Error \"VM subnet ${subnetExternalId} not found\"; Exit 26 }"
             }
+            if (poolExternalId) {
+                commands << "\$IPPool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"${poolExternalId}\""
+                commands << "if (-not \$IPPool) { Write-Error \"Static IP address pool ${poolExternalId} not found\"; Exit 28 }"
+            }
             def vlanArgs = vlanEnabled ? "-VLanEnabled \$true -VLanID ${vlanId}" : "-VLanEnabled \$false"
             def subnetArg = subnetExternalId ? "-VMSubnet \$VMSubnet" : ""
             def addressTypeArg = ipv4AddressType ? "-IPv4AddressType ${ipv4AddressType}" : ""
-            commands << "\$ignore = Set-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter -VMNetwork \$VMNetwork ${subnetArg} ${vlanArgs} ${addressTypeArg}"
+            def poolArgs = poolExternalId ? "-IPv4Addresses \"${ipAddress}\" -IPv4AddressPools \$IPPool" : ""
+            commands << "\$ignore = Set-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter -VMNetwork \$VMNetwork ${subnetArg} ${vlanArgs} ${addressTypeArg} ${poolArgs}"
             commands << "if (-not \$?) { Exit 27 }"
             commands << "\$true"
 
