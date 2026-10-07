@@ -1368,10 +1368,15 @@ foreach (\$network in \$networks) {
         return rtn
     }
 
-    def reserveIPAddress(opts, poolId) {
+        /**
+     * Grants an address from an SCVMM static IP address pool. When {@code ipAddress} is given that specific address is
+     * requested, otherwise SCVMM hands out the next available one.
+     */
+    def reserveIPAddress(opts, poolId, ipAddress = null) {
         def rtn = [success: true, ipAddress: []]
         try {
-            def command = generateCommandString("""\$ippool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"$poolId\"; Grant-SCIPAddress -GrantToObjectType \"VirtualMachine\" -StaticIPAddressPool \$ippool | Select-Object ID,Address""")
+            def specificIp = ipAddress ? " -IPAddress \"${ipAddress}\"" : ''
+            def command = generateCommandString("""\$ippool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"$poolId\"; Grant-SCIPAddress -GrantToObjectType \"VirtualMachine\" -StaticIPAddressPool \$ippool${specificIp} | Select-Object ID,Address""")
             def out = wrapExecuteCommand(command, opts)
             log.debug("reserveIPAddress: ${out}")
             if (out.success && out.exitCode == '0') {
