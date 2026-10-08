@@ -90,7 +90,7 @@ class ScvmmProvisionProviderSpec extends Specification {
         then:
         1 * asyncComputeServer.get(25L) >> Maybe.just(stale)
         1 * apiService.checkServerReady({ it.server.is(stale) && it.waitForIp == true }, 'vm-25') >>
-            [success: true, server: [ipAddress: '10.0.0.42', macAddress: '00:15:5D:01:02:03']]
+            [success: true, server: [ipAddress: '10.0.0.42', NetworkAdapters: [[ID: 'nic-1', SlotId: 0, MacAddress: '00:15:5D:01:02:03', IPv4Addresses: ['10.0.0.42']]]]]
         // the first find() is the re-fetch after the poll, the second is the reload after bulkSave
         2 * syncComputeServer.find(_ as DataQuery) >>> [fresh, reloadedAfterSave]
         1 * interfaceService.create({ List<ComputeServerInterface> ifaces -> ifaces.size() == 1 && ifaces[0].ipAddress == '10.0.0.42' }, fresh) >> Single.just(true)
@@ -140,7 +140,7 @@ class ScvmmProvisionProviderSpec extends Specification {
 
         then:
         1 * asyncComputeServer.get(25L) >> Maybe.just(staleServer())
-        1 * apiService.checkServerReady(_, 'vm-25') >> [success: true, server: [ipAddress: '10.0.0.43', macAddress: 'AA']]
+        1 * apiService.checkServerReady(_, 'vm-25') >> [success: true, server: [ipAddress: '10.0.0.43', NetworkAdapters: [[ID: 'nic-1', SlotId: 0, MacAddress: 'AA', IPv4Addresses: ['10.0.0.43']]]]]
         2 * syncComputeServer.find(_ as DataQuery) >>> [fresh, freshServer()]
         1 * interfaceService.save([existing]) >> Single.just(true)
         0 * interfaceService.create(*_)
