@@ -1332,11 +1332,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 )
                 def parentServer = hosts?.find { it.externalId == hostId }
                 if (parentServer && server.parentServer?.id != parentServer.id) {
-                    server.parentServer = parentServer
-                    if (server.consoleType == 'vmrdp') {
-                        server.consoleHost = parentServer.name
+                    // Reload after the remote call so concurrent agent check-in updates are not overwritten
+                    def latestServer = context.services.computeServer.get(server.id) ?: server
+                    latestServer.parentServer = parentServer
+                    if (latestServer.consoleType == 'vmrdp') {
+                        latestServer.consoleHost = parentServer.name
                     }
-                    context.services.computeServer.save(server)
+                    context.services.computeServer.save(latestServer)
                 }
             }
         } catch (e) {
@@ -1439,12 +1441,14 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		opts.waitForIp = true
 		def serverDetails = apiService.checkServerReady(opts, fetchedServer.externalId)
 		if (serverDetails.success == true) {
+			// The agent can check in while checkServerReady polls; saving the pre-poll copy would
+			// reset agentInstalled/agentVersion and cause waitForAgentInstall to time out.
+			fetchedServer = MorpheusUtil.getMorpheusServer(context, server.id)
 			fetchedServer.externalIp = serverDetails.server?.ipAddress
 			fetchedServer.powerState = ComputeServer.PowerState.on
-			fetchedServer = MorpheusUtil.saveAndGetMorpheusServer(context, fetchedServer, true)
 			def newIpAddress = serverDetails.server?.ipAddress
 			def macAddress = serverDetails.server?.macAddress
-			applyComputeServerNetworkIp(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
+			fetchedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
             def hostOpts = fetchScvmmConnectionDetails(fetchedServer)
             updateServerHost(fetchedServer, hostOpts)
 			return new ServiceResponse<ProvisionResponse>(true, null, null,
