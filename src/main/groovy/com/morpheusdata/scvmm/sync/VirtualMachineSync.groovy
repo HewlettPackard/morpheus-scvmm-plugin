@@ -661,22 +661,12 @@ class VirtualMachineSync {
             def existingById = existingInterfaces.findAll { it.externalId }.collectEntries { [(it.externalId): it] }
 
             // Interfaces created during provisioning may not carry the SCVMM adapter ID yet; adopt them
-            // by IP address (or slot for the primary) instead of dropping and re-creating them.
+            // instead of dropping and re-creating them.
             def unmatchedInterfaces = existingInterfaces.findAll { !it.externalId || !masterById.containsKey(it.externalId) }
             def unclaimedAdapters = masterItems.findAll { !existingById.containsKey(it.ID) }
-            unclaimedAdapters.each { masterItem ->
-                def adapterIps = adapterAddresses(masterItem.IPv4Addresses) + adapterAddresses(masterItem.IPv6Addresses)
-                def match = unmatchedInterfaces.find { iface ->
-                    def ifaceIps = ([iface.ipAddress, iface.publicIpAddress] + (iface.addresses?.collect { it.address } ?: [])).findAll { it }.collect { it.toString() }
-                    ifaceIps.any { adapterIps.contains(it) }
-                }
-                if (!match && masterItem.SlotId?.toString() == '0') {
-                    match = unmatchedInterfaces.find { it.primaryInterface }
-                }
-                if (match) {
-                    existingById[masterItem.ID] = match
-                    unmatchedInterfaces.remove(match)
-                }
+            matchUnclaimedAdapters(unclaimedAdapters, unmatchedInterfaces).each { adapterId, iface ->
+                existingById[adapterId] = iface
+                unmatchedInterfaces.remove(iface)
             }
 
             // remove NICs no longer reported by SCVMM
@@ -688,6 +678,7 @@ class VirtualMachineSync {
                 changed = true
             }
 
+            def usedNames = existingInterfaces.collect { it.name }.findAll { it } as Set
             masterItems.each { masterItem ->
                 def existing = existingById[masterItem.ID]
                 def network = resolveNetworkForAdapter(masterItem, systemNetworks, existing?.network)
@@ -716,9 +707,11 @@ class VirtualMachineSync {
                         changed = true
                     }
                 } else {
+                    def ifaceName = nextInterfaceName(server.sourceImage?.interfaceName, usedNames)
+                    usedNames << ifaceName
                     def iface = new ComputeServerInterface(
                         externalId: masterItem.ID,
-                        name: server.sourceImage?.interfaceName ?: 'eth0',
+                        name: ifaceName,
                         macAddress: masterItem.MacAddress,
                         vlanId: masterItem.VLanID?.toString(),
                         network: network,
@@ -738,6 +731,94 @@ class VirtualMachineSync {
             log.error("syncInterfaces error: ${e}", e)
         }
         return changed
+    }
+
+    /**
+     * Pairs SCVMM adapters that have no interface with a matching externalId to existing interfaces that
+     * have no (or a stale) externalId. Matching order: shared IP address, MAC address, primary interface for
+     * slot 0, then positional (adapter SlotId order against interface displayOrder, preferring the same
+     * network). Interfaces created by the appliance during provisioning or reconfigure (e.g. a DHCP NIC with
+     * no address yet) would otherwise be dropped and re-created under a duplicate name.
+     *
+     * @return map of adapter ID to the interface that should adopt it
+     */
+    static Map<String, ComputeServerInterface> matchUnclaimedAdapters(List unclaimedAdapters, List<ComputeServerInterface> unmatchedInterfaces) {
+        Map<String, ComputeServerInterface> matches = [:]
+        def remainingIfaces = (unmatchedInterfaces ?: []).findAll { it } as List<ComputeServerInterface>
+        def remainingAdapters = (unclaimedAdapters ?: []).findAll { it } as List
+
+        def claim = { masterItem, ComputeServerInterface iface ->
+            matches[masterItem.ID?.toString()] = iface
+            remainingIfaces.remove(iface)
+        }
+
+        remainingAdapters.each { masterItem ->
+            def adapterIps = adapterAddresses(masterItem.IPv4Addresses) + adapterAddresses(masterItem.IPv6Addresses)
+            def match = adapterIps ? remainingIfaces.find { iface ->
+                def ifaceIps = ([iface.ipAddress, iface.publicIpAddress] + (iface.addresses?.collect { it.address } ?: [])).findAll { it }.collect { it.toString() }
+                ifaceIps.any { adapterIps.contains(it) }
+            } : null
+            if (match) claim(masterItem, match)
+        }
+        remainingAdapters = remainingAdapters.findAll { !matches.containsKey(it.ID?.toString()) }
+
+        remainingAdapters.each { masterItem ->
+            def mac = normalizeMac(masterItem.MacAddress)
+            def match = mac ? remainingIfaces.find { normalizeMac(it.macAddress) == mac } : null
+            if (match) claim(masterItem, match)
+        }
+        remainingAdapters = remainingAdapters.findAll { !matches.containsKey(it.ID?.toString()) }
+
+        remainingAdapters.find { it.SlotId?.toString() == '0' }?.with { masterItem ->
+            def match = remainingIfaces.find { it.primaryInterface }
+            if (match) claim(masterItem, match)
+        }
+        remainingAdapters = remainingAdapters.findAll { !matches.containsKey(it.ID?.toString()) }
+
+        def bySlot = remainingAdapters.sort(false) { slotOf(it) }
+        def byOrder = remainingIfaces.sort(false) { [(it.primaryInterface ? 0 : 1), it.displayOrder ?: 0, it.id ?: 0] }
+        bySlot.each { masterItem ->
+            def networkId = masterItem.VirtualNetworkId?.toString()
+            def match = byOrder.find { iface ->
+                remainingIfaces.contains(iface) && networkId && iface.network?.externalId?.toString() == networkId
+            } ?: byOrder.find { remainingIfaces.contains(it) }
+            if (match) claim(masterItem, match)
+        }
+        return matches
+    }
+
+    private static Integer slotOf(masterItem) {
+        try {
+            return masterItem?.SlotId != null ? Integer.parseInt(masterItem.SlotId.toString()) : Integer.MAX_VALUE
+        } catch (NumberFormatException ignored) {
+            return Integer.MAX_VALUE
+        }
+    }
+
+    private static String normalizeMac(mac) {
+        def value = mac?.toString()?.replaceAll(/[^0-9A-Fa-f]/, '')?.toUpperCase()
+        if (!value || value ==~ /0+/) return null
+        return value
+    }
+
+    /**
+     * Picks a name for an interface that SCVMM reports but the appliance has no row for. Uses the image's
+     * interface name (default eth0) and increments the trailing index until the name is unused on the server,
+     * so a second adapter becomes eth1 rather than a second eth0.
+     */
+    static String nextInterfaceName(String baseName, Collection<String> usedNames) {
+        def base = baseName ?: 'eth0'
+        def used = (usedNames ?: []) as Set
+        if (!used.contains(base)) return base
+        def matcher = base =~ /^(.*?)(\d+)$/
+        def prefix = matcher.matches() ? matcher.group(1) : base
+        int index = matcher.matches() ? Integer.parseInt(matcher.group(2)) : 0
+        String candidate
+        do {
+            index++
+            candidate = "${prefix}${index}".toString()
+        } while (used.contains(candidate))
+        return candidate
     }
 
     private Network resolveNetworkForAdapter(Map masterItem, Map systemNetworks, Network existingNetwork = null) {
