@@ -684,7 +684,8 @@ class VirtualMachineSync {
                 def network = resolveNetworkForAdapter(masterItem, systemNetworks, existing?.network)
                 def isPrimary = getIsPrimary(existing, masterItem, isPrimaryAssigned)
                 def dhcp = (masterItem.IPv4AddressType == 'Dynamic' || masterItem.IPv6AddressType == 'Dynamic')
-                def allIps = ((masterItem.IPv4Addresses ?: []).findAll { it }) + ((masterItem.IPv6Addresses ?: []).findAll { it })
+                List<NetAddress> adapterAddresses = buildNetAddresses(masterItem.IPv4Addresses, masterItem.IPv6Addresses)
+                Set<String> allIps = adapterAddresses.collect { it.address } as Set
 
                 if (existing) {
                     def save = false
@@ -695,11 +696,8 @@ class VirtualMachineSync {
                     if (existing.dhcp != dhcp) { existing.dhcp = dhcp; save = true }
                     if (existing.primaryInterface != isPrimary) { existing.primaryInterface = isPrimary; save = true }
                     def existingIps = existing.addresses?.collect { it.address } as Set ?: [] as Set
-                    if (existingIps != (allIps as Set)) {
-                        existing.addresses = allIps.collect { ip ->
-                            def type = (masterItem.IPv4Addresses ?: []).contains(ip) ? NetAddress.AddressType.IPV4 : NetAddress.AddressType.IPV6
-                            new NetAddress(type: type, address: ip)
-                        }
+                    if (existingIps != allIps) {
+                        existing.addresses = adapterAddresses
                         save = true
                     }
                     if (save) {
@@ -718,10 +716,7 @@ class VirtualMachineSync {
                         primaryInterface: isPrimary,
                         dhcp: dhcp
                     )
-                    allIps.each { ip ->
-                        def type = (masterItem.IPv4Addresses ?: []).contains(ip) ? NetAddress.AddressType.IPV4 : NetAddress.AddressType.IPV6
-                        iface.addresses += new NetAddress(type: type, address: ip)
-                    }
+                    iface.addresses = adapterAddresses
                     context.async.computeServer.computeServerInterface.create([iface], server).blockingGet()
                     if (isPrimary) isPrimaryAssigned = true
                     changed = true
@@ -819,6 +814,20 @@ class VirtualMachineSync {
             candidate = "${prefix}${index}".toString()
         } while (used.contains(candidate))
         return candidate
+    }
+
+    /**
+     * Builds the NetAddress list for an SCVMM adapter from its IPv4/IPv6 address payloads. Payloads may be
+     * arrays or, when ConvertTo-Json ran out of depth, whitespace-delimited strings; both are normalized.
+     * ipAddress/ipv6Address on ComputeServerInterface are derived from this list, so it is the single source of truth.
+     */
+    protected static List<NetAddress> buildNetAddresses(def ipv4Addresses, def ipv6Addresses) {
+        List<String> ipv4s = ScvmmApiService.normalizeAddresses(ipv4Addresses)
+        List<String> ipv6s = ScvmmApiService.normalizeAddresses(ipv6Addresses)
+        List<NetAddress> rtn = []
+        ipv4s.unique().each { ip -> rtn << new NetAddress(type: NetAddress.AddressType.IPV4, address: ip) }
+        ipv6s.unique().findAll { !ipv4s.contains(it) }.each { ip -> rtn << new NetAddress(type: NetAddress.AddressType.IPV6, address: ip) }
+        return rtn
     }
 
     private Network resolveNetworkForAdapter(Map masterItem, Map systemNetworks, Network existingNetwork = null) {
