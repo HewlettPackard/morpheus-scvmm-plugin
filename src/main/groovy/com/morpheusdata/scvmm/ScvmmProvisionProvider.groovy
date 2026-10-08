@@ -809,13 +809,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     scvmmOpts.fqdn += '.' + scvmmOpts.domainName
                 }
                 scvmmOpts.networkConfig = opts.networkConfig
-                if (scvmmOpts.networkConfig?.primaryInterface?.network?.pool) {
-                    scvmmOpts.networkConfig.primaryInterface.poolType = scvmmOpts.networkConfig.primaryInterface.network.pool.type.code
+                if (scvmmOpts.networkConfig?.primaryInterface) {
+                    resolveInterfacePoolType(scvmmOpts.networkConfig.primaryInterface, 'primary')
                 }
-                scvmmOpts.networkConfig?.extraInterfaces?.each { extraInterface ->
-                    if (extraInterface?.network?.pool) {
-                        extraInterface.poolType = extraInterface.network.pool.type.code
-                    }
+                scvmmOpts.networkConfig?.extraInterfaces?.eachWithIndex { extraInterface, idx ->
+                    resolveInterfacePoolType(extraInterface, "extra${idx}")
                 }
                 workloadRequest.cloudConfigOpts.licenses
                 scvmmOpts.licenses = workloadRequest.cloudConfigOpts.licenses
@@ -1128,6 +1126,34 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
         }
         rtn
+    }
+
+    /**
+     * Resolves the pool type code the create-server script keys on (poolType == 'scvmm').
+     * The appliance always marshals the leased pool onto the interface as networkPool; network.pool
+     * is not reliably populated on the marshalled Network model, so prefer the interface's pool.
+     */
+    protected void resolveInterfacePoolType(Map networkInterface, String label) {
+        if (!networkInterface) {
+            return
+        }
+        def interfacePool = networkInterface.networkPool
+        def networkPool = networkInterface.network?.pool
+        def poolType = interfacePool?.type?.code ?: networkPool?.type?.code
+        def poolId = interfacePool?.id ?: networkPool?.id
+        if (!poolType && poolId) {
+            // The marshalled pool may not carry its type; the DB record always does.
+            try {
+                poolType = context.services.network.pool.get(poolId as Long)?.type?.code
+            } catch (e) {
+                log.warn("resolveInterfacePoolType[${label}]: unable to load pool ${poolId}: ${e.message}")
+            }
+        }
+        networkInterface.poolType = poolType ?: networkInterface.poolType
+        log.info("resolveInterfacePoolType[${label}]: name=${networkInterface.name}, doStatic=${networkInterface.doStatic}, " +
+                "networkType=${networkInterface.networkType}, network=${networkInterface.network?.id}/${networkInterface.network?.externalId}, " +
+                "network.pool=${networkPool?.id}, interface.networkPool=${interfacePool?.id}/${interfacePool?.externalId}, " +
+                "ipAddress=${networkInterface.ipAddress}, poolType=${networkInterface.poolType}")
     }
 
     private setDynamicMemory(Map targetMap, ServicePlan plan) {

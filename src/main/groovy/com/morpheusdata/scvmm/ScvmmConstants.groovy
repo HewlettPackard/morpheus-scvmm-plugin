@@ -32,4 +32,16 @@ class ScvmmConstants {
      * See https://learn.microsoft.com/windows-server/virtualization/hyper-v/plan/plan-hyper-v-scalability-in-windows-server
      */
     static final Integer MAX_NETWORKS = 8
+    
+    /**
+     * Code of the {@link com.morpheusdata.model.NetworkPoolType} used for SCVMM static IP address pools. Must stay in
+     * sync with the {@code scvmm} entry in the appliance NetworkPoolTypeSeed, which historically owned this record.
+     */
+    static final String NETWORK_POOL_TYPE_CODE = 'scvmm'
+
+    /** Code of the SCVMM IPAM provider, which becomes the NetworkPoolServerType/AccountIntegrationType code. */
+    static final String IPAM_PROVIDER_CODE = 'scvmm-ipam'
+
+    /** ComputeServerType code of the SCVMM controller host that plugin commands are executed against. */
+    static final String CONTROLLER_SERVER_TYPE_CODE = 'scvmmController'
 }

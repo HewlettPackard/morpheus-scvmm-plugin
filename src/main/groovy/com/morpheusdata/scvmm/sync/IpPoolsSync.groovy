@@ -1,6 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
 import com.morpheusdata.scvmm.ScvmmApiService
+import com.morpheusdata.scvmm.ScvmmConstants
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataOrFilter
@@ -10,10 +11,12 @@ import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.Network
 import com.morpheusdata.model.NetworkPool
 import com.morpheusdata.model.NetworkPoolRange
+import com.morpheusdata.model.NetworkPoolServer
 import com.morpheusdata.model.NetworkPoolType
 import com.morpheusdata.model.NetworkSubnet
 import com.morpheusdata.model.ResourcePermission
 import com.morpheusdata.model.projection.NetworkPoolIdentityProjection
+import com.morpheusdata.scvmm.helper.NetworkPoolServerHelper
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
@@ -24,12 +27,17 @@ class IpPoolsSync {
     private MorpheusContext morpheusContext
     private Cloud cloud
     private ScvmmApiService apiService
+    private NetworkPoolServer poolServer
     private LogInterface log = PrefixedLoggerFactory.getLogger(IpPoolsSync)
 
-    IpPoolsSync(MorpheusContext morpheusContext, Cloud cloud) {
+    /**
+     * @param poolServer the hidden per-cloud pool server SCVMM pools are parented to; resolved from the cloud when null
+     */
+    IpPoolsSync(MorpheusContext morpheusContext, Cloud cloud, NetworkPoolServer poolServer = null) {
         this.cloud = cloud
         this.morpheusContext = morpheusContext
         this.apiService = new ScvmmApiService(morpheusContext)
+        this.poolServer = poolServer
     }
 
     def execute() {
@@ -53,13 +61,19 @@ class IpPoolsSync {
             def listResults = apiService.listNetworkIPPools(scvmmOpts)
 
             if (listResults.success == true) {
-                def poolType = new NetworkPoolType(code: 'scvmm')
+                if (!poolServer) {
+                    poolServer = new NetworkPoolServerHelper(morpheusContext).ensurePoolServer(cloud)
+                }
+                if (!poolServer) {
+                    log.warn("IpPoolsSync: no SCVMM network pool server for cloud ${cloud.id}; IP leases will not be routed to the plugin")
+                }
+                def poolType = new NetworkPoolType(code: ScvmmConstants.NETWORK_POOL_TYPE_CODE)
                 def objList = listResults.ipPools
                 def networkMapping = listResults.networkMapping
 
                 def existingItems = morpheusContext.async.cloud.network.pool.listIdentityProjections(new DataQuery()
                         .withFilter('account.id', cloud.account.id)
-                        .withFilter('category', "scvmm.ipPool.${cloud.id}"))
+                        .withFilter('category', NetworkPoolServerHelper.getPoolCategory(cloud)))
 
                 SyncTask<NetworkPoolIdentityProjection, Map, NetworkPool> syncTask = new SyncTask<>(existingItems, objList as Collection<Map>)
                 syncTask.addMatchFunction { NetworkPoolIdentityProjection networkPool, poolItem ->
@@ -94,7 +108,7 @@ class IpPoolsSync {
                 def addConfig = [
                         account      : cloud.account,
                         typeCode     : "scvmm.ipPool.${cloud.id}.${it.ID}",
-                        category     : "scvmm.ipPool.${cloud.id}",
+                        category     : NetworkPoolServerHelper.getPoolCategory(cloud),
                         name         : it.Name,
                         displayName  : "${it.Name} (${it.Subnet})",
                         externalId   : it.ID,
@@ -105,11 +119,13 @@ class IpPoolsSync {
                         poolEnabled  : true,
                         netmask      : netmask,
                         subnetAddress: subnetAddress,
+                        dnsServers   : normalizeDnsServers(it.DNSServers),
                         type         : poolType,
                         refType      : 'ComputeZone',
                         refId        : "${cloud.id}"
                 ]
                 NetworkPool add = new NetworkPool(addConfig)
+                NetworkPoolServerHelper.bindPool(add, poolServer)
                 networkPoolAdds << add
 
                 if(it.IPAddressRangeStart && it.IPAddressRangeEnd) {
@@ -127,7 +143,11 @@ class IpPoolsSync {
             }
 
             if(networkPoolAdds.size() > 0){
-                morpheusContext.async.cloud.network.pool.bulkCreate(networkPoolAdds).blockingGet()
+                if (poolServer?.id) {
+                    morpheusContext.async.cloud.network.pool.create(poolServer.id, networkPoolAdds).blockingGet()
+                } else {
+                    morpheusContext.async.cloud.network.pool.bulkCreate(networkPoolAdds).blockingGet()
+                }
             }
 
             if(poolRangeAdds.size() > 0){
@@ -158,17 +178,42 @@ class IpPoolsSync {
         }
     }
 
+    /**
+     * Links the Morpheus network served by an SCVMM static IP pool to that pool (parity with embedded: only pools
+     * that report a VM network, i.e. pools on VM subnets, are linked; pools on "No isolation" VM networks report no
+     * VM network and are left for the user to attach to a network).
+     */
     def updateNetworkForPool(List<Network> networks, NetworkPool pool, networkId, subnetId, networkMapping) {
-        log.debug "updateNetworkForPool: ${networks} ${pool} ${networkId} ${subnetId} ${networkMapping}"
+        log.debug "updateNetworkForPool: pool=${pool?.externalId} networkId=${networkId} subnetId=${subnetId}"
         try {
-            // Find the matching network for the pool
             def networkExternalId = networkMapping?.find { it.ID == networkId }?.ID
             Network network = networks?.find { it.externalId == networkExternalId }
+            if (network) {
+                linkNetworkToPool(network, pool, subnetId)
+            } else {
+                log.debug("updateNetworkForPool: SCVMM pool ${pool?.name} (${pool?.externalId}) reports no VM network (networkId=${networkId}); not linking")
+            }
+        } catch (e) {
+            log.error("Error in updateNetworkForPool: ${e}", e)
+        }
+    }
 
+    /** SCVMM returns DNSServers as a single string, a list, or nothing depending on the pool. */
+    protected static List<String> normalizeDnsServers(dnsServers) {
+        if (!dnsServers) {
+            return []
+        }
+        def list = dnsServers instanceof Collection ? dnsServers : [dnsServers]
+        return list.collect { it?.toString()?.trim() }.findAll { it } as List<String>
+    }
+
+    protected void linkNetworkToPool(Network network, NetworkPool pool, subnetId) {
+        try {
             if(network) {
                 def doSave = false
 
-                if(network.pool != pool) {
+                if(network.pool?.id != pool.id) {
+                    log.info("linkNetworkToPool: linking network ${network.name} (${network.externalId}) to SCVMM pool ${pool.name} (${pool.externalId})")
                     network.pool = pool
                     doSave = true
                 }
@@ -210,7 +255,7 @@ class IpPoolsSync {
                 if(subnet) {
                     def doSave = false
 
-                    if(subnet.pool != pool) {
+                    if(subnet.pool?.id != pool.id) {
                         subnet.pool = pool
                         doSave = true
                     }
@@ -237,7 +282,7 @@ class IpPoolsSync {
                 }
             }
         } catch (e) {
-            log.error("Error in updateNetworkForPool: ${e}", e)
+            log.error("Error in linkNetworkToPool: ${e}", e)
         }
     }
 
@@ -273,6 +318,10 @@ class IpPoolsSync {
 
                     // Update the pool (if needed)
                     def doSave = false
+                    // Pools created by the embedded SCVMM service (or an older plugin) have no pool server
+                    if (NetworkPoolServerHelper.bindPool(existingItem, poolServer)) {
+                        doSave = true
+                    }
                     if(existingItem.name != masterItem.Name) {
                         existingItem.name = masterItem.Name
                         doSave = true
@@ -308,6 +357,12 @@ class IpPoolsSync {
 
                     if(existingItem.subnetAddress != info.networkAddress) {
                         existingItem.subnetAddress = info.networkAddress
+                        doSave = true
+                    }
+
+                    List<String> dnsServers = normalizeDnsServers(masterItem.DNSServers)
+                    if((existingItem.dnsServers ?: []) != dnsServers) {
+                        existingItem.dnsServers = dnsServers
                         doSave = true
                     }
 
