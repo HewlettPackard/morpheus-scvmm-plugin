@@ -26,6 +26,7 @@ import com.morpheusdata.response.PrepareInstanceResponse
 import com.morpheusdata.response.PrepareWorkloadResponse
 import com.morpheusdata.response.ProvisionResponse
 import com.morpheusdata.response.ServiceResponse
+import com.morpheusdata.scvmm.helper.ReconfigurePoolIpHelper
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import com.morpheusdata.scvmm.util.MorpheusUtil
@@ -39,6 +40,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     protected MorpheusContext context
     protected ScvmmPlugin plugin
     ScvmmApiService apiService
+    ReconfigurePoolIpHelper poolIpHelper
 	private LogInterface log = PrefixedLoggerFactory.getLogger(ScvmmProvisionProvider)
 
     ScvmmProvisionProvider(ScvmmPlugin plugin, MorpheusContext context) {
@@ -46,6 +48,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         this.@context = context
         this.@plugin = plugin
         this.apiService = new ScvmmApiService(context)
+    }
+
+    protected ReconfigurePoolIpHelper getPoolIpHelper() {
+        if (poolIpHelper == null) {
+            poolIpHelper = new ReconfigurePoolIpHelper(context, apiService)
+        }
+        return poolIpHelper
     }
 
     /**
@@ -2506,15 +2515,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         }
                     }
                 }
-                // Handle network interface network reassignment
-                if (resizeRequest.interfacesUpdate && !rtn.error) {
-                    def interfaceResults = updateResizedInterfaces(computeServer, scvmmOpts, vmId, resizeRequest)
+                // Handle network interface add / reassignment / removal
+                if ((resizeRequest.interfacesDelete || resizeRequest.interfacesUpdate || resizeRequest.interfacesAdd) && !rtn.error) {
+                    def interfaceResults = reconfigureResizedInterfaces(computeServer, scvmmOpts, vmId, resizeRequest)
                     if (!interfaceResults.success) {
-                        rtn.error = interfaceResults.error ?: 'Failed to update network interfaces'
+                        rtn.error = interfaceResults.error ?: 'Failed to reconfigure network interfaces'
                     }
                 }
                 computeServer = getMorpheusServer(computeServer.id)
-                rtn.success = true
+                rtn.success = !rtn.error
             } else {
                 rtn.success = false
                 rtn.error = 'Server never stopped so resize could not be performed'
@@ -2524,7 +2533,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             if (stopRequired) {
                 def startResults = isWorkload ? startWorkload(workload) : startServer(computeServer)
             }
-            rtn.success = true
+            if (rtn.error) {
+                log.error("resizeWorkloadAndServer - resize failed: ${rtn.error}")
+                rtn.success = false
+                rtn.msg = rtn.error
+            } else {
+                rtn.success = true
+            }
         } catch (e) {
             def resizeError = isWorkload ? "Unable to resize workload: ${e.message}" : "Unable to resize server: ${e.message}"
             log.error(resizeError, e)
@@ -2537,9 +2552,68 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     }
 
     /**
+     * Applies all NIC changes requested by a reconfigure/resize: removals first (to free adapter slots),
+     * then network reassignments, then additions. Processing stops at the first failure.
+     * @return success when every requested NIC change was applied, otherwise an error describing the first failure
+     */
+    protected ServiceResponse reconfigureResizedInterfaces(ComputeServer computeServer, Map scvmmOpts, vmId, ResizeRequest resizeRequest) {
+        ServiceResponse rtn = removeResizedInterfaces(computeServer, scvmmOpts, vmId, resizeRequest)
+        if (!rtn.success) {
+            return rtn
+        }
+        computeServer = getMorpheusServer(computeServer.id)
+        rtn = updateResizedInterfaces(computeServer, scvmmOpts, vmId, resizeRequest)
+        if (!rtn.success) {
+            return rtn
+        }
+        computeServer = getMorpheusServer(computeServer.id)
+        return addResizedInterfaces(computeServer, scvmmOpts, vmId, resizeRequest)
+    }
+
+    /**
+     * Resolves the target Network / NetworkSubnet / VLAN for a NIC from the UI row's network props
+     * (network.id and/or network.subnet). Mirrors provisioning: the subnet VLAN wins over the network VLAN,
+     * and 0 means "no VLAN".
+     * @return map with network, subnet, vlanId on success; or error on failure; or empty map when nothing was selected
+     */
+    protected Map resolveResizedInterfaceTarget(Map networkProps, String nicLabel) {
+        Map rtn = [:]
+        Long targetNetworkId = networkProps?.id ? networkProps.id.toLong() : null
+        Long targetSubnetId = networkProps?.subnet ? networkProps.subnet.toLong() : null
+        if (!targetNetworkId && !targetSubnetId) {
+            return rtn
+        }
+        NetworkSubnet targetSubnet = targetSubnetId ? context.services.networkSubnet.get(targetSubnetId) : null
+        if (targetSubnetId && !targetSubnet) {
+            rtn.error = "Unable to find subnet ${targetSubnetId} for ${nicLabel}"
+            return rtn
+        }
+        // a subnet-only selection implies its parent network
+        targetNetworkId = targetNetworkId ?: targetSubnet?.networkId
+        Network targetNetwork = targetNetworkId ? context.services.cloud.network.get(targetNetworkId) : null
+        if (!targetNetwork) {
+            rtn.error = "Unable to find network ${targetNetworkId} for ${nicLabel}"
+            return rtn
+        }
+        rtn.network = targetNetwork
+        rtn.subnet = targetSubnet
+        rtn.vlanId = targetSubnet?.vlanId ?: targetNetwork.vlanId
+        return rtn
+    }
+
+    /**
      * Reassigns the network (and optional subnet) for existing virtual NICs during a reconfigure/resize operation.
      * For each interface update whose target network/subnet differs from the current one, the change is
      * applied in SCVMM and then persisted on the ComputeServerInterface model. Processing stops at the first failure.
+     * <p>
+     * SCVMM IP pool handling (the appliance does none of it on this resize path):
+     * <ul>
+     *   <li>target network backed by an SCVMM pool and row not set to DHCP: an address is granted from the pool
+     *       (the user-entered one when the row is static with an IP), bound to the adapter together with the network
+     *       change, and recorded as a {@link NetworkPoolIp} on the interface; the grant is revoked if the bind fails</li>
+     *   <li>target network without an SCVMM pool: the adapter is switched to Dynamic (SCVMM error 15046 otherwise)</li>
+     *   <li>in both cases any pool address the NIC held on its previous network is released afterwards</li>
+     * </ul>
      * @param computeServer the server whose NICs are being updated (interfaces must be loaded)
      * @param scvmmOpts SCVMM connection options
      * @param vmId the SCVMM VM external id
@@ -2555,8 +2629,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             if (!existing) {
                 continue
             }
-            Long targetNetworkId = updateProps.network?.id ? updateProps.network.id.toLong() : null
-            Long targetSubnetId = updateProps.network?.subnet ? updateProps.network.subnet.toLong() : null
+            Map networkProps = updateProps.network instanceof Map ? updateProps.network : null
+            Long targetNetworkId = networkProps?.id ? networkProps.id.toLong() : null
+            Long targetSubnetId = networkProps?.subnet ? networkProps.subnet.toLong() : null
             if (!targetNetworkId && !targetSubnetId) {
                 // nothing to reassign (e.g. only a 'connected' toggle) - not supported on SCVMM, skip
                 continue
@@ -2565,46 +2640,270 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 log.debug("updateResizedInterfaces - NIC ${existing.id} already on network ${targetNetworkId} / subnet ${targetSubnetId}, skipping")
                 continue
             }
-
-            NetworkSubnet targetSubnet = targetSubnetId ? context.services.networkSubnet.get(targetSubnetId) : null
-            if (targetSubnetId && !targetSubnet) {
-                rtn.error = "Unable to find subnet ${targetSubnetId} for NIC ${existing.id} update"
+            Map target = resolveResizedInterfaceTarget(networkProps, "NIC ${existing.id} update")
+            if (!target.network) {
+                rtn.error = target.error ?: "Unable to resolve target network for NIC ${existing.id} update"
                 log.error("updateResizedInterfaces - ${rtn.error}")
                 break
             }
-            // a subnet-only selection implies its parent network
-            targetNetworkId = targetNetworkId ?: targetSubnet?.networkId
-            Network targetNetwork = targetNetworkId ? context.services.cloud.network.get(targetNetworkId) : null
-            if (!targetNetwork) {
-                rtn.error = "Unable to find network ${targetNetworkId} for NIC ${existing.id} update"
-                log.error("updateResizedInterfaces - ${rtn.error}")
-                break
-            }
+            Network targetNetwork = target.network
+            NetworkSubnet targetSubnet = target.subnet
+            Integer vlanId = target.vlanId
+            def iface = computeServer.interfaces?.find { it.id == existing.id } ?: existing
+            // captured before leasing so the new grant is never mistaken for an old one when we release below
+            List<NetworkPoolIp> previousLeases = getPoolIpHelper().findLeases(computeServer, iface)
 
-            // mirror provisioning: the subnet VLAN wins over the network VLAN, and 0 means "no VLAN"
-            Integer vlanId = targetSubnet?.vlanId ?: targetNetwork.vlanId
+            // SCVMM only allows a Static adapter on a network that has an IP pool (error 15046 otherwise), so a
+            // move to a pool-less network must switch the adapter to Dynamic. When the target has an SCVMM pool we
+            // grant an address from it and bind it to the adapter in the same Set-SCVirtualNetworkAdapter call.
+            NetworkPool targetPool = getPoolIpHelper().resolveScvmmPool(targetNetwork)
+            String ipMode = resolveResizedInterfaceIpMode(updateProps)
+            boolean leaseFromPool = ReconfigurePoolIpHelper.shouldLeaseFromPool(targetPool, ipMode)
+            NetworkPoolIp newLease = null
+            if (leaseFromPool) {
+                String requestedIp = ipMode == 'static' ? resolveResizedInterfaceIpAddress(updateProps) : null
+                Map lease = getPoolIpHelper().leasePoolIp(scvmmOpts, targetPool, targetNetwork, computeServer, iface, requestedIp)
+                if (!lease.success) {
+                    rtn.error = lease.error ?: "Unable to reserve an IP address for NIC ${existing.id} from pool ${targetPool.name}"
+                    log.error("updateResizedInterfaces - ${rtn.error}")
+                    break
+                }
+                newLease = lease.poolIp
+            }
             def nicProps = [
                     adapterId        : existing.externalId,
                     macAddress       : existing.macAddress,
                     networkExternalId: targetNetwork.externalId,
                     subnetExternalId : targetSubnet?.externalId,
                     vlanEnabled      : vlanId != null && vlanId > 0,
-                    vlanId           : vlanId
+                    vlanId           : vlanId,
+                    ipv4AddressType  : leaseFromPool ? 'Static' : 'Dynamic',
+                    ipAddress        : newLease?.ipAddress,
+                    poolExternalId   : newLease ? targetPool.externalId : null
             ]
             def updateResults = apiService.updateNetworkInterface(scvmmOpts, vmId, nicProps)
             if (updateResults.success != true) {
                 rtn.error = updateResults.error ?: "Failed to update network for NIC ${existing.id}"
                 log.error("updateResizedInterfaces - ${rtn.error}")
+                if (newLease) {
+                    Map revoke = getPoolIpHelper().revokeLease(scvmmOpts, targetPool, newLease)
+                    if (!revoke.success) {
+                        log.warn("updateResizedInterfaces - unable to roll back grant ${newLease.ipAddress}: ${revoke.error}")
+                    }
+                }
                 break
             }
-            def iface = computeServer.interfaces?.find { it.id == existing.id }
-            if (iface) {
+            if (newLease && !getPoolIpHelper().persistLease(newLease)) {
+                log.warn("updateResizedInterfaces - bound ${newLease.ipAddress} to NIC ${existing.id} but failed to record the lease in Morpheus")
+            }
+            // the NIC is on its new network now, so whatever it held on the old one can go back to its pool
+            Map release = getPoolIpHelper().releaseLeases(scvmmOpts, previousLeases)
+            if (!release.success) {
+                log.warn("updateResizedInterfaces - NIC ${existing.id} moved but a previous pool address could not be released: ${release.error}")
+            }
+            if (computeServer.interfaces?.any { it.id == existing.id }) {
                 iface.network = targetNetwork
                 iface.subnet = targetSubnet
+                applyResizedInterfaceAddressing(iface, targetPool, newLease)
                 context.async.computeServer.computeServerInterface.save([iface]).blockingGet()
             } else {
                 log.warn("updateResizedInterfaces - NIC ${existing.id} updated in SCVMM but not found on server ${computeServer.id}, skipping persist")
             }
+        }
+        return rtn
+    }
+
+    /** The row's ip mode ('dhcp' / 'static' / 'pool'), looked up on the network sub-map first then the row itself. */
+    protected static String resolveResizedInterfaceIpMode(Map rowProps) {
+        Map networkProps = rowProps?.network instanceof Map ? rowProps.network : [:]
+        return (networkProps.ipMode ?: rowProps?.ipMode)?.toString()?.toLowerCase() ?: null
+    }
+
+    /** The user-entered ip address for the row, if any. */
+    protected static String resolveResizedInterfaceIpAddress(Map rowProps) {
+        Map networkProps = rowProps?.network instanceof Map ? rowProps.network : [:]
+        String ip = (networkProps.ipAddress ?: rowProps?.ipAddress)?.toString()?.trim()
+        return ip ?: null
+    }
+
+    /** Stamps the pool / DHCP state onto the interface model after the adapter was reconfigured in SCVMM. */
+    protected static void applyResizedInterfaceAddressing(ComputeServerInterface iface, NetworkPool pool, NetworkPoolIp lease) {
+        if (lease) {
+            iface.ipAddress = lease.ipAddress
+            iface.dhcp = false
+            iface.poolAssigned = true
+            iface.networkPool = pool
+            iface.ipMode = 'pool'
+        } else {
+            iface.dhcp = true
+            iface.poolAssigned = false
+            iface.networkPool = null
+            iface.ipMode = 'dhcp'
+        }
+    }
+
+    /**
+     * Adds new virtual NICs requested during a reconfigure/resize operation. Each entry in interfacesAdd is the raw
+     * UI row map (network.id and/or network.subnet, optional name, ipMode, ipAddress). The adapter is created in SCVMM
+     * and a matching ComputeServerInterface is persisted with the returned adapter ID and MAC. When the target network
+     * is backed by an SCVMM IP pool (and the row is not DHCP) an address is granted from the pool, bound to the new
+     * adapter and recorded as a {@link NetworkPoolIp}; if the bind fails the grant is revoked and the adapter removed
+     * again so a failed add leaves nothing behind. Processing stops at the first failure.
+     */
+    protected ServiceResponse addResizedInterfaces(ComputeServer computeServer, Map scvmmOpts, vmId, ResizeRequest resizeRequest) {
+        ServiceResponse rtn = ServiceResponse.success()
+        int index = 0
+        for (addProps in (resizeRequest.interfacesAdd ?: [])) {
+            Map props = (addProps instanceof Map) ? addProps : [:]
+            String nicLabel = "new NIC ${props.name ?: (index + 1)}"
+            Map target = resolveResizedInterfaceTarget(props.network instanceof Map ? props.network : null, nicLabel)
+            if (!target.network) {
+                rtn.error = target.error ?: "No network selected for ${nicLabel}"
+                log.error("addResizedInterfaces - ${rtn.error}")
+                break
+            }
+            Network targetNetwork = target.network
+            NetworkSubnet targetSubnet = target.subnet
+            Integer vlanId = target.vlanId
+            NetworkPool targetPool = getPoolIpHelper().resolveScvmmPool(targetNetwork)
+            String ipMode = resolveResizedInterfaceIpMode(props)
+            boolean leaseFromPool = ReconfigurePoolIpHelper.shouldLeaseFromPool(targetPool, ipMode)
+            def nicProps = [
+                    networkExternalId: targetNetwork.externalId,
+                    subnetExternalId : targetSubnet?.externalId,
+                    vlanEnabled      : vlanId != null && vlanId > 0,
+                    vlanId           : vlanId
+            ]
+            def addResults = apiService.addNetworkInterface(scvmmOpts, vmId, nicProps)
+            if (addResults.success != true) {
+                rtn.error = addResults.error ?: "Failed to add ${nicLabel}"
+                log.error("addResizedInterfaces - ${rtn.error}")
+                break
+            }
+            int existingCount = computeServer.interfaces?.size() ?: 0
+            def iface = new ComputeServerInterface(
+                    name: props.name ?: "eth${existingCount}",
+                    externalId: addResults.adapterId,
+                    macAddress: addResults.macAddress,
+                    network: targetNetwork,
+                    subnet: targetSubnet,
+                    vlanId: (vlanId != null && vlanId > 0) ? vlanId.toString() : null,
+                    primaryInterface: false,
+                    dhcp: true,
+                    ipMode: leaseFromPool ? 'pool' : 'dhcp',
+                    displayOrder: existingCount + 1
+            )
+            context.async.computeServer.computeServerInterface.create([iface], computeServer).blockingGet()
+            computeServer = getMorpheusServer(computeServer.id)
+            if (leaseFromPool) {
+                // the persisted interface is needed first so the lease can be attached to its id
+                ComputeServerInterface persisted = computeServer.interfaces?.find { it.externalId == addResults.adapterId } ?: iface
+                String requestedIp = ipMode == 'static' ? resolveResizedInterfaceIpAddress(props) : null
+                ServiceResponse bind = bindPoolAddressToNewInterface(computeServer, scvmmOpts, vmId, persisted, targetNetwork, targetSubnet, vlanId, targetPool, requestedIp, nicLabel)
+                if (!bind.success) {
+                    rtn.error = bind.error
+                    break
+                }
+                computeServer = getMorpheusServer(computeServer.id)
+            }
+            index++
+        }
+        return rtn
+    }
+
+    /**
+     * Grants a pool address and binds it to a freshly created adapter. On any failure the grant is revoked and the
+     * adapter plus its Morpheus interface are removed so the VM ends up exactly as before the add.
+     */
+    protected ServiceResponse bindPoolAddressToNewInterface(ComputeServer computeServer, Map scvmmOpts, vmId, ComputeServerInterface iface,
+                                                            Network targetNetwork, NetworkSubnet targetSubnet, Integer vlanId,
+                                                            NetworkPool targetPool, String requestedIp, String nicLabel) {
+        Map lease = getPoolIpHelper().leasePoolIp(scvmmOpts, targetPool, targetNetwork, computeServer, iface, requestedIp)
+        if (!lease.success) {
+            String error = lease.error ?: "Unable to reserve an IP address for ${nicLabel} from pool ${targetPool.name}"
+            log.error("addResizedInterfaces - ${error}")
+            rollbackAddedInterface(computeServer, scvmmOpts, vmId, iface, nicLabel)
+            return ServiceResponse.error(error)
+        }
+        NetworkPoolIp newLease = lease.poolIp
+        def bindProps = [
+                adapterId        : iface.externalId,
+                macAddress       : iface.macAddress,
+                networkExternalId: targetNetwork.externalId,
+                subnetExternalId : targetSubnet?.externalId,
+                vlanEnabled      : vlanId != null && vlanId > 0,
+                vlanId           : vlanId,
+                ipv4AddressType  : 'Static',
+                ipAddress        : newLease.ipAddress,
+                poolExternalId   : targetPool.externalId
+        ]
+        def bindResults = apiService.updateNetworkInterface(scvmmOpts, vmId, bindProps)
+        if (bindResults.success != true) {
+            String error = bindResults.error ?: "Failed to bind pool address ${newLease.ipAddress} to ${nicLabel}"
+            log.error("addResizedInterfaces - ${error}")
+            Map revoke = getPoolIpHelper().revokeLease(scvmmOpts, targetPool, newLease)
+            if (!revoke.success) {
+                log.warn("addResizedInterfaces - unable to roll back grant ${newLease.ipAddress}: ${revoke.error}")
+            }
+            rollbackAddedInterface(computeServer, scvmmOpts, vmId, iface, nicLabel)
+            return ServiceResponse.error(error)
+        }
+        if (!getPoolIpHelper().persistLease(newLease)) {
+            log.warn("addResizedInterfaces - bound ${newLease.ipAddress} to ${nicLabel} but failed to record the lease in Morpheus")
+        }
+        applyResizedInterfaceAddressing(iface, targetPool, newLease)
+        context.async.computeServer.computeServerInterface.save([iface]).blockingGet()
+        return ServiceResponse.success()
+    }
+
+    protected void rollbackAddedInterface(ComputeServer computeServer, Map scvmmOpts, vmId, ComputeServerInterface iface, String nicLabel) {
+        try {
+            def removeResults = apiService.removeNetworkInterface(scvmmOpts, vmId, [adapterId: iface.externalId, macAddress: iface.macAddress])
+            if (removeResults.success != true) {
+                log.warn("addResizedInterfaces - unable to roll back adapter for ${nicLabel}: ${removeResults.error}")
+                return
+            }
+            context.async.computeServer.computeServerInterface.remove([iface], computeServer).blockingGet()
+        } catch (e) {
+            log.warn("addResizedInterfaces - error rolling back ${nicLabel}: ${e.message}")
+        }
+    }
+
+    /**
+     * Removes virtual NICs requested during a reconfigure/resize operation. The adapter is removed from SCVMM
+     * (located by adapter ID, falling back to MAC), any SCVMM pool address it held is released, and then the
+     * ComputeServerInterface is removed from Morpheus. The primary interface cannot be removed. Processing stops at
+     * the first failure.
+     */
+    protected ServiceResponse removeResizedInterfaces(ComputeServer computeServer, Map scvmmOpts, vmId, ResizeRequest resizeRequest) {
+        ServiceResponse rtn = ServiceResponse.success()
+        for (ComputeServerInterface toRemove in (resizeRequest.interfacesDelete ?: [])) {
+            if (!toRemove) {
+                continue
+            }
+            if (toRemove.primaryInterface) {
+                rtn.error = "The primary network interface (${toRemove.name ?: toRemove.id}) cannot be removed"
+                log.error("removeResizedInterfaces - ${rtn.error}")
+                break
+            }
+            if (!toRemove.externalId && !toRemove.macAddress) {
+                rtn.error = "NIC ${toRemove.name ?: toRemove.id} has no SCVMM adapter ID or MAC address and cannot be removed"
+                log.error("removeResizedInterfaces - ${rtn.error}")
+                break
+            }
+            def removeResults = apiService.removeNetworkInterface(scvmmOpts, vmId, [adapterId: toRemove.externalId, macAddress: toRemove.macAddress])
+            if (removeResults.success != true) {
+                rtn.error = removeResults.error ?: "Failed to remove NIC ${toRemove.name ?: toRemove.id}"
+                log.error("removeResizedInterfaces - ${rtn.error}")
+                break
+            }
+            def iface = computeServer.interfaces?.find { it.id == toRemove.id } ?: toRemove
+            Map release = getPoolIpHelper().releaseLeases(scvmmOpts, computeServer, iface)
+            if (!release.success) {
+                log.warn("removeResizedInterfaces - NIC ${toRemove.name ?: toRemove.id} removed but its pool address could not be released: ${release.error}")
+            }
+            context.async.computeServer.computeServerInterface.remove([iface], computeServer).blockingGet()
+            computeServer = getMorpheusServer(computeServer.id)
         }
         return rtn
     }
@@ -2638,6 +2937,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 def cpuHotAdd = (rtn.neededCores == 0) || (serverObj?.cpuHotResize == true && rtn.neededCores > 0)
                 // Disk operations on SCSI are always hot-addable (both gen 1 and gen 2)
                 rtn.hotResize = memoryHotAdd && cpuHotAdd
+            }
+
+            // Hyper-V only hot-adds/removes synthetic network adapters on Generation 2 VMs; on Generation 1
+            // SCVMM rejects the change with Error 640 unless the VM is powered off. Network reassignment is
+            // fine while running on either generation.
+            def nicHardwareChange = resizeRequest.interfacesAdd || resizeRequest.interfacesDelete
+            if (nicHardwareChange && serverObj?.getConfigProperty('generation') != 'generation2') {
+                log.info("getResizeConfig - NIC add/remove on a ${serverObj?.getConfigProperty('generation') ?: 'unknown generation'} VM requires a stop")
+                rtn.hotResize = false
             }
 
             // Disk changes.. see if stop is required
