@@ -5,6 +5,7 @@ This plugin integrates Microsoft SCVMM with Morpheus, enabling cloud sync, provi
 ## 📑 Table of Contents
 
 - [Features](#features)
+- [Design](#design)
 - [Requirements](#requirements)
 - [Repository structure](#repository-structure)
 - [Building the plugin](#building-the-plugin)
@@ -22,6 +23,14 @@ This plugin integrates Microsoft SCVMM with Morpheus, enabling cloud sync, provi
 - Syncs hosts, networks, and virtual machines from SCVMM to Morpheus
 - Provisions Virtual Machines and Docker Cluster
 - Supports VM snapshot creation and restore for backup/restore operations
+
+---
+
+## Design
+
+See [docs/design/scvmm-plugin-design.md](docs/design/scvmm-plugin-design.md) for the code-level design: system boundaries
+(Morpheus appliance, SCVMM manager, Hyper-V fabric, guests), communication paths (WinRM, Morpheus Agent, vmrdp console),
+plugin component structure, UI integration points, and runtime flows for sync, provisioning and backup.
 
 ---
 
