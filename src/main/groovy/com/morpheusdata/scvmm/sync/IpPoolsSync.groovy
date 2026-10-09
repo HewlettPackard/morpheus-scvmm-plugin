@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
@@ -73,10 +75,17 @@ class IpPoolsSync {
                 }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<NetworkPoolIdentityProjection, Map>> updateItems ->
                     return morpheusContext.async.cloud.network.pool.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
+            } else {
+                log.warn("IpPoolsSync: SCVMM IP pool listing failed: ${listResults.msg}")
+                return [success: false, msg: listResults.msg ?: 'SCVMM IP pool listing failed']
             }
+        } catch (ScvmmConnectionException e) {
+            throw e
         } catch (e) {
-            log.error("ipPoolsSync error: ${e}", e)
+            log.error("IpPoolsSync error: ${e.message}", e)
+            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
         }
+        return [success: true]
     }
 
     private addMissingIpPools(Collection<Map> addList, List<Network> networks, NetworkPoolType poolType, networkMapping) {

@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
@@ -64,12 +66,19 @@ class IsolationNetworkSync {
                 }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<NetworkIdentityProjection, Map>> updateItems ->
                     return morpheusContext.async.cloud.network.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
+            } else if (listResults.success != true) {
+                log.warn("IsolationNetworkSync: SCVMM isolation network listing failed: ${listResults.msg}")
+                return [success: false, msg: listResults.msg ?: 'SCVMM isolation network listing failed']
             } else {
                 log.info("Not getting the listNetworks")
             }
+        } catch (ScvmmConnectionException e) {
+            throw e
         } catch (e) {
-            log.error("IsolationNetworkSync error: ${e}", e)
+            log.error("IsolationNetworkSync error: ${e.message}", e)
+            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
         }
+        return [success: true]
     }
 
     private addMissingNetworks(Collection<Map> addList, NetworkType networkType, ComputeServer server) {

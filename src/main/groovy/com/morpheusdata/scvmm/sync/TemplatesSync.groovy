@@ -81,6 +81,8 @@ class TemplatesSync {
                 removeMissingVirtualImages(removeItems)
             }.start()
         }
+        // exceptions from listTemplates propagate to the caller, which records the worker failure
+        return [success: true]
     }
 
     protected removeMissingVirtualImages(List<VirtualImageLocationIdentityProjection> removeList) {

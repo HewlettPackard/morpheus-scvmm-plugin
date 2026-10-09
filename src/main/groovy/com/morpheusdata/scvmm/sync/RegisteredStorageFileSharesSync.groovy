@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
@@ -74,9 +76,13 @@ class RegisteredStorageFileSharesSync {
             } else {
                 log.info("Not getting the RegisteredStorageFileShares data")
             }
+        } catch (ScvmmConnectionException e) {
+            throw e
         } catch (e) {
-            log.error("RegisteredStorageFileSharesSync error: ${e}", e.getMessage())
+            log.error("RegisteredStorageFileSharesSync error: ${e.message}", e)
+            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
         }
+        return [success: true]
     }
 
     private addMissingFileShares(Collection<Map> addList, objList, clusters, List<ComputeServer> existingHosts) {
