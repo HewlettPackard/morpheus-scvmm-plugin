@@ -823,6 +823,23 @@ class ScvmmCloudProvider implements CloudProvider {
 	}
 
 	/**
+	 * Limits the datastore dropdown during provisioning to the storage the selected cluster can actually place on.
+	 * {@link com.morpheusdata.scvmm.sync.DatastoresSync} records that scoping on {@code assignedZonePools}. Morpheus
+	 * keeps datastores that carry no pool association at all, which would let one host's local storage be offered for
+	 * every cluster, so anything without a match is dropped here. With no resource pool selected nothing is filtered.
+	 */
+	@Override
+	Collection<Datastore> filterDatastores(Cloud cloud, Collection<Datastore> datastores, Collection<CloudPool> resourcePools) {
+		Set<Long> poolIds = (resourcePools?.collect { it.id }?.findAll { it } ?: []) as Set<Long>
+		if (!poolIds) {
+			return datastores
+		}
+		return datastores?.findAll { Datastore datastore ->
+			datastore.zonePool?.id in poolIds || datastore.assignedZonePools?.any { it?.id in poolIds }
+		} ?: []
+	}
+
+	/**
 	 * Returns whether a cloud supports security groups. Matches the embedded SCVMM
 	 * seed (hasSecurityGroups:true) so the "Security Group Active" checkbox renders
 	 * in the Inventory Options section of the Add Cloud modal.
