@@ -45,7 +45,7 @@ class ScvmmProvisionProviderSpec extends Specification {
 
         provider = GroovySpy(ScvmmProvisionProvider, constructorArgs: [plugin, context])
         provider.apiService = apiService
-        // fetchScvmmConnectionDetails is private (not interceptable), so stub its public collaborators;
+        // fetchScvmmConnectionDetails is not interceptable here, so stub its public collaborators;
         // the controller lookup / option building is irrelevant to these tests
         provider.pickScvmmController(_) >> new ComputeServer(id: 1L, name: 'scvmm-controller')
         provider.getScvmmServerOpts(_) >> [:]
@@ -188,9 +188,9 @@ class ScvmmProvisionProviderSpec extends Specification {
         response.msg == 'Failed to get server details'
     }
 
-    // ---------------------------------------------------------------- updateServerHost
+    // ---------------------------------------------------------------- refreshServerPlacement
 
-    def "updateServerHost reloads the server after the remote call and saves the reloaded copy"() {
+    def "refreshServerPlacement reloads the server after the remote call and saves the reloaded copy"() {
         given:
         ComputeServer stale = staleServer()
         stale.consoleType = 'vmrdp'
@@ -199,7 +199,7 @@ class ScvmmProvisionProviderSpec extends Specification {
         ComputeServer host = new ComputeServer(id: 900L, name: 'hyperv-host-01', externalId: 'host-01')
 
         when:
-        provider.updateServerHost(stale, [some: 'opts'])
+        provider.refreshServerPlacement(stale, [some: 'opts'])
 
         then:
         1 * apiService.getServerDetails([some: 'opts'], 'vm-25') >> [success: true, server: [HostId: 'host-01']]
@@ -217,14 +217,14 @@ class ScvmmProvisionProviderSpec extends Specification {
         stale.consoleHost == null
     }
 
-    def "updateServerHost does not set consoleHost when consoleType is not vmrdp"() {
+    def "refreshServerPlacement does not set consoleHost when consoleType is not vmrdp"() {
         given:
         ComputeServer latest = freshServer()
         latest.consoleType = 'vnc'
         ComputeServer host = new ComputeServer(id: 900L, name: 'hyperv-host-01', externalId: 'host-01')
 
         when:
-        provider.updateServerHost(staleServer(), [:])
+        provider.refreshServerPlacement(staleServer(), [:])
 
         then:
         1 * apiService.getServerDetails(_, 'vm-25') >> [success: true, server: [HostId: 'host-01']]
@@ -237,13 +237,13 @@ class ScvmmProvisionProviderSpec extends Specification {
         latest.consoleHost == null
     }
 
-    def "updateServerHost falls back to the passed server when the reload returns nothing"() {
+    def "refreshServerPlacement falls back to the passed server when the reload returns nothing"() {
         given:
         ComputeServer server = staleServer()
         ComputeServer host = new ComputeServer(id: 900L, name: 'hyperv-host-01', externalId: 'host-01')
 
         when:
-        provider.updateServerHost(server, [:])
+        provider.refreshServerPlacement(server, [:])
 
         then:
         1 * apiService.getServerDetails(_, 'vm-25') >> [success: true, server: [HostId: 'host-01']]
@@ -255,25 +255,46 @@ class ScvmmProvisionProviderSpec extends Specification {
         server.parentServer.is(host)
     }
 
-    def "updateServerHost does not save when the parent host is unchanged"() {
+    def "refreshServerPlacement does not save when the parent host is unchanged"() {
         given:
         ComputeServer host = new ComputeServer(id: 900L, name: 'hyperv-host-01', externalId: 'host-01')
         ComputeServer server = staleServer()
         server.parentServer = host
 
         when:
-        provider.updateServerHost(server, [:])
+        provider.refreshServerPlacement(server, [:])
 
         then:
         1 * apiService.getServerDetails(_, 'vm-25') >> [success: true, server: [HostId: 'host-01']]
         1 * syncComputeServer.list(_ as DataQuery) >> [host]
-        0 * syncComputeServer.get(_)
+        1 * syncComputeServer.get(25L) >> server
         0 * syncComputeServer.save(_)
     }
 
-    def "updateServerHost does not save when SCVMM reports no host or an unknown host"() {
+    def "refreshServerPlacement repairs a stale vmrdp console host when the parent host is unchanged"() {
+        given:
+        ComputeServer host = new ComputeServer(id: 900L, name: 'hyperv-host-01', hostname: 'hyperv-host-01.corp.local', externalId: 'host-01')
+        ComputeServer server = staleServer()
+        server.parentServer = host
+        server.consoleType = 'vmrdp'
+        server.consoleHost = 'hyperv-host-01'
+
         when:
-        provider.updateServerHost(staleServer(), [:])
+        provider.refreshServerPlacement(server, [:])
+
+        then:
+        1 * apiService.getServerDetails(_, 'vm-25') >> [success: true, server: [HostId: 'host-01']]
+        1 * syncComputeServer.list(_ as DataQuery) >> [host]
+        1 * syncComputeServer.get(25L) >> server
+        1 * syncComputeServer.save(server) >> server
+
+        and:
+        server.consoleHost == 'hyperv-host-01.corp.local'
+    }
+
+    def "refreshServerPlacement does not save when SCVMM reports no host or an unknown host"() {
+        when:
+        provider.refreshServerPlacement(staleServer(), [:])
 
         then:
         1 * apiService.getServerDetails(_, 'vm-25') >> details
@@ -288,13 +309,36 @@ class ScvmmProvisionProviderSpec extends Specification {
         [success: true, server: [HostId: 'host-unknown']]   | 1
     }
 
-    def "updateServerHost swallows exceptions from the remote call"() {
+    def "refreshServerPlacement propagates exceptions from the remote call to its caller"() {
         when:
-        provider.updateServerHost(staleServer(), [:])
+        provider.refreshServerPlacement(staleServer(), [:])
 
         then:
         1 * apiService.getServerDetails(_, 'vm-25') >> { throw new RuntimeException('winrm down') }
         0 * syncComputeServer._
+        thrown(RuntimeException)
+    }
+
+    def "getServerDetails still succeeds when the post-provision placement refresh fails"() {
+        given:
+        ComputeServer fresh = freshServer()
+        ComputeServer reloaded = freshServer()
+        reloaded.externalIp = '10.0.0.44'
+
+        when:
+        def response = provider.getServerDetails(new ComputeServer(id: 25L))
+
+        then:
+        1 * asyncComputeServer.get(25L) >> Maybe.just(staleServer())
+        1 * apiService.checkServerReady(_, 'vm-25') >> [success: true, server: [ipAddress: '10.0.0.44', macAddress: 'BB']]
+        2 * syncComputeServer.find(_ as DataQuery) >>> [fresh, reloaded]
+        1 * interfaceService.create(*_) >> Single.just(true)
+        1 * asyncComputeServer.bulkSave(_ as List) >> Single.just(successfulSave(fresh))
+        1 * apiService.getServerDetails(_, 'vm-25') >> { throw new RuntimeException('winrm down') }
+
+        and:
         noExceptionThrown()
+        response.success
+        response.data.publicIp == '10.0.0.44'
     }
 }
