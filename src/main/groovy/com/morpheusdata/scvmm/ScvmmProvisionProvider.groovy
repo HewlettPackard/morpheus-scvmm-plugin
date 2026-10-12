@@ -2359,24 +2359,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		}
 		def ip = ipAddress?.toString()?.trim()
 		def byIp = ip ? adapters.find { adapter ->
-			def ips = adapterAddresses(adapter.IPv4Addresses) + adapterAddresses(adapter.IPv6Addresses)
+			def ips = ScvmmApiService.normalizeAddresses(adapter.IPv4Addresses) + ScvmmApiService.normalizeAddresses(adapter.IPv6Addresses)
 			ips.contains(ip)
 		} : null
 		return byIp ?: adapters.find { it.SlotId?.toString() == '0' } ?: adapters.first()
-	}
-
-	/**
-	 * ConvertTo-Json collapses nested address arrays into whitespace-delimited strings once they exceed
-	 * its depth, so accept either an array or a delimited string and never iterate a string per character.
-	 */
-	private static List<String> adapterAddresses(def addresses) {
-		if (!addresses) {
-			return []
-		}
-		if (addresses instanceof Collection || addresses instanceof Object[]) {
-			return (addresses as Collection).findAll { it }.collect { it.toString().trim() }.findAll { it } as List<String>
-		}
-		return addresses.toString().split(/\s*[,;\n]\s*|\s+/).collect { it.trim() }.findAll { it } as List<String>
 	}
 
     @Override

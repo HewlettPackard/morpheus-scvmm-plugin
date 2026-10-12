@@ -748,7 +748,7 @@ class VirtualMachineSync {
         }
 
         remainingAdapters.each { masterItem ->
-            def adapterIps = adapterAddresses(masterItem.IPv4Addresses) + adapterAddresses(masterItem.IPv6Addresses)
+            def adapterIps = ScvmmApiService.normalizeAddresses(masterItem.IPv4Addresses) + ScvmmApiService.normalizeAddresses(masterItem.IPv6Addresses)
             def match = adapterIps ? remainingIfaces.find { iface ->
                 def ifaceIps = ([iface.ipAddress, iface.publicIpAddress] + (iface.addresses?.collect { it.address } ?: [])).findAll { it }.collect { it.toString() }
                 ifaceIps.any { adapterIps.contains(it) }
@@ -843,20 +843,6 @@ class VirtualMachineSync {
 
     private boolean getIsPrimary(ComputeServerInterface iface, Map masterItem, boolean isPrimaryAssigned) {
         return (iface?.primaryInterface == true) || (masterItem.SlotId == 0 && !isPrimaryAssigned)
-    }
-
-    /**
-     * ConvertTo-Json collapses nested address arrays into whitespace-delimited strings once they exceed
-     * its depth, so accept either an array or a delimited string and never iterate a string per character.
-     */
-    private static List<String> adapterAddresses(def addresses) {
-        if (!addresses) {
-            return []
-        }
-        if (addresses instanceof Collection || addresses instanceof Object[]) {
-            return (addresses as Collection).findAll { it }.collect { it.toString().trim() }.findAll { it } as List<String>
-        }
-        return addresses.toString().split(/\s*[,;\n]\s*|\s+/).collect { it.trim() }.findAll { it } as List<String>
     }
 
 }
