@@ -1,6 +1,5 @@
 package com.morpheusdata.scvmm.sync
 
-import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ComputeUtility
@@ -10,6 +9,7 @@ import com.morpheusdata.model.ComputeCapacityInfo
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.OsType
 import com.morpheusdata.model.projection.ComputeServerIdentityProjection
+import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
@@ -108,6 +108,11 @@ class HostSync {
                     existingItem.serverOs = fetchedOs
                     existingItem.osType = fetchedOs.platform?.toString() ?: 'windows'
                 }
+                def maxSockets = masterItem.cpuCount?.toLong() ?: 1
+                def maxSocketsChanged = maxSockets != existingItem.maxSockets
+                if (maxSocketsChanged) {
+                    existingItem.maxSockets = maxSockets
+                }
                 if (clusterChanged || osChanged) {
                     def savedServer = context.async.computeServer.save(existingItem).blockingGet()
                     log.debug("savedServer?.id: ${savedServer?.id}")
@@ -115,6 +120,8 @@ class HostSync {
                         updateHostStats(savedServer, masterItem)
                     }
                     log.debug("updated host")
+                } else if (maxSocketsChanged) {
+                    context.async.computeServer.save(existingItem).blockingGet()
                 }
             }
         } catch (e) {
@@ -156,6 +163,7 @@ class HostSync {
                 newServer.maxMemory = cloudItem.totalMemory?.toLong() ?: 0
                 newServer.maxStorage = cloudItem.totalStorage?.toLong() ?: 0
                 newServer.maxCpu = (cloudItem.cpuCount?.toLong() ?: 1)
+                newServer.maxSockets = (cloudItem.cpuCount?.toLong() ?: 1)
                 newServer.maxCores = (cloudItem.cpuCount?.toLong() ?: 1) * (cloudItem.coresPerCpu?.toLong() ?: 1)
                 newServer.capacityInfo = new ComputeCapacityInfo(maxMemory: newServer.maxMemory, maxStorage: newServer.maxStorage, maxCores: newServer.maxCores)
                 newServer.setConfigProperty('rawData', cloudItem.encodeAsJSON().toString())
