@@ -144,7 +144,7 @@ class ReconfigurePoolIpHelperSpec extends Specification {
         Map rtn = helper.leasePoolIp(OPTS, scvmmPool, network, server, iface)
 
         then:
-        1 * apiService.reserveIPAddress(OPTS, 'pool-ext', null) >> [success: true, ipAddress: [ID: 'ip-guid', Address: '10.0.0.50']]
+        1 * apiService.reserveIPAddress(OPTS, 'pool-ext', null, [objectType: 'VirtualNetworkAdapter', objectId: 'adapter-7', description: 'morpheus:vm01']) >> [success: true, ipAddress: [ID: 'ip-guid', Address: '10.0.0.50']]
         0 * asyncPoolIpService.create(*_)
         rtn.success
         with(rtn.poolIp as NetworkPoolIp) {
@@ -173,9 +173,36 @@ class ReconfigurePoolIpHelperSpec extends Specification {
         Map rtn = helper.leasePoolIp(OPTS, scvmmPool, network, server, iface, '10.0.0.77')
 
         then:
-        1 * apiService.reserveIPAddress(OPTS, 'pool-ext', '10.0.0.77') >> [success: true, ipAddress: [ID: 'ip-77', Address: '10.0.0.77']]
+        1 * apiService.reserveIPAddress(OPTS, 'pool-ext', '10.0.0.77', [objectType: 'VirtualNetworkAdapter', objectId: 'adapter-7', description: 'morpheus:vm01']) >> [success: true, ipAddress: [ID: 'ip-77', Address: '10.0.0.77']]
         rtn.success
         rtn.poolIp.ipAddress == '10.0.0.77'
+    }
+
+    def "leasePoolIp grants to the VM when the interface has no SCVMM adapter id yet"() {
+        given:
+        server.externalId = 'vm-ext-100'
+        ComputeServerInterface fresh = new ComputeServerInterface(id: 8L, name: 'eth2')
+
+        when:
+        Map rtn = helper.leasePoolIp(OPTS, scvmmPool, network, server, fresh)
+
+        then:
+        1 * apiService.reserveIPAddress(OPTS, 'pool-ext', null, [objectType: 'VirtualMachine', objectId: 'vm-ext-100', description: 'morpheus:vm01']) >> [success: true, ipAddress: [ID: 'ip-8', Address: '10.0.0.8']]
+        rtn.success
+    }
+
+    def "grantTarget prefers the adapter, then the VM, and always describes the server"() {
+        expect:
+        ReconfigurePoolIpHelper.grantTarget(srv, nic) == expected
+
+        where:
+        srv                                                   | nic                                                   || expected
+        new ComputeServer(name: 'vm01', externalId: 'vm-1')   | new ComputeServerInterface(externalId: 'nic-1')       || [objectType: 'VirtualNetworkAdapter', objectId: 'nic-1', description: 'morpheus:vm01']
+        new ComputeServer(name: 'vm01', externalId: 'vm-1')   | new ComputeServerInterface()                          || [objectType: 'VirtualMachine', objectId: 'vm-1', description: 'morpheus:vm01']
+        new ComputeServer(name: 'vm01', externalId: 'vm-1')   | null                                                  || [objectType: 'VirtualMachine', objectId: 'vm-1', description: 'morpheus:vm01']
+        new ComputeServer(name: 'vm01')                       | null                                                  || [description: 'morpheus:vm01']
+        new ComputeServer()                                   | null                                                  || [:]
+        null                                                  | null                                                  || [:]
     }
 
     def "leasePoolIp falls back to the network's gateway / netmask / dns when the pool has none"() {
@@ -197,7 +224,7 @@ class ReconfigurePoolIpHelperSpec extends Specification {
         Map rtn = helper.leasePoolIp(OPTS, scvmmPool, network, server, iface, requested)
 
         then:
-        1 * apiService.reserveIPAddress(OPTS, 'pool-ext', requested) >> result
+        1 * apiService.reserveIPAddress(OPTS, 'pool-ext', requested, _) >> result
         !rtn.success
         rtn.poolIp == null
         rtn.error == expectedError

@@ -79,12 +79,17 @@ class ReconfigurePoolIpHelper {
      * Grants an address from {@code pool} in SCVMM (a specific one when {@code requestedIp} is given) and builds the
      * matching {@link NetworkPoolIp}. The record is <b>not</b> persisted yet; call {@link #persistLease} once the
      * address has been bound to the adapter, or {@link #revokeLease} to roll the grant back.
+     * <p>
+     * The grant is made <em>to the adapter</em> ({@code -GrantToObjectType VirtualNetworkAdapter -GrantToObjectID}) when
+     * the interface already carries its SCVMM adapter ID. VMM only treats an address as belonging to an existing adapter
+     * when it was granted that way; otherwise the later {@code Set-SCVirtualNetworkAdapter -IPv4AddressPools} bind makes
+     * VMM allocate a second address of its own, leaving the pool over-consumed and Morpheus unaware of it.
      * @return map with success and poolIp, or success=false and error
      */
     Map leasePoolIp(Map scvmmOpts, NetworkPool pool, Network network, ComputeServer server, ComputeServerInterface iface, String requestedIp = null) {
         Map rtn = [success: false]
         try {
-            def results = apiService.reserveIPAddress(scvmmOpts, pool.externalId, requestedIp ?: null)
+            def results = apiService.reserveIPAddress(scvmmOpts, pool.externalId, requestedIp ?: null, grantTarget(server, iface))
             def granted = results?.ipAddress
             if (!results?.success || !granted?.Address) {
                 rtn.error = results?.msg ?: (requestedIp ?
@@ -100,6 +105,25 @@ class ReconfigurePoolIpHelper {
             rtn.error = "Error reserving an IP address from SCVMM: ${e.message}"
         }
         return rtn
+    }
+
+    /**
+     * Grant scope for {@link #leasePoolIp}: the SCVMM adapter when its ID is known, otherwise the VM. The description
+     * names the server so allocations are attributable in the VMM console / {@code Get-SCIPAddress}.
+     */
+    static Map grantTarget(ComputeServer server, ComputeServerInterface iface) {
+        Map grant = [:]
+        if (iface?.externalId) {
+            grant.objectType = ScvmmApiService.GRANT_TO_VIRTUAL_NETWORK_ADAPTER
+            grant.objectId = iface.externalId
+        } else if (server?.externalId) {
+            grant.objectType = ScvmmApiService.GRANT_TO_VIRTUAL_MACHINE
+            grant.objectId = server.externalId
+        }
+        if (server?.name) {
+            grant.description = "morpheus:${server.name}".toString()
+        }
+        return grant
     }
 
     protected NetworkPoolIp buildPoolIp(NetworkPool pool, Network network, ComputeServer server, ComputeServerInterface iface, String ipAddress, String externalId) {

@@ -1377,17 +1377,24 @@ foreach (\$network in \$networks) {
         return rtn
     }
 
-        /**
+    static final String GRANT_TO_VIRTUAL_MACHINE = 'VirtualMachine'
+    static final String GRANT_TO_VIRTUAL_NETWORK_ADAPTER = 'VirtualNetworkAdapter'
+
+    /**
      * Grants an address from an SCVMM static IP address pool. When {@code ipAddress} is given that specific address is
      * requested, otherwise SCVMM hands out the next available one.
+     * <p>
+     * {@code grant} optionally scopes the allocation: {@code objectType} ({@code VirtualMachine} by default or
+     * {@code VirtualNetworkAdapter}), {@code objectId} (the SCVMM ID of that object) and {@code description}. Binding
+     * an address to an <em>existing</em> adapter with {@code Set-SCVirtualNetworkAdapter -IPv4AddressPools} only works
+     * when the grant was made to that adapter; an anonymous grant makes VMM allocate a second address of its own.
      */
-    def reserveIPAddress(opts, poolId, ipAddress = null) {
+    def reserveIPAddress(opts, poolId, ipAddress = null, Map grant = [:]) {
         def rtn = [success: true, ipAddress: []]
         try {
-            def specificIp = ipAddress ? " -IPAddress \"${ipAddress}\"" : ''
-            def command = generateCommandString("""\$ippool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"$poolId\"; Grant-SCIPAddress -GrantToObjectType \"VirtualMachine\" -StaticIPAddressPool \$ippool${specificIp} | Select-Object ID,Address""")
+            def command = generateCommandString(buildReserveIPAddressCommand(poolId, ipAddress, grant))
             def out = wrapExecuteCommand(command, opts)
-            log.debug("reserveIPAddress: ${out}")
+            log.debug("reserveIPAddress: success=${out.success} exitCode=${out.exitCode} data=${out.data} error=${out.error}")
             if (out.success && out.exitCode == '0') {
                 def ipAddressBlock = out.data
                 if (ipAddressBlock) {
@@ -1402,6 +1409,21 @@ foreach (\$network in \$networks) {
             log.error("Error reserving an IP address from SCVMM: ${ex.message}", ex)
         }
         return rtn
+    }
+
+    static String buildReserveIPAddressCommand(poolId, ipAddress = null, Map grant = [:]) {
+        def objectType = grant?.objectType?.toString() ?: GRANT_TO_VIRTUAL_MACHINE
+        def args = new StringBuilder("Grant-SCIPAddress -GrantToObjectType \"${objectType}\" -StaticIPAddressPool \$ippool")
+        if (grant?.objectId) {
+            args << " -GrantToObjectID \"${grant.objectId}\""
+        }
+        if (ipAddress) {
+            args << " -IPAddress \"${ipAddress}\""
+        }
+        if (grant?.description) {
+            args << " -Description \"${grant.description.toString().replace('"', '`"')}\""
+        }
+        return "\$ippool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"${poolId}\"; ${args} | Select-Object ID,Address"
     }
 
     def releaseIPAddress(opts, poolId, ipId) {
@@ -2266,7 +2288,7 @@ For (\$i=0; \$i -le 10; \$i++) {
             def command = commands.join(';')
             log.debug "updateNetworkInterface: ${command}"
             def out = wrapExecuteCommand(generateCommandString(command), opts)
-            log.debug "updateNetworkInterface results: ${out}"
+            log.debug "updateNetworkInterface results: success=${out.success} exitCode=${out.exitCode} data=${out.data} error=${out.error}"
             rtn.success = out.success && out.exitCode == '0'
             if (!rtn.success) {
                 rtn.error = cleanPowerShellError(out.error) ?: out.msg ?: 'Failed to update network adapter'
@@ -2347,7 +2369,7 @@ For (\$i=0; \$i -le 10; \$i++) {
             def command = commands.join(';')
             log.debug "addNetworkInterface: ${command}"
             def out = wrapExecuteCommand(generateCommandString(command), opts)
-            log.debug "addNetworkInterface results: ${out}"
+            log.debug "addNetworkInterface results: success=${out.success} exitCode=${out.exitCode} data=${out.data} error=${out.error}"
             rtn.success = out.success && out.exitCode == '0'
             if (rtn.success) {
                 def nic = out.data instanceof List ? out.data.find { it } : out.data
@@ -2401,7 +2423,7 @@ For (\$i=0; \$i -le 10; \$i++) {
             def command = commands.join(';')
             log.debug "removeNetworkInterface: ${command}"
             def out = wrapExecuteCommand(generateCommandString(command), opts)
-            log.debug "removeNetworkInterface results: ${out}"
+            log.debug "removeNetworkInterface results: success=${out.success} exitCode=${out.exitCode} data=${out.data} error=${out.error}"
             rtn.success = out.success && out.exitCode == '0'
             if (!rtn.success) {
                 rtn.error = cleanPowerShellError(out.error) ?: out.msg ?: 'Failed to remove network adapter'
