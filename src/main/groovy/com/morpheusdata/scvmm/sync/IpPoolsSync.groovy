@@ -245,7 +245,7 @@ class IpPoolsSync {
             }
             networkPoolAdds.each { pool ->
                 def mapping = addList.find { it.ID == pool.externalId }
-                updateNetworkForPool(networks, pool, mapping?.NetworkID, mapping?.SubnetID, networkMapping)
+                updateNetworkForPool(networks, pool, mapping?.NetworkID, mapping?.SubnetID, networkMapping, mapping?.LogicalNetworkID)
             }
         } catch (e) {
             log.error("Error in addMissingIpPools: ${e}", e)
@@ -257,19 +257,41 @@ class IpPoolsSync {
      * that report a VM network, i.e. pools on VM subnets, are linked; pools on "No isolation" VM networks report no
      * VM network and are left for the user to attach to a network).
      */
-    def updateNetworkForPool(List<Network> networks, NetworkPool pool, networkId, subnetId, networkMapping) {
-        log.debug "updateNetworkForPool: pool=${pool?.externalId} networkId=${networkId} subnetId=${subnetId}"
+    def updateNetworkForPool(List<Network> networks, NetworkPool pool, networkId, subnetId, networkMapping, logicalNetworkId = null) {
+        log.debug "updateNetworkForPool: pool=${pool?.externalId} networkId=${networkId} subnetId=${subnetId} logicalNetworkId=${logicalNetworkId}"
         try {
-            def networkExternalId = networkMapping?.find { it.ID == networkId }?.ID
-            Network network = networks?.find { it.externalId == networkExternalId }
+            Network network = resolveNetworkForPool(networks, networkMapping, networkId, logicalNetworkId)
             if (network) {
                 linkNetworkToPool(network, pool, subnetId)
             } else {
-                log.debug("updateNetworkForPool: SCVMM pool ${pool?.name} (${pool?.externalId}) reports no VM network (networkId=${networkId}); not linking")
+                log.debug("updateNetworkForPool: SCVMM pool ${pool?.name} (${pool?.externalId}) maps to no Morpheus network (networkId=${networkId}, logicalNetworkId=${logicalNetworkId}); not linking")
             }
         } catch (e) {
             log.error("Error in updateNetworkForPool: ${e}", e)
         }
+    }
+
+    /**
+     * Finds the Morpheus network an SCVMM static pool serves. Pools on VM subnets report their VM network directly.
+     * Pools on "No isolation" VM networks have no VM subnet, so SCVMM reports no VM network for them; they are then
+     * matched through the logical network when exactly one VM network is bound to it (the common single-NIC lab /
+     * flat-network case). Ambiguous logical networks are left for the user to attach.
+     */
+    protected static Network resolveNetworkForPool(List<Network> networks, networkMapping, networkId, logicalNetworkId) {
+        if (networkId) {
+            def mapped = networkMapping?.find { it.ID?.toString() == networkId.toString() }
+            Network direct = networks?.find { it.externalId?.toString() == mapped?.ID?.toString() }
+            if (direct) {
+                return direct
+            }
+        }
+        if (logicalNetworkId) {
+            def candidates = (networkMapping ?: []).findAll { it.LogicalNetworkId?.toString() == logicalNetworkId.toString() }
+            if (candidates.size() == 1) {
+                return networks?.find { it.externalId?.toString() == candidates[0].ID?.toString() }
+            }
+        }
+        return null
     }
 
     /** SCVMM returns DNSServers as a single string, a list, or nothing depending on the pool. */
@@ -458,7 +480,7 @@ class IpPoolsSync {
                         morpheusContext.async.resourcePermission.create(resourcePerm).blockingGet()
                     }
 
-                    updateNetworkForPool(networks, existingItem, masterItem.NetworkID, masterItem.SubnetID, networkMapping)
+                    updateNetworkForPool(networks, existingItem, masterItem.NetworkID, masterItem.SubnetID, networkMapping, masterItem.LogicalNetworkID)
                 }
             }
         } catch (e) {
