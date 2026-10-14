@@ -1320,6 +1320,49 @@ foreach (\$logicalNetwork in \$logicalNetworks) {
         return rtn
     }
 
+    /**
+     * Lists every address currently allocated from the SCVMM static IP address pools (all pools when {@code poolId}
+     * is null). Each entry carries {@code PoolID, ID, Address, State (Assigned|UnAssigned), AssignedToType,
+     * AllocatedToObjectID, Description}. Used to rebuild Morpheus NetworkPoolIp records after they were lost
+     * (e.g. the appliance drops them when the plugin is upgraded) and to surface grants Morpheus never knew about.
+     */
+    def listPoolIPAddresses(opts, poolId = null) {
+        def rtn = [success: true, ipAddresses: []]
+        try {
+            def poolSelector = poolId ? "Get-SCStaticIPAddressPool -VMMServer localhost -ID \"${poolId}\"" : "Get-SCStaticIPAddressPool -VMMServer localhost"
+            def command = generateCommandString("""\$report = @()
+\$pools = @(${poolSelector})
+foreach (\$pool in \$pools) {
+	foreach (\$ip in @(Get-SCIPAddress -VMMServer localhost -StaticIPAddressPool \$pool)) {
+		\$data = New-Object PSObject -property @{
+			PoolID=\$pool.ID
+			ID=\$ip.ID
+			Address=\$ip.Address
+			State=\$ip.State.ToString()
+			AssignedToType=\$ip.AssignedToType.ToString()
+			AllocatedToObjectID=\$ip.AllocatedToObjectID
+			Description=\$ip.Description
+		}
+		\$report += \$data
+	}
+}
+\$report """)
+            def out = wrapExecuteCommand(command, opts)
+            log.debug("listPoolIPAddresses: success=${out.success} exitCode=${out.exitCode} count=${out.data?.size()} error=${out.error}")
+            if (out.success && out.exitCode == '0') {
+                rtn.ipAddresses = (out.data ?: []).findAll { it }
+            } else {
+                rtn.success = false
+                rtn.msg = out.error ?: 'Unable to list SCVMM pool IP addresses'
+            }
+        } catch (e) {
+            rtn.success = false
+            rtn.msg = "Error listing SCVMM pool IP addresses: ${e.message}"
+            log.error(rtn.msg, e)
+        }
+        return rtn
+    }
+
     //
     def listNetworkIPPools(opts) {
         def rtn = [success: true, ipPools: [], networkMapping: []]

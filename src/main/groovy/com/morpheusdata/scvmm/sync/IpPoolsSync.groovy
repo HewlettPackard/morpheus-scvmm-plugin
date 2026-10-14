@@ -17,6 +17,9 @@ import com.morpheusdata.model.NetworkSubnet
 import com.morpheusdata.model.ResourcePermission
 import com.morpheusdata.model.projection.NetworkPoolIdentityProjection
 import com.morpheusdata.scvmm.helper.NetworkPoolServerHelper
+import com.morpheusdata.scvmm.helper.PoolIpReconciler
+import com.morpheusdata.model.NetworkPoolIp
+import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
@@ -24,10 +27,10 @@ import org.apache.commons.net.util.SubnetUtils
 
 class IpPoolsSync {
 
-    private MorpheusContext morpheusContext
-    private Cloud cloud
-    private ScvmmApiService apiService
-    private NetworkPoolServer poolServer
+    protected MorpheusContext morpheusContext
+    protected Cloud cloud
+    protected ScvmmApiService apiService
+    protected NetworkPoolServer poolServer
     private LogInterface log = PrefixedLoggerFactory.getLogger(IpPoolsSync)
 
     /**
@@ -87,9 +90,80 @@ class IpPoolsSync {
                 }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<NetworkPoolIdentityProjection, Map>> updateItems ->
                     return morpheusContext.async.cloud.network.pool.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
+
+                reconcilePoolIps(scvmmOpts)
             }
         } catch (e) {
             log.error("ipPoolsSync error: ${e}", e)
+        }
+    }
+
+    /**
+     * Rebuilds Morpheus NetworkPoolIp records from the grants SCVMM holds for every pool of this cloud. The appliance
+     * deletes the plugin's pool server, its pools and their IPs whenever the plugin is upgraded, so without this every
+     * VM provisioned before an upgrade loses its lease (and is never released on delete). Also surfaces grants made
+     * outside Morpheus so the pool's usage is truthful.
+     */
+    protected void reconcilePoolIps(Map scvmmOpts) {
+        MorpheusContext ctx = morpheusContext
+        try {
+            def grantResults = apiService.listPoolIPAddresses(scvmmOpts)
+            if (!grantResults.success) {
+                log.warn("reconcilePoolIps: unable to list SCVMM pool addresses: ${grantResults.msg}")
+                return
+            }
+            List<Map> grants = (grantResults.ipAddresses ?: []) as List<Map>
+            Map<String, List<Map>> grantsByPool = grants.groupBy { Map g -> (g.PoolID ?: '').toString().toLowerCase() }
+
+            List<NetworkPool> pools = ctx.services.cloud.network.pool.list(new DataQuery()
+                    .withFilter('account.id', cloud.account.id)
+                    .withFilter('category', NetworkPoolServerHelper.getPoolCategory(cloud)))
+            if (!pools) {
+                return
+            }
+            PoolIpReconciler.OwnerIndex owners = new PoolIpReconciler.OwnerIndex(listCloudServers())
+
+            for (NetworkPool pool : pools) {
+                List<Map> poolGrants = grantsByPool[(pool.externalId ?: '').toString().toLowerCase()] ?: []
+                List<Long> ids = ctx.async.network.pool.poolIp.listIdentityProjections(pool.id).toList().blockingGet()*.id
+                List<NetworkPoolIp> existing = ids ? ctx.async.network.pool.poolIp.listById(ids).toList().blockingGet() : []
+                PoolIpReconciler.Plan plan = PoolIpReconciler.plan(pool, existing, poolGrants, owners)
+                if (plan.empty) {
+                    log.debug("reconcilePoolIps: pool ${pool.name} in sync (${existing.size()} leases, ${poolGrants.size()} grants)")
+                    continue
+                }
+                log.info("reconcilePoolIps: pool ${pool.name} (${pool.externalId}): grants=${poolGrants.size()} rows=${existing.size()} " +
+                        "add=${plan.adds.size()} update=${plan.updates.size()} remove=${plan.removes.size()}")
+                for (NetworkPoolIp add : plan.adds) {
+                    log.info("reconcilePoolIps: restoring lease ${add.ipAddress} (scvmm id ${add.externalId}) -> ${add.refType ?: 'unattached'} ${add.refId ?: ''} nic ${add.subRefId ?: '-'}")
+                }
+                for (def gone : plan.removes) {
+                    log.info("reconcilePoolIps: dropping lease ${gone.ipAddress} (scvmm id ${gone.externalId}) no longer granted in SCVMM")
+                }
+                if (plan.removes) {
+                    ctx.async.network.pool.poolIp.remove(pool.id, plan.removes).blockingGet()
+                }
+                if (plan.updates) {
+                    ctx.async.network.pool.poolIp.save(plan.updates).blockingGet()
+                }
+                if (plan.adds) {
+                    ctx.async.network.pool.poolIp.create(pool, plan.adds).blockingGet()
+                }
+            }
+        } catch (e) {
+            log.error("reconcilePoolIps error: ${e}", e)
+        }
+    }
+
+    /** Servers of this cloud with their interfaces and addresses, for attributing SCVMM grants. */
+    protected List<ComputeServer> listCloudServers() {
+        try {
+            return morpheusContext.services.computeServer.list(new DataQuery()
+                    .withFilter('zone.id', cloud.id)
+                    .withJoins(['interfaces', 'interfaces.addresses'])) ?: []
+        } catch (e) {
+            log.warn("reconcilePoolIps: unable to load servers for cloud ${cloud.id}: ${e.message}")
+            return []
         }
     }
 

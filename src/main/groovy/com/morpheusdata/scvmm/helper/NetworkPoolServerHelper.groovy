@@ -56,11 +56,20 @@ class NetworkPoolServerHelper {
         ))
     }
 
+    /**
+     * Finds or creates the cloud's hidden pool server. Returns null (after a WARN, not an exception) when the
+     * {@code scvmm-ipam} NetworkPoolServerType is not registered yet: right after a plugin upgrade the appliance
+     * has deleted the previous type/server/pools/IPs but may run the first cloud refresh before the new plugin's
+     * type is persisted. The next refresh recreates the server and {@code IpPoolsSync} rebuilds pools and leases.
+     */
     NetworkPoolServer ensurePoolServer(Cloud cloud) {
         NetworkPoolServer poolServer = findPoolServer(cloud)
-        if (!poolServer) {
-            log.info("Creating hidden SCVMM network pool server for cloud ${cloud.id}")
-            poolServer = morpheusContext.services.network.poolServer.create(new NetworkPoolServer(
+        if (poolServer) {
+            return poolServer
+        }
+        log.info("Creating hidden SCVMM network pool server for cloud ${cloud.id}")
+        try {
+            return morpheusContext.services.network.poolServer.create(new NetworkPoolServer(
                     name: "SCVMM IP Pools - ${cloud.name}".toString(),
                     internalId: getInternalId(cloud),
                     type: new NetworkPoolServerType(code: ScvmmConstants.IPAM_PROVIDER_CODE),
@@ -68,8 +77,12 @@ class NetworkPoolServerHelper {
                     enabled: true,
                     visible: false
             ))
+        } catch (e) {
+            // Typically "NetworkPoolServer.type: rejected value [null]" because the scvmm-ipam type is not
+            // registered yet right after a plugin upgrade; the next refresh succeeds.
+            log.warn("Unable to create SCVMM network pool server for cloud ${cloud.id} (will retry on next refresh): ${e.message?.readLines()?.first()}")
+            return null
         }
-        return poolServer
     }
 
     /** Binds a pool to its pool server. Returns true when the pool was changed and needs saving. */
