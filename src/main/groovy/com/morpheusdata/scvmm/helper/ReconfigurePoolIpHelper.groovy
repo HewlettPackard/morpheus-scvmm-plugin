@@ -81,9 +81,9 @@ class ReconfigurePoolIpHelper {
      * address has been bound to the adapter, or {@link #revokeLease} to roll the grant back.
      * <p>
      * The grant is made <em>to the adapter</em> ({@code -GrantToObjectType VirtualNetworkAdapter -GrantToObjectID}) when
-     * the interface already carries its SCVMM adapter ID. VMM only treats an address as belonging to an existing adapter
-     * when it was granted that way; otherwise the later {@code Set-SCVirtualNetworkAdapter -IPv4AddressPools} bind makes
-     * VMM allocate a second address of its own, leaving the pool over-consumed and Morpheus unaware of it.
+     * the interface already carries its SCVMM adapter ID, so the allocation is attributable in VMM. The subsequent
+     * bind passes only {@code -IPv4Addresses} (never {@code -IPv4AddressPools}, which would make VMM allocate a second
+     * address next to this grant).
      * @return map with success and poolIp, or success=false and error
      */
     Map leasePoolIp(Map scvmmOpts, NetworkPool pool, Network network, ComputeServer server, ComputeServerInterface iface, String requestedIp = null) {

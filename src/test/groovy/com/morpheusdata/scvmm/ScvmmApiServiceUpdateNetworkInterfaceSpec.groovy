@@ -175,7 +175,7 @@ class ScvmmApiServiceUpdateNetworkInterfaceSpec extends Specification {
         rtn.error == 'Invalid IPv4 address type Bogus for NIC update'
     }
 
-    def "binds a granted static pool address: looks up the pool, forces Static and passes -IPv4Addresses / -IPv4AddressPools"() {
+    def "binds a granted static pool address: validates the pool, forces Static, passes -IPv4Addresses and never -IPv4AddressPools"() {
         given:
         stubExecute(success: true, exitCode: '0')
         String poolId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
@@ -190,7 +190,9 @@ class ScvmmApiServiceUpdateNetworkInterfaceSpec extends Specification {
         capturedCommand.contains('if (-not $IPPool) { Write-Error "Static IP address pool ' + poolId + ' not found"; Exit 28 }')
         capturedCommand.contains('-IPv4AddressType Static')
         !capturedCommand.contains('-IPv4AddressType Dynamic')
-        capturedCommand.contains('-IPv4Addresses "10.20.30.40" -IPv4AddressPools $IPPool')
+        capturedCommand.contains('-IPv4Addresses "10.20.30.40"')
+        // -IPv4AddressPools would make VMM allocate a second address next to the granted one (SCVMM double allocation)
+        !capturedCommand.contains('-IPv4AddressPools')
         // pool lookup must happen before the Set call
         capturedCommand.indexOf('Get-SCStaticIPAddressPool') < capturedCommand.indexOf('Set-SCVirtualNetworkAdapter')
 

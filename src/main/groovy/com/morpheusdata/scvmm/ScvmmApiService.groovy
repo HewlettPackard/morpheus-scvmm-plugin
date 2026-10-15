@@ -1385,9 +1385,8 @@ foreach (\$network in \$networks) {
      * requested, otherwise SCVMM hands out the next available one.
      * <p>
      * {@code grant} optionally scopes the allocation: {@code objectType} ({@code VirtualMachine} by default or
-     * {@code VirtualNetworkAdapter}), {@code objectId} (the SCVMM ID of that object) and {@code description}. Binding
-     * an address to an <em>existing</em> adapter with {@code Set-SCVirtualNetworkAdapter -IPv4AddressPools} only works
-     * when the grant was made to that adapter; an anonymous grant makes VMM allocate a second address of its own.
+     * {@code VirtualNetworkAdapter}), {@code objectId} (the SCVMM ID of that object) and {@code description}. Grants
+     * made for an <em>existing</em> adapter are scoped to it so the allocation is attributable in VMM.
      */
     def reserveIPAddress(opts, poolId, ipAddress = null, Map grant = [:]) {
         def rtn = [success: true, ipAddress: []]
@@ -2210,8 +2209,10 @@ For (\$i=0; \$i -le 10; \$i++) {
      *        Pass 'Dynamic' when the target network has no SCVMM IP pool: SCVMM refuses to attach a Static adapter
      *        to a network without a pool (error 15046).
      *        ipAddress + poolExternalId (optional, must be given together): binds the adapter to that static IPv4
-     *        address from the given SCVMM static IP address pool (implies ipv4AddressType Static). The address is
-     *        expected to have been granted already via {@link #reserveIPAddress}.
+     *        address (implies ipv4AddressType Static). The address must already have been granted to this adapter
+     *        via {@link #reserveIPAddress}; the pool id is only validated. The bind deliberately does <b>not</b>
+     *        pass {@code -IPv4AddressPools}: that switch asks VMM to allocate from the pool for the adapter, which
+     *        makes VMM hand out a second address next to the one already granted.
      * @return map with success flag
      */
     def updateNetworkInterface(opts, vmId, Map nicProps = [:]) {
@@ -2280,7 +2281,7 @@ For (\$i=0; \$i -le 10; \$i++) {
             def vlanArgs = vlanEnabled ? "-VLanEnabled \$true -VLanID ${vlanId}" : "-VLanEnabled \$false"
             def subnetArg = subnetExternalId ? "-VMSubnet \$VMSubnet" : ""
             def addressTypeArg = ipv4AddressType ? "-IPv4AddressType ${ipv4AddressType}" : ""
-            def poolArgs = poolExternalId ? "-IPv4Addresses \"${ipAddress}\" -IPv4AddressPools \$IPPool" : ""
+            def poolArgs = poolExternalId ? "-IPv4Addresses \"${ipAddress}\"" : ""
             commands << "\$ignore = Set-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter -VMNetwork \$VMNetwork ${subnetArg} ${vlanArgs} ${addressTypeArg} ${poolArgs}"
             commands << "if (-not \$?) { Exit 27 }"
             commands << "\$true"
