@@ -606,11 +606,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             )
         }
 
+        // Core hands this back to runWorkload as provisionOpts.cloneContainerId and it is resolved as a
+        // Workload id, so it must be the source workload's id, not the source instance's id (MORPH-19193).
         def cloneResponse = new PrepareCloneInstanceResponse(
                 instance: instance,
                 image: sourceImage,
                 cloneVmExternalId: sourceServer.externalId,
-                cloneContainerId: opts.cloneInstanceId?.toLong(),
+                cloneContainerId: sourceWorkload.id,
                 snapshotToWorkloadMap: [:]
         )
         return new ServiceResponse<PrepareCloneInstanceResponse>(true, null, null, cloneResponse)
@@ -675,6 +677,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             try {
                 if (opts.cloneContainerId) {
                     Workload cloneContainer = context.services.workload.get(opts.cloneContainerId.toLong())
+                    if (!cloneContainer?.server) {
+                        provisionResponse.setError("Unable to locate source workload ${opts.cloneContainerId} for clone")
+                        return new ServiceResponse(success: false, msg: provisionResponse.message, error: provisionResponse.message, data: provisionResponse)
+                    }
                     cloneContainer.server.volumes?.eachWithIndex { vol, i ->
                         server.volumes[i].datastore = vol.datastore
                         context.services.storageVolume.save(server.volumes[i])
