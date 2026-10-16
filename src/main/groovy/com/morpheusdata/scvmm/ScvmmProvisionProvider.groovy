@@ -1504,8 +1504,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 			fetchedServer.externalIp = serverDetails.server?.ipAddress
 			fetchedServer.powerState = ComputeServer.PowerState.on
 			def newIpAddress = serverDetails.server?.ipAddress
-			def macAddress = serverDetails.server?.macAddress
-			fetchedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
+			def networkAdapter = findPrimaryNetworkAdapter(serverDetails.server as Map, newIpAddress)
+			fetchedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, networkAdapter)
             def hostOpts = fetchScvmmConnectionDetails(fetchedServer)
             try {
                 refreshServerPlacement(fetchedServer, hostOpts)
@@ -2360,18 +2360,24 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
     }
 
-    private saveAndGetNetworkInterface(ComputeServer server, privateIp, publicIp, index, macAddress) {
-        log.debug("applyComputeServerNetworkIp: ${privateIp}")
+    private saveAndGetNetworkInterface(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
+        log.debug("applyComputeServerNetworkIp: ${privateIp}, adapter: ${networkAdapter?.ID}")
 		def rtn = [:]
         ComputeServerInterface netInterface
+        def macAddress = networkAdapter?.MacAddress
+        def adapterExternalId = networkAdapter?.ID
         if (privateIp) {
             privateIp = privateIp?.toString().contains("\n") ? privateIp.toString().replace("\n", "") : privateIp.toString()
             def newInterface = false
             server.internalIp = privateIp
             server.sshHost = privateIp
-            server.macAddress = macAddress
+            if (macAddress) {
+                server.macAddress = macAddress
+            }
             log.debug("Setting private ip on server:${server.sshHost}")
-            netInterface = server.interfaces?.find { it.ipAddress == privateIp }
+            netInterface = server.interfaces?.find { adapterExternalId && it.externalId == adapterExternalId }
+            if (netInterface == null)
+                netInterface = server.interfaces?.find { it.ipAddress == privateIp }
 
             if (netInterface == null) {
                 if (index == 0)
@@ -2399,7 +2405,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 netInterface.publicIpAddress = publicIp
                 server.externalIp = publicIp
             }
-            netInterface.macAddress = macAddress
+            // Bind the interface to the SCVMM adapter so VirtualMachineSync matches it by externalId
+            if (adapterExternalId) {
+                netInterface.externalId = adapterExternalId
+            }
+            if (macAddress) {
+                netInterface.macAddress = macAddress
+            }
+            if (networkAdapter?.VLanID != null) {
+                netInterface.vlanId = networkAdapter.VLanID.toString()
+            }
             if (newInterface == true)
                 context.async.computeServer.computeServerInterface.create([netInterface], server).blockingGet()
             else
@@ -2411,12 +2426,29 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         return rtn
     }
 
-	private applyComputeServerNetworkIp(ComputeServer server, privateIp, publicIp, index, macAddress) {
-		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, macAddress).netInterface
+	private applyComputeServerNetworkIp(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
+		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, networkAdapter).netInterface
 	}
 
-	private applyNetworkIpAndGetServer(ComputeServer server, privateIp, publicIp, index, macAddress) {
-		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, macAddress).server
+	private applyNetworkIpAndGetServer(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
+		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, networkAdapter).server
+	}
+
+	/**
+	 * Picks the SCVMM network adapter that backs the primary interface: prefer the adapter holding the
+	 * detected IP, then SlotId 0, then the first enabled adapter.
+	 */
+	protected static Map findPrimaryNetworkAdapter(Map serverDetail, ipAddress) {
+		List<Map> adapters = (serverDetail?.NetworkAdapters ?: []).findAll { it } as List<Map>
+		if (!adapters) {
+			return null
+		}
+		def ip = ipAddress?.toString()?.trim()
+		def byIp = ip ? adapters.find { adapter ->
+			def ips = ScvmmApiService.normalizeAddresses(adapter.IPv4Addresses) + ScvmmApiService.normalizeAddresses(adapter.IPv6Addresses)
+			ips.contains(ip)
+		} : null
+		return byIp ?: adapters.find { it.SlotId?.toString() == '0' } ?: adapters.first()
 	}
 
     @Override
@@ -2472,8 +2504,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 					fetchedServer = context.async.computeServer.get(server.id).blockingGet()
 				}
 				def newIpAddress = serverDetail.server?.ipAddress
-				def macAddress = serverDetail.server?.macAddress
-				def savedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
+				def networkAdapter = findPrimaryNetworkAdapter(serverDetail.server as Map, newIpAddress)
+				def savedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, networkAdapter)
                 context.async.computeServer.save(savedServer).blockingGet()
                 rtn.success = true
             }
