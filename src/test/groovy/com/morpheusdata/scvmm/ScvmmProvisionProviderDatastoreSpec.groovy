@@ -18,6 +18,7 @@ import com.morpheusdata.model.ComputeCapacityInfo
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.Datastore
 import com.morpheusdata.scvmm.sync.DatastoresSync
+import com.morpheusdata.scvmm.sync.RegisteredStorageFileSharesSync
 import spock.lang.Specification
 import spock.lang.Subject
 import spock.lang.Unroll
@@ -216,17 +217,103 @@ class ScvmmProvisionProviderDatastoreSpec extends Specification {
         highlyAvailable == false
     }
 
-    def "clones in a cluster are always Highly Available regardless of the datastore"() {
-        given:
+    def "clones in a cluster follow the same storage rule as fresh VMs"() {
+        given: 'a cloned VM carries the source datastore; a host-local one must not force HA (MORPH-19186)'
         def local = datastore(1L, 'HYPERV-A : C:\\', 500L, [clusterA], DatastoresSync.EXTERNAL_TYPE_HOST_VOLUME)
         poolService.find(_) >> clusterA
         computeServerService.list(_) >> [hostWithMemory('HYPERV-A', 64L)]
 
         when:
-        def (node, picked, volumePath, highlyAvailable) = provider.getHostAndDatastore(cloud, account, clusterA.id, null, local, null, 10L, null, 8L, true)
+        def (node, picked, volumePath, highlyAvailable) = provider.getHostAndDatastore(cloud, account, clusterA.id, null, local, null, 10L, null, 8L)
+
+        then:
+        highlyAvailable == false
+    }
+
+    def "a VM on an SMB share registered to the cluster is Highly Available"() {
+        given:
+        def share = datastore(1L, '\\\\filer\\vms', 500L, [clusterA], RegisteredStorageFileSharesSync.EXTERNAL_TYPE_CLUSTER_FILE_SHARE)
+        poolService.find(_) >> clusterA
+        computeServerService.list(_) >> [hostWithMemory('HYPERV-A', 64L)]
+
+        when:
+        def (node, picked, volumePath, highlyAvailable) = provider.getHostAndDatastore(cloud, account, clusterA.id, null, share, null, 10L, null, 8L)
 
         then:
         highlyAvailable == true
+    }
+
+    // ----------------------------------------------------------------------------------------------------------
+    // resolveHighlyAvailable – VM level decision across all disks
+    // ----------------------------------------------------------------------------------------------------------
+
+    @Unroll
+    def "resolveHighlyAvailable: cluster=#withCluster disks=#types -> #expected"() {
+        given:
+        def hostA = hostWithMemory('HYPERV-A', 64L)
+        def datastores = types.collect { datastore(1L, "ds-${it}", 500L, [clusterA], it) }
+
+        expect:
+        ScvmmProvisionProvider.resolveHighlyAvailable(withCluster ? clusterA.id : null, datastores, datastores.collect { hostA }) == expected
+
+        where:
+        withCluster | types                                                                                                                 || expected
+        true        | [DatastoresSync.EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME]                                                               || true
+        true        | [DatastoresSync.EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME, DatastoresSync.EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME]           || true
+        true        | [DatastoresSync.EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME, RegisteredStorageFileSharesSync.EXTERNAL_TYPE_CLUSTER_FILE_SHARE] || true
+        true        | [DatastoresSync.EXTERNAL_TYPE_HOST_VOLUME]                                                                           || false
+        true        | [DatastoresSync.EXTERNAL_TYPE_HOST_VOLUME, DatastoresSync.EXTERNAL_TYPE_HOST_VOLUME]                                  || false
+        true        | [RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE]                                                      || false
+        false       | [DatastoresSync.EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME]                                                               || false
+        false       | [DatastoresSync.EXTERNAL_TYPE_HOST_VOLUME]                                                                           || false
+    }
+
+    def "resolveHighlyAvailable is false when deploying to a cloud without a resolved datastore"() {
+        expect:
+        !ScvmmProvisionProvider.resolveHighlyAvailable(clusterA.id, [null], [null])
+        !ScvmmProvisionProvider.resolveHighlyAvailable(clusterA.id, [], [])
+    }
+
+    def "mixing cluster storage and host-local storage under a resource pool is rejected"() {
+        given:
+        def hostA = hostWithMemory('HYPERV-A', 64L)
+        def csv = datastore(1L, 'cluster-a : Volume1', 500L, [clusterA], DatastoresSync.EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME)
+        def local = datastore(2L, 'HYPERV-A : C:\\', 500L, [clusterA], DatastoresSync.EXTERNAL_TYPE_HOST_VOLUME)
+
+        when:
+        ScvmmProvisionProvider.resolveHighlyAvailable(clusterA.id, [csv, local], [hostA, hostA])
+
+        then:
+        def e = thrown(Exception)
+        e.message.contains('cluster-a : Volume1')
+        e.message.contains('HYPERV-A : C:\\')
+    }
+
+    def "mixed storage is allowed when no resource pool is selected"() {
+        given:
+        def hostA = hostWithMemory('HYPERV-A', 64L)
+        def csv = datastore(1L, 'Volume1', 500L, [clusterA], DatastoresSync.EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME)
+        def local = datastore(2L, 'C:\\', 500L, [], DatastoresSync.EXTERNAL_TYPE_HOST_VOLUME)
+
+        expect:
+        !ScvmmProvisionProvider.resolveHighlyAvailable(null, [csv, local], [hostA, hostA])
+    }
+
+    def "host-local disks resolving to different hosts under a resource pool are rejected"() {
+        given:
+        def hostA = hostWithMemory('HYPERV-A', 64L)
+        def hostB = hostWithMemory('HYPERV-B', 64L)
+        hostB.id = 2L
+        def localA = datastore(1L, 'HYPERV-A : C:\\', 500L, [clusterA], DatastoresSync.EXTERNAL_TYPE_HOST_VOLUME)
+        def localB = datastore(2L, 'HYPERV-B : D:\\', 500L, [clusterA], DatastoresSync.EXTERNAL_TYPE_HOST_VOLUME)
+
+        when:
+        ScvmmProvisionProvider.resolveHighlyAvailable(clusterA.id, [localA, localB], [hostA, hostB])
+
+        then:
+        def e = thrown(Exception)
+        e.message.contains('HYPERV-A')
+        e.message.contains('HYPERV-B')
     }
 
     // ----------------------------------------------------------------------------------------------------------
