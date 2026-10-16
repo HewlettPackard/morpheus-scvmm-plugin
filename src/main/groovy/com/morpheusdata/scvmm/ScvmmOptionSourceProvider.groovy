@@ -10,6 +10,8 @@ import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataOrFilter
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.model.Cloud
+import com.morpheusdata.scvmm.error.ScvmmCommandSanitizer
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 
@@ -58,6 +60,24 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 		return rtn
 	}
 
+	/**
+	 * Runs an SCVMM lookup for an option list. Failures are logged once and returned as {@code [error: message]} so the
+	 * dropdown can show the operator why the list is empty instead of a generic "not found".
+	 */
+	private Map safeList(String what, Closure<Map> lookup) {
+		try {
+			return lookup() ?: [:]
+		} catch (e) {
+			log.warn("Unable to list SCVMM ${what}: ${e.message}")
+			return [success: false, error: ScvmmErrorTranslator.userMessage(e)]
+		}
+	}
+
+	private static List errorOption(String what, Map results, String fallback) {
+		String reason = results?.error ?: results?.msg
+		[[name: reason ? "Unable to load ${what}: ${ScvmmCommandSanitizer.truncate(reason, 120)}".toString() : fallback, value: '']]
+	}
+
 	def setupCloudConfig(params) {
 		params = params instanceof Object[] ? params.getAt(0) : params
 
@@ -97,7 +117,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 				def credentials = morpheusContext.services.accountCredential.loadCredentialConfig(params.credential, config)
 				cloud.accountCredentialLoaded = true
 				cloud.accountCredentialData = credentials?.data
-				log.debug("cloud.accountCredentialData: ${cloud.accountCredentialData}")
+				log.debug("cloud.accountCredentialData loaded: ${cloud.accountCredentialData != null}")
 			} else {
 				// local credential, set the local cred config
 				config.password = password
@@ -120,7 +140,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 		def apiConfig = getApiConfig(cloud)
 		def results = []
 		if(apiConfig.sshUsername && apiConfig.sshPassword) {
-			results = apiService.listClouds(apiConfig)
+			results = safeList('clouds') { apiService.listClouds(apiConfig) }
 		}
 		log.debug("listClouds: ${results}")
 		def optionList = []
@@ -128,18 +148,18 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 			optionList << [name: "Select a Cloud", value: ""]
 			optionList += results.clouds?.collect { [name: it.Name, value: it.ID] }
 		} else {
-			optionList = [[name:"No Clouds found: verify credentials above", value:""]]
+			optionList = errorOption('clouds', results, "No Clouds found: verify credentials above")
 		}
 		return optionList
 	}
 
 	def scvmmHostGroup(params) {
-		log.debug("scvmmHostGroup: ${params}")
+		log.debug("scvmmHostGroup: ${ScvmmCommandSanitizer.redactOpts(params instanceof Map ? params : [:])}")
 		def cloud = setupCloudConfig(params)
 		def apiConfig = getApiConfig(cloud)
 		def results = []
 		if(apiConfig.sshUsername && apiConfig.sshPassword) {
-			results = apiService.listHostGroups(apiConfig)
+			results = safeList('host groups') { apiService.listHostGroups(apiConfig) }
 		}
 		log.debug("listHostGroups: ${results}")
 		def optionList = []
@@ -147,18 +167,18 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 			optionList << [name: "Select", value: ""]
 			optionList += results.hostGroups?.collect { [name: it.path, value: it.path] }
 		} else {
-			optionList = [[name:"No Host Groups found", value:""]]
+			optionList = errorOption('host groups', results, "No Host Groups found")
 		}
 		return optionList
 	}
 
 	def scvmmCluster(params) {
-		log.debug("scvmmCluster: ${params}")
+		log.debug("scvmmCluster: ${ScvmmCommandSanitizer.redactOpts(params instanceof Map ? params : [:])}")
 		def cloud = setupCloudConfig(params)
 		def apiConfig = getApiConfig(cloud)
 		def results = []
 		if(apiConfig.sshUsername && apiConfig.sshPassword) {
-			results = apiService.listClusters(apiConfig)
+			results = safeList('clusters') { apiService.listClusters(apiConfig) }
 		}
 		log.debug("listClusters: ${results}")
 		def optionList = []
@@ -166,21 +186,21 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 			optionList << [name: "All", value: ""]
 			optionList += results.clusters?.collect { [name: it.name, value: it.id] }
 		} else {
-			optionList = [[name:"No Clusters found: check your config", value:""]]
+			optionList = errorOption('clusters', results, "No Clusters found: check your config")
 		}
 		return optionList
 	}
 
 	def scvmmLibraryShares(params) {
-		log.debug("scvmmLibraryShares: ${params}")
+		log.debug("scvmmLibraryShares: ${ScvmmCommandSanitizer.redactOpts(params instanceof Map ? params : [:])}")
 		def cloud = setupCloudConfig(params)
 		def apiConfig = getApiConfig(cloud)
 		def results = []
 		if(apiConfig.sshUsername && apiConfig.sshPassword) {
-			results = apiService.listLibraryShares(apiConfig)
+			results = safeList('library shares') { apiService.listLibraryShares(apiConfig) }
 		}
 		log.debug("listLibraryShares: ${results}")
-		return results.libraryShares.size() > 0 ? results.libraryShares?.collect { [name: it.Path, value: it.Path] } : [[name:"No Library Shares found", value:""]]
+		return results.libraryShares?.size() > 0 ? results.libraryShares?.collect { [name: it.Path, value: it.Path] } : errorOption('library shares', results, "No Library Shares found")
 	}
 
 	def scvmmSharedControllers(params) {

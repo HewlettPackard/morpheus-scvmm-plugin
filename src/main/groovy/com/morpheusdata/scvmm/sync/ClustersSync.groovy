@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
@@ -66,9 +68,13 @@ class ClustersSync {
             } else {
                 log.info("Not getting the listClusters")
             }
+        } catch (ScvmmConnectionException e) {
+            throw e
         } catch (e) {
-            log.error("ClustersSync error: ${e}", e)
+            log.error("ClustersSync error: ${e.message}", e)
+            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
         }
+        return [success: true]
     }
 
     private addMissingResourcePools(Collection<Map> addList){

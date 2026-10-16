@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
@@ -81,12 +83,19 @@ class HostSync {
                         removeMissingHosts(removeItems)
                     }.start()
                 }
+            } else if (listResults.success != true) {
+                log.error "Error in getting hosts : ${listResults.msg}"
+                return [success: false, msg: listResults.msg ?: 'SCVMM host listing failed']
             } else {
-                log.error "Error in getting hosts : ${listResults}"
+                log.info "HostSync: no hosts returned"
             }
+        } catch (ScvmmConnectionException e) {
+            throw e
         } catch (e) {
-            log.error("HostSync error: ${e}", e)
+            log.error("HostSync error: ${e.message}", e)
+            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
         }
+        return [success: true]
     }
 
     private updateMatchedHosts(List<SyncTask.UpdateItem<ComputeServer, Map>> updateList, clusters) {
