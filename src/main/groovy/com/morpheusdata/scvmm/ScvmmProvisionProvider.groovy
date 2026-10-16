@@ -30,6 +30,7 @@ import com.morpheusdata.scvmm.helper.ReconfigurePoolIpHelper
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import com.morpheusdata.scvmm.sync.DatastoresSync
+import com.morpheusdata.scvmm.sync.RegisteredStorageFileSharesSync
 import com.morpheusdata.scvmm.util.MorpheusUtil
 import groovy.json.JsonSlurper
 
@@ -682,13 +683,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
                 scvmmOpts.volumePaths = []
 
-                (node, datastore, volumePath, highlyAvailable) = getHostAndDatastore(cloud, server.account, externalPoolId, containerConfig.hostId, rootVolume?.datastore, rootVolume?.datastoreOption, maxStorage, workload.instance.site?.id, maxMemory, true)
+                (node, datastore, volumePath, highlyAvailable) = getHostAndDatastore(cloud, server.account, externalPoolId, containerConfig.hostId, rootVolume?.datastore, rootVolume?.datastoreOption, maxStorage, workload.instance.site?.id, maxMemory)
                 nodeId = node?.id
                 scvmmOpts.datastoreId = datastore?.externalId
                 scvmmOpts.hostExternalId = node?.externalId
                 scvmmOpts.volumePath = volumePath
                 scvmmOpts.volumePaths << volumePath
-                scvmmOpts.highlyAvailable = highlyAvailable
                 log.debug("scvmmOpts: ${scvmmOpts}")
 
                 if (rootVolume) {
@@ -696,10 +696,14 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     context.services.storageVolume.save(rootVolume)
                 }
 
+                List<Datastore> volumeDatastores = [datastore]
+                List<ComputeServer> volumeNodes = [node]
                 storageVolumes?.each { vol ->
                     if (!vol.rootVolume) {
                         def tmpNode, tmpDatastore, tmpVolumePath, tmpHighlyAvailable
-                        (tmpNode, tmpDatastore, tmpVolumePath, tmpHighlyAvailable) = getHostAndDatastore(cloud, server.account, externalPoolId, containerConfig.hostId, vol?.datastore, vol?.datastoreOption, maxStorage, workload.instance.site?.id, maxMemory, true)
+                        (tmpNode, tmpDatastore, tmpVolumePath, tmpHighlyAvailable) = getHostAndDatastore(cloud, server.account, externalPoolId, containerConfig.hostId ?: nodeId, vol?.datastore, vol?.datastoreOption, maxStorage, workload.instance.site?.id, maxMemory)
+                        volumeDatastores << tmpDatastore
+                        volumeNodes << tmpNode
                         vol.datastore = tmpDatastore
                         if (tmpVolumePath) {
                             vol.volumePath = tmpVolumePath
@@ -708,9 +712,14 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         context.services.storageVolume.save(vol)
                     }
                 }
+                scvmmOpts.highlyAvailable = resolveHighlyAvailable(externalPoolId, volumeDatastores, volumeNodes)
+                log.info("highlyAvailable: ${scvmmOpts.highlyAvailable}")
             } catch (e) {
                 log.error("Error in determining host and datastore: {}", e.message, e)
-                return new ServiceResponse(success: false, msg: provisionResponse.message ?: 'Error in determining host and datastore', error: provisionResponse.message, data: provisionResponse)
+                def errorMessage = e.message ?: 'Error in determining host and datastore'
+                server.statusMessage = errorMessage
+                provisionResponse.setError(errorMessage)
+                return new ServiceResponse(success: false, msg: errorMessage, error: errorMessage, data: provisionResponse)
             }
 
             scvmmOpts += apiService.getScvmmControllerOpts(cloud, controllerNode)
@@ -2000,7 +2009,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     }
 
 
-    def getHostAndDatastore(Cloud cloud, account, clusterId, hostId, Datastore datastore, datastoreOption, size, siteId = null, maxMemory, isClone=false) {
+    def getHostAndDatastore(Cloud cloud, account, clusterId, hostId, Datastore datastore, datastoreOption, size, siteId = null, maxMemory) {
         log.info "getHostAndDatastore : clusterId: ${clusterId}, hostId: ${hostId}, datastore: ${datastore}, datastoreOption: ${datastoreOption}, size: ${size}, siteId: ${siteId}, maxMemory ${maxMemory}"
         ComputeServer node
         def volumePath
@@ -2096,13 +2105,48 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         // Get the volumePath (used during provisioning to tell SCVMM where to place the disks)
         volumePath = getVolumePathForDatastore(datastore)
 
-        // Highly Available (in the Failover Cluster Manager) if we are in a cluster and the datastore is a shared volume
+        // Highly Available (in the Failover Cluster Manager) if we are in a cluster and the datastore is cluster storage.
+        // Callers with several disks must reconcile the per-disk result through resolveHighlyAvailable.
         log.info("Determining HA: clusterId: ${clusterId}, datastore.externalType: ${datastore?.externalType}, datastore.zonePool: ${datastore?.zonePool}")
-        if (clusterId && (isClone || isClusteredSharedVolume(datastore))) {
+        if (clusterId && isClusterStorage(datastore)) {
             highlyAvailable = true
         }
 
         return [node, datastore, volumePath, highlyAvailable]
+    }
+
+    /**
+     * SCVMM only accepts a Highly Available VM when every disk lives on storage the whole cluster can reach, and a
+     * non-HA VM only when every disk is reachable from the single host it is placed on. Decides the VM-level flag from
+     * all resolved disks and rejects combinations SCVMM would fail on with error 10730 rather than letting the
+     * placement fail half way through the create script.
+     *
+     * @param clusterId  the selected resource pool (SCVMM cluster) or null
+     * @param datastores the datastore resolved for each disk, root first
+     * @param nodes      the host resolved for each disk, root first (entries may be null)
+     * @return whether the VM should be created with -HighlyAvailable $true
+     */
+    protected static boolean resolveHighlyAvailable(clusterId, List<Datastore> datastores, List<ComputeServer> nodes) {
+        def placed = datastores?.findAll { it != null } ?: []
+        if (!clusterId || !placed) {
+            return false
+        }
+        def clusterStorage = placed.findAll { isClusterStorage(it) }
+        def localStorage = placed - clusterStorage
+        if (clusterStorage && localStorage) {
+            throw new Exception("Disks are split between cluster storage (${clusterStorage*.name.join(', ')}) and host-local storage " +
+                    "(${localStorage*.name.join(', ')}). With a resource pool selected, place every disk on Cluster Shared Volumes or " +
+                    "cluster file shares for a Highly Available VM, or every disk on the same host's local storage.")
+        }
+        if (localStorage) {
+            def hostIds = nodes?.findAll { it != null }*.id?.unique() ?: []
+            if (hostIds.size() > 1) {
+                throw new Exception("Host-local disks (${localStorage*.name.join(', ')}) resolved to different hosts " +
+                        "(${nodes.findAll { it != null }*.name.unique().join(', ')}). Select a host or datastores that belong to a single host.")
+            }
+            return false
+        }
+        return true
     }
 
     /**
@@ -2127,6 +2171,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             return datastore.externalType == DatastoresSync.EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME
         }
         return datastore?.zonePool != null
+    }
+
+    /**
+     * Storage every node of a cluster can place on: Cluster Shared Volumes and SMB file shares registered to the cluster.
+     */
+    protected static boolean isClusterStorage(Datastore datastore) {
+        if (datastore?.externalType == RegisteredStorageFileSharesSync.EXTERNAL_TYPE_CLUSTER_FILE_SHARE) {
+            return true
+        }
+        return isClusteredSharedVolume(datastore)
     }
 
     def loadDatastoreForVolume(Cloud cloud, hostVolumeId = null, fileShareId = null, partitionUniqueId = null) {
@@ -2194,21 +2248,25 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             scvmmOpts.datastoreId = datastore?.externalId
             scvmmOpts.hostExternalId = node?.externalId
             scvmmOpts.volumePath = volumePath
-            scvmmOpts.highlyAvailable = highlyAvailable
 
             if (rootVolume) {
                 rootVolume.datastore = datastore
                 context.services.storageVolume.save(rootVolume)
             }
 
+            List<Datastore> volumeDatastores = [datastore]
+            List<ComputeServer> volumeNodes = [node]
             storageVolumes?.each { vol ->
                 if (!vol.rootVolume) {
                     def tmpNode, tmpDatastore, tmpVolumePath, tmpHighlyAvailable
-                    (tmpNode, tmpDatastore, tmpVolumePath, tmpHighlyAvailable) = getHostAndDatastore(cloud, account, clusterId, config.hostId, vol?.datastore, vol?.datastoreOption, maxStorage, server.provisionSiteId, maxMemory)
+                    (tmpNode, tmpDatastore, tmpVolumePath, tmpHighlyAvailable) = getHostAndDatastore(cloud, account, clusterId, config.hostId ?: nodeId, vol?.datastore, vol?.datastoreOption, maxStorage, server.provisionSiteId, maxMemory)
+                    volumeDatastores << tmpDatastore
+                    volumeNodes << tmpNode
                     vol.datastore = tmpDatastore
                     context.services.storageVolume.save(vol)
                 }
             }
+            scvmmOpts.highlyAvailable = resolveHighlyAvailable(clusterId, volumeDatastores, volumeNodes)
 
             scvmmOpts += apiService.getScvmmControllerOpts(cloud, controllerNode)
             def imageId = null

@@ -99,4 +99,18 @@ class RegisteredStorageFileSharesSyncSpec extends Specification {
         server.resourcePool = pool
         return server
     }
+
+    def "a share with a cluster association is typed as cluster storage"() {
+        expect:
+        RegisteredStorageFileSharesSync.externalTypeFor([ClusterAssociations: [[ClusterID: 'cluster-a-guid']]]) == RegisteredStorageFileSharesSync.EXTERNAL_TYPE_CLUSTER_FILE_SHARE
+        RegisteredStorageFileSharesSync.externalTypeFor([ClusterAssociations: [[ClusterID: 'cluster-a-guid', HostID: 'host-a1-guid']], HostAssociations: []]) == RegisteredStorageFileSharesSync.EXTERNAL_TYPE_CLUSTER_FILE_SHARE
+    }
+
+    def "a share only registered to hosts is typed as host storage"() {
+        expect:
+        RegisteredStorageFileSharesSync.externalTypeFor([HostAssociations: [[HostID: 'host-s-guid']]]) == RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE
+        RegisteredStorageFileSharesSync.externalTypeFor([ClusterAssociations: [[ClusterID: null]]]) == RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE
+        RegisteredStorageFileSharesSync.externalTypeFor([:]) == RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE
+        RegisteredStorageFileSharesSync.externalTypeFor(null) == RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE
+    }
 }

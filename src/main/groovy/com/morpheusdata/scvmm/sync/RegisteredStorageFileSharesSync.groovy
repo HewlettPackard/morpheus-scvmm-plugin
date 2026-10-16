@@ -22,6 +22,11 @@ import io.reactivex.rxjava3.core.Observable
 
 class RegisteredStorageFileSharesSync {
 
+    /** A share registered to at least one cluster: every node can place on it, so HA VMs may use it. */
+    static final String EXTERNAL_TYPE_CLUSTER_FILE_SHARE = 'clusterFileShare'
+    /** A share registered to individual hosts only. */
+    static final String EXTERNAL_TYPE_HOST_FILE_SHARE = 'hostFileShare'
+
     private Cloud cloud
     private ComputeServer node
     private MorpheusContext context
@@ -111,7 +116,8 @@ class RegisteredStorageFileSharesSync {
                         category   : "scvmm.registered.file.share.datastore.${cloud.id}",
                         drsEnabled : false,
                         online     : online,
-                        type       : 'generic'
+                        type       : 'generic',
+                        externalType: externalTypeFor(cloudItem)
                 ]
                 log.info "Created registered file share for id: ${cloudItem.ID}"
                 Datastore datastore = new Datastore(datastoreConfig)
@@ -175,6 +181,11 @@ class RegisteredStorageFileSharesSync {
                     save = true
                 }
                 List<CloudPool> owningPools = findOwningPools(masterItem, clusters, existingHosts)
+                def externalType = externalTypeFor(masterItem)
+                if (existingItem.externalType != externalType) {
+                    existingItem.externalType = externalType
+                    save = true
+                }
                 if (existingItem.zonePool != null) {
                     existingItem.zonePool = null
                     save = true
@@ -334,5 +345,13 @@ class RegisteredStorageFileSharesSync {
 
     private static Set<Long> poolIds(Collection<CloudPool> pools) {
         return (pools?.collect { it.id }?.findAll { it } ?: []) as Set<Long>
+    }
+
+    /**
+     * Shares registered to a cluster are reachable from every node and therefore valid for Highly Available VMs.
+     */
+    protected static String externalTypeFor(Map cloudItem) {
+        def clusterIds = (cloudItem?.ClusterAssociations?.collect { it.ClusterID?.toString() } ?: []).findAll { it }
+        return clusterIds ? EXTERNAL_TYPE_CLUSTER_FILE_SHARE : EXTERNAL_TYPE_HOST_FILE_SHARE
     }
 }

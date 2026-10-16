@@ -271,4 +271,48 @@ class ScvmmApiServiceBuildCreateServerCommandsSpec extends Specification {
         adapterCommands(cmds).size() == 2
         !cmds.any { it.contains('Get-SCVirtualNetworkAdapterConfiguration') }
     }
+
+    def "a host-local boot disk is created as a non Highly Available VM (MORPH-19186)"() {
+        when:
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(dynamicPrimary(), [highlyAvailable: false, volumePath: 'C:\\'])))
+
+        then:
+        cmds.count { it.contains('New-SCHardwareProfile') && it.contains('-HighlyAvailable $false') } == 1
+        cmds.any { it.contains('New-SCVirtualDiskDrive') && it.contains('-Path "C:\\"') }
+    }
+
+    def "a cluster storage boot disk is created as a Highly Available VM"() {
+        when:
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(dynamicPrimary(), [highlyAvailable: true, volumePath: 'C:\\ClusterStorage\\Volume1'])))
+
+        then:
+        cmds.count { it.contains('New-SCHardwareProfile') && it.contains('-HighlyAvailable $true') } == 1
+        cmds.any { it.contains('New-SCVirtualDiskDrive') && it.contains('-Path "C:\\ClusterStorage\\Volume1"') }
+    }
+
+    def "a failed host placement aborts before New-SCVirtualMachine"() {
+        when:
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(dynamicPrimary())))
+        def updateIdx = cmds.findIndexOf { it.contains('Update-SCVMConfiguration') }
+        def createIdx = cmds.findIndexOf { it.contains('New-SCVirtualMachine ') }
+
+        then:
+        updateIdx > 0
+        cmds[updateIdx + 1].startsWith('if (-not $?) {')
+        cmds[updateIdx + 1].contains('Exit 28')
+        createIdx > updateIdx + 1
+    }
+
+    def "a failed cloud placement aborts before New-SCVirtualMachine"() {
+        when:
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(dynamicPrimary(), [zone: [regionCode: 'cloud-guid'], hostExternalId: null, volumePath: null])))
+        def updateIdx = cmds.findIndexOf { it.contains('Update-SCVMConfiguration') }
+        def createIdx = cmds.findIndexOf { it.contains('New-SCVirtualMachine ') }
+
+        then:
+        updateIdx > 0
+        cmds[updateIdx + 1].startsWith('if (-not $?) {')
+        cmds[updateIdx + 1].contains('Exit 28')
+        createIdx > updateIdx + 1
+    }
 }

@@ -3011,6 +3011,7 @@ For (\$i=0; \$i -le 10; \$i++) {
                 // Deploying to a Cloud $cloud should be available
                 commands << "\$ignore = Set-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration -CapabilityProfile \$CapabilityProfile -cloud \$cloud"
                 commands << "\$ignore = Update-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration"
+                commands << "if (-not \$?) { Write-Error \"VM placement failed for cloud ${zone.regionCode}\"; Exit 28 }"
                 def newVMString = "\$createdVm = New-SCVirtualMachine -Name \"$vmId\" -VMConfiguration \$virtualMachineConfiguration ${isSysprep ? "-AnswerFile \$AnswerFile" : ""} -HardwareProfile \$HardwareProfile -JobGroup \"$diskJobGuid\" -StartAction \"TurnOnVMIfRunningWhenVSStopped\" -RunAsynchronously -StopAction \"SaveVM\""
                 newVMString = appendOSCustomization(newVMString, opts)
                 commands << newVMString
@@ -3020,6 +3021,7 @@ For (\$i=0; \$i -le 10; \$i++) {
                     commands << "\$vmHost = Get-SCVMHost -ID \"$hostExternalId\""
                     commands << "\$ignore = Set-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration -VMHost \$vmHost"
                     commands << "\$ignore = Update-SCVMConfiguration -VMConfiguration \$virtualMachineConfiguration"
+                    commands << "if (-not \$?) { Write-Error \"VM placement failed on host ${hostExternalId} (HighlyAvailable=${highlyAvailable}, VolumePath=${volumePath})\"; Exit 28 }"
                     //Do Not map Additional volumes here - done later
                     def newVMString = "\$createdVm = New-SCVirtualMachine -Name \"$vmId\" -VMConfiguration \$virtualMachineConfiguration ${isSysprep ? "-AnswerFile \$AnswerFile" : ""} ${isTemplate ? "-HardwareProfile \$HardwareProfile" : ""} -JobGroup \"$diskJobGuid\" -StartAction \"TurnOnVMIfRunningWhenVSStopped\" -RunAsynchronously -StopAction \"SaveVM\""
                     newVMString = appendOSCustomization(newVMString, opts)
