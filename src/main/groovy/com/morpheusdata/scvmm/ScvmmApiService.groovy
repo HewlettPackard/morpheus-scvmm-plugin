@@ -274,12 +274,16 @@ class ScvmmApiService {
                     diskRoot = opts.diskRoot
                     imageFolderName = opts.serverFolder
                     diskFolder = "${diskRoot}\\${imageFolderName}"
-                    //resizeResponse [success: true/false, errOut: message]
+                    //resizeResponse [success: true/false, skipped: true/false, errOut: message]
                     def resizeResponse
                     if (opts.osDiskSize) {
                         def osDiskVhdID = disks.diskMetaData[disks.osDisk?.externalId]?.VhdID
                         resizeResponse = resizeDisk(opts, osDiskVhdID, opts.osDiskSize)
                         log.debug("createServer - resizeDisk Response ${resizeResponse}")
+                        if (!resizeResponse?.success) {
+                            rtn.errorMsg = "Failed to resize OS disk: ${resizeResponse?.errOut ?: 'unknown error'}"
+                            throw new Exception(rtn.errorMsg)
+                        }
                     }
 
                     // Resize the data disks if template
@@ -290,6 +294,10 @@ class ScvmmApiService {
                                 def diskVhdID = disks.diskMetaData[externalId]?.VhdID
                                 resizeResponse = resizeDisk(opts, diskVhdID, storageVolume.maxStorage)
                                 log.debug("createServer - resizeDisk Response ${resizeResponse}")
+                                if (!resizeResponse?.success) {
+                                    rtn.errorMsg = "Failed to resize data disk ${storageVolume.name ?: externalId}: ${resizeResponse?.errOut ?: 'unknown error'}"
+                                    throw new Exception(rtn.errorMsg)
+                                }
                             }
                         }
                     }
@@ -1482,15 +1490,23 @@ foreach (\$network in \$networks) {
 		\$diskId = "<%diskid%>"
 		\$newSize = <%sizegb%>
 		#No replacement code after here
-		\$report = [PSCustomObject]@{success=\$true;jobId=\$null;errOut=\$null}
+		\$report = [PSCustomObject]@{success=\$true;jobId=\$null;errOut=\$null;skipped=\$false}
 		\$VM = Get-SCVirtualMachine -VMMServer localhost -ID \$vmID
 		\$vDisk = Get-SCVirtualDiskDrive -VM \$VM | Where-Object  {\$_.VirtualHardDiskId -eq \$diskId}
 		if (\$vDisk) {
 			#Check format - can it be expanded
 			\$vhd = \$vDisk.VirtualHardDisk
-			if (\$vhd.ParentDisk) {
+			\$currentSizeGB = [math]::Floor(\$vhd.MaximumSize / 1GB)
+			\$checkpoints = @(Get-SCVMCheckpoint -VM \$VM -ErrorAction SilentlyContinue)
+			if (\$newSize -le \$currentSizeGB) {
+				\$report.skipped = \$true
+				\$report.errOut = "Requested size {0}GB is not larger than current size {1}GB - resize not required" -f \$newSize, \$currentSizeGB
+			} elseif (\$vhd.ParentDisk) {
 				\$report.success = \$false
-				\$report.errOut="Cannot Resize a Differencing Disk or a Disk with Checkpoints"
+				\$report.errOut = "Cannot Resize a Differencing Disk (parent: {0})" -f \$vhd.ParentDisk.Name
+			} elseif (\$checkpoints.Count -gt 0) {
+				\$report.success = \$false
+				\$report.errOut = "Cannot Resize a Disk on a VM with {0} Checkpoint(s)" -f \$checkpoints.Count
 			} else {
 				\$expandParams=@{
 					RunAsynchronously=\$true;
@@ -1524,7 +1540,10 @@ foreach (\$network in \$networks) {
         //resizeResults.data is json payload array - want only the first item
         if (resizeResults.data) {
             def resizeStatus = resizeResults.data.first()
-            if (resizeStatus?.success) {
+            if (resizeStatus?.success && resizeStatus?.skipped) {
+                log.info("resizeDisk - skipped. ${resizeStatus.errOut}")
+                return [success: true, skipped: true, msg: resizeStatus.errOut]
+            } else if (resizeStatus?.success) {
                 //Wait on the jobId to complete
                 def waitResults = waitForJobToComplete(opts, resizeStatus.jobId)
                 return waitResults
