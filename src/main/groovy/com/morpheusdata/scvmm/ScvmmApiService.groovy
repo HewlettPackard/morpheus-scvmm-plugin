@@ -1394,17 +1394,23 @@ foreach (\$network in \$networks) {
         return rtn
     }
 
-        /**
+    static final String GRANT_TO_VIRTUAL_MACHINE = 'VirtualMachine'
+    static final String GRANT_TO_VIRTUAL_NETWORK_ADAPTER = 'VirtualNetworkAdapter'
+
+    /**
      * Grants an address from an SCVMM static IP address pool. When {@code ipAddress} is given that specific address is
      * requested, otherwise SCVMM hands out the next available one.
+     * <p>
+     * {@code grant} optionally scopes the allocation: {@code objectType} ({@code VirtualMachine} by default or
+     * {@code VirtualNetworkAdapter}), {@code objectId} (the SCVMM ID of that object) and {@code description}. Grants
+     * made for an <em>existing</em> adapter are scoped to it so the allocation is attributable in VMM.
      */
-    def reserveIPAddress(opts, poolId, ipAddress = null) {
+    def reserveIPAddress(opts, poolId, ipAddress = null, Map grant = [:]) {
         def rtn = [success: true, ipAddress: []]
         try {
-            def specificIp = ipAddress ? " -IPAddress \"${ipAddress}\"" : ''
-            def command = generateCommandString("""\$ippool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"$poolId\"; Grant-SCIPAddress -GrantToObjectType \"VirtualMachine\" -StaticIPAddressPool \$ippool${specificIp} | Select-Object ID,Address""")
+            def command = generateCommandString(buildReserveIPAddressCommand(poolId, ipAddress, grant))
             def out = wrapExecuteCommand(command, opts)
-            log.debug("reserveIPAddress: ${out}")
+            log.debug("reserveIPAddress: success=${out.success} exitCode=${out.exitCode} data=${out.data} error=${out.error}")
             if (out.success && out.exitCode == '0') {
                 def ipAddressBlock = out.data
                 if (ipAddressBlock) {
@@ -1419,6 +1425,27 @@ foreach (\$network in \$networks) {
             log.error("Error reserving an IP address from SCVMM: ${ex.message}", ex)
         }
         return rtn
+    }
+
+    /**
+     * Builds the Grant-SCIPAddress command for {@link #reserveIPAddress}. The pool is looked up by id; the grant is
+     * scoped by {@code grant.objectType} / {@code grant.objectId} when given, requests {@code ipAddress} when given,
+     * and carries {@code grant.description} (double quotes escaped for PowerShell). Output is piped through
+     * {@code Select-Object ID,Address} so the caller receives the SCVMM grant id and the address.
+     */
+    static String buildReserveIPAddressCommand(poolId, ipAddress = null, Map grant = [:]) {
+        def objectType = grant?.objectType?.toString() ?: GRANT_TO_VIRTUAL_MACHINE
+        def args = new StringBuilder("Grant-SCIPAddress -GrantToObjectType \"${objectType}\" -StaticIPAddressPool \$ippool")
+        if (grant?.objectId) {
+            args << " -GrantToObjectID \"${grant.objectId}\""
+        }
+        if (ipAddress) {
+            args << " -IPAddress \"${ipAddress}\""
+        }
+        if (grant?.description) {
+            args << " -Description \"${grant.description.toString().replace('"', '`"')}\""
+        }
+        return "\$ippool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"${poolId}\"; ${args} | Select-Object ID,Address"
     }
 
     static final String RELEASE_IP_REVOKED = 'revoked'
@@ -2237,7 +2264,15 @@ For (\$i=0; \$i -le 10; \$i++) {
      * @param vmId the SCVMM VM external id
      * @param nicProps map with: adapterId (SCVMM adapter ID), macAddress (fallback matcher),
      *        networkExternalId (VMNetwork ID), subnetExternalId (optional VMSubnet ID),
-     *        vlanEnabled (Boolean), vlanId (Integer)
+     *        vlanEnabled (Boolean), vlanId (Integer),
+     *        ipv4AddressType (optional, 'Dynamic' or 'Static'; when omitted the adapter keeps its current type).
+     *        Pass 'Dynamic' when the target network has no SCVMM IP pool: SCVMM refuses to attach a Static adapter
+     *        to a network without a pool (error 15046).
+     *        ipAddress + poolExternalId (optional, must be given together): binds the adapter to that static IPv4
+     *        address (implies ipv4AddressType Static). The address must already have been granted to this adapter
+     *        via {@link #reserveIPAddress}; the pool id is only validated. The bind deliberately does <b>not</b>
+     *        pass {@code -IPv4AddressPools}: that switch asks VMM to allocate from the pool for the adapter, which
+     *        makes VMM hand out a second address next to the one already granted.
      * @return map with success flag
      */
     def updateNetworkInterface(opts, vmId, Map nicProps = [:]) {
@@ -2250,6 +2285,32 @@ For (\$i=0; \$i -le 10; \$i++) {
             def subnetExternalId = nicProps.subnetExternalId?.toString()?.take(36)
             def vlanEnabled = nicProps.vlanEnabled == true && nicProps.vlanId != null
             def vlanId = nicProps.vlanId
+            def ipAddress = nicProps.ipAddress?.toString()?.trim() ?: null
+            def poolExternalId = nicProps.poolExternalId?.toString()?.take(36) ?: null
+            def ipv4AddressType = nicProps.ipv4AddressType?.toString()
+            if (ipAddress || poolExternalId) {
+                if (!ipAddress || !poolExternalId) {
+                    rtn.error = 'Both ipAddress and poolExternalId are required to bind a static pool address'
+                    log.error("updateNetworkInterface: ${rtn.error}")
+                    return rtn
+                }
+                if (!(ipAddress ==~ /^[0-9]{1,3}(\.[0-9]{1,3}){3}$/)) {
+                    rtn.error = "Invalid IPv4 address ${ipAddress} for NIC update"
+                    log.error("updateNetworkInterface: ${rtn.error}")
+                    return rtn
+                }
+                if (ipv4AddressType == 'Dynamic') {
+                    rtn.error = 'A static pool address cannot be bound to a Dynamic adapter'
+                    log.error("updateNetworkInterface: ${rtn.error}")
+                    return rtn
+                }
+                ipv4AddressType = 'Static'
+            }
+            if (ipv4AddressType && !(ipv4AddressType in ['Dynamic', 'Static'])) {
+                rtn.error = "Invalid IPv4 address type ${ipv4AddressType} for NIC update"
+                log.error("updateNetworkInterface: ${rtn.error}")
+                return rtn
+            }
 
             if (!networkExternalId) {
                 rtn.error = 'No target network provided for NIC update'
@@ -2273,22 +2334,166 @@ For (\$i=0; \$i -le 10; \$i++) {
                 commands << "\$VMSubnet = Get-SCVMSubnet -VMMServer localhost -ID \"${subnetExternalId}\""
                 commands << "if (-not \$VMSubnet) { Write-Error \"VM subnet ${subnetExternalId} not found\"; Exit 26 }"
             }
+            if (poolExternalId) {
+                commands << "\$IPPool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"${poolExternalId}\""
+                commands << "if (-not \$IPPool) { Write-Error \"Static IP address pool ${poolExternalId} not found\"; Exit 28 }"
+            }
             def vlanArgs = vlanEnabled ? "-VLanEnabled \$true -VLanID ${vlanId}" : "-VLanEnabled \$false"
             def subnetArg = subnetExternalId ? "-VMSubnet \$VMSubnet" : ""
-            commands << "\$ignore = Set-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter -VMNetwork \$VMNetwork ${subnetArg} ${vlanArgs}"
+            def addressTypeArg = ipv4AddressType ? "-IPv4AddressType ${ipv4AddressType}" : ""
+            def poolArgs = poolExternalId ? "-IPv4Addresses \"${ipAddress}\"" : ""
+            commands << "\$ignore = Set-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter -VMNetwork \$VMNetwork ${subnetArg} ${vlanArgs} ${addressTypeArg} ${poolArgs}"
             commands << "if (-not \$?) { Exit 27 }"
             commands << "\$true"
 
             def command = commands.join(';')
             log.debug "updateNetworkInterface: ${command}"
             def out = wrapExecuteCommand(generateCommandString(command), opts)
-            log.debug "updateNetworkInterface results: ${out}"
+            log.debug "updateNetworkInterface results: success=${out.success} exitCode=${out.exitCode} data=${out.data} error=${out.error}"
             rtn.success = out.success && out.exitCode == '0'
             if (!rtn.success) {
-                rtn.error = out.error ?: out.msg ?: 'Failed to update network adapter'
+                rtn.error = cleanPowerShellError(out.error) ?: out.msg ?: 'Failed to update network adapter'
             }
         } catch (e) {
             log.error "updateNetworkInterface error: ${e}", e
+            rtn.error = e.message
+        }
+        return rtn
+    }
+
+    /**
+     * Converts a PowerShell remoting error stream into a readable message. PowerShell emits errors as CLIXML
+     * ({@code #< CLIXML <Objs ...><S S="Error">...</S>}) with CR/LF encoded as {@code _x000D__x000A_}; this
+     * extracts the error strings and drops the "To restart the job" / stack-position noise so the UI shows
+     * the actual SCVMM message (e.g. "The virtual machine must be in either the Poweroff or Stored state ...").
+     * Non-CLIXML input is returned trimmed.
+     */
+    static String cleanPowerShellError(raw) {
+        def text = raw?.toString()?.trim()
+        if (!text) return null
+        if (!text.contains('<Objs') || !text.contains('<S S=')) return text
+        def lines = []
+        def matcher = text =~ /(?s)<S S="(?:Error|Warning)">(.*?)<\/S>/
+        while (matcher.find()) {
+            def line = matcher.group(1)
+                .replace('_x000D__x000A_', '\n').replace('_x000D_', '\n').replace('_x000A_', '\n')
+                .replace('&gt;', '>').replace('&lt;', '<').replace('&quot;', '"').replace('&apos;', "'").replace('&amp;', '&')
+                .trim()
+            if (line) lines << line
+        }
+        def noise = ~/^(To restart the job|PS>|At line:|\+ |\s*\+ CategoryInfo|\s*\+ FullyQualifiedErrorId)/
+        def cutoff = lines.findIndexOf { it ==~ /^To restart the job.*/ }
+        def kept = (cutoff >= 0 ? lines.take(cutoff) : lines).findAll { !(it =~ noise) }
+        def message = kept.join(' ').replaceAll(/\s+/, ' ').trim()
+        return message ?: text
+    }
+
+    /**
+     * Adds a new virtual network adapter to an existing VM.
+     * @param opts scvmm connection opts
+     * @param vmId the SCVMM VM ID
+     * @param nicProps map with keys:
+     *        networkExternalId (VMNetwork ID), subnetExternalId (optional VMSubnet ID),
+     *        vlanEnabled (Boolean), vlanId (Integer)
+     * @return map with success flag and, on success, adapterId / slotId / macAddress of the created adapter.
+     *         macAddress is usually null: the adapter is created with a dynamic MAC, which Hyper-V assigns only
+     *         when the VM powers on; VirtualMachineSync back-fills it. On failure error carries the SCVMM message.
+     */
+    def addNetworkInterface(opts, vmId, Map nicProps = [:]) {
+        log.debug("addNetworkInterface: vmId: ${vmId}, nicProps: ${nicProps}")
+        def rtn = [success: false]
+        try {
+            def networkExternalId = nicProps.networkExternalId?.toString()?.take(36)
+            def subnetExternalId = nicProps.subnetExternalId?.toString()?.take(36)
+            def vlanEnabled = nicProps.vlanEnabled == true && nicProps.vlanId != null
+            def vlanId = nicProps.vlanId
+
+            if (!networkExternalId) {
+                rtn.error = 'No target network provided for NIC add'
+                log.error("addNetworkInterface: ${rtn.error}")
+                return rtn
+            }
+
+            def commands = []
+            commands << "\$VM = Get-SCVirtualMachine -VMMServer localhost -ID \"${vmId}\""
+            commands << "if (-not \$VM) { Write-Error \"Virtual machine ${vmId} not found\"; Exit 23 }"
+            commands << "\$VMNetwork = Get-SCVMNetwork -VMMServer localhost -ID \"${networkExternalId}\""
+            commands << "if (-not \$VMNetwork) { Write-Error \"VM network ${networkExternalId} not found\"; Exit 25 }"
+            if (subnetExternalId) {
+                commands << "\$VMSubnet = Get-SCVMSubnet -VMMServer localhost -ID \"${subnetExternalId}\""
+                commands << "if (-not \$VMSubnet) { Write-Error \"VM subnet ${subnetExternalId} not found\"; Exit 26 }"
+            }
+            def vlanArgs = vlanEnabled ? "-VLanEnabled \$true -VLanID ${vlanId}" : "-VLanEnabled \$false"
+            def subnetArg = subnetExternalId ? "-VMSubnet \$VMSubnet" : ""
+            commands << "\$NIC = New-SCVirtualNetworkAdapter -VM \$VM -VMNetwork \$VMNetwork ${subnetArg} ${vlanArgs} -Synthetic -MACAddressType Dynamic -IPv4AddressType Dynamic -IPv6AddressType Dynamic -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -EnableGuestIPNetworkVirtualizationUpdates \$false"
+            commands << "if (-not \$? -or -not \$NIC) { Exit 27 }"
+            commands << "\$NIC | Select-Object ID, MACAddress, SlotId, Name"
+
+            def command = commands.join(';')
+            log.debug "addNetworkInterface: ${command}"
+            def out = wrapExecuteCommand(generateCommandString(command), opts)
+            log.debug "addNetworkInterface results: success=${out.success} exitCode=${out.exitCode} data=${out.data} error=${out.error}"
+            rtn.success = out.success && out.exitCode == '0'
+            if (rtn.success) {
+                def nic = out.data instanceof List ? out.data.find { it } : out.data
+                rtn.adapterId = nic?.ID?.toString()
+                rtn.macAddress = nic?.MACAddress?.toString()
+                rtn.slotId = nic?.SlotId
+                if (!rtn.adapterId) {
+                    rtn.success = false
+                    rtn.error = 'Network adapter created but no adapter ID was returned'
+                }
+            } else {
+                rtn.error = cleanPowerShellError(out.error) ?: out.msg ?: 'Failed to add network adapter'
+            }
+        } catch (e) {
+            log.error "addNetworkInterface error: ${e}", e
+            rtn.error = e.message
+        }
+        return rtn
+    }
+
+    /**
+     * Removes a virtual network adapter from an existing VM.
+     * @param opts scvmm connection opts
+     * @param vmId the SCVMM VM ID
+     * @param nicProps map with keys: adapterId (SCVMM adapter ID) and/or macAddress; the adapter is located by id
+     *        first, falling back to MAC
+     * @return map with success flag; on failure error carries the SCVMM message
+     */
+    def removeNetworkInterface(opts, vmId, Map nicProps = [:]) {
+        log.debug("removeNetworkInterface: vmId: ${vmId}, nicProps: ${nicProps}")
+        def rtn = [success: false]
+        try {
+            def adapterId = nicProps.adapterId
+            def macAddress = nicProps.macAddress
+
+            if (!adapterId && !macAddress) {
+                rtn.error = 'No adapter identifier provided for NIC removal'
+                log.error("removeNetworkInterface: ${rtn.error}")
+                return rtn
+            }
+
+            def commands = []
+            commands << "\$VM = Get-SCVirtualMachine -VMMServer localhost -ID \"${vmId}\""
+            commands << "if (-not \$VM) { Write-Error \"Virtual machine ${vmId} not found\"; Exit 23 }"
+            def adapterFilter = adapterId ? "\$_.ID -eq \"${adapterId}\"" : "\$_.MACAddress -eq \"${macAddress}\""
+            commands << "\$VirtualNetworkAdapter = Get-SCVirtualNetworkAdapter -VMMServer localhost -VM \$VM | where { ${adapterFilter} } | Select-Object -First 1"
+            commands << "if (-not \$VirtualNetworkAdapter) { Write-Error \"Network adapter not found\"; Exit 24 }"
+            commands << "\$ignore = Remove-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter"
+            commands << "if (-not \$?) { Exit 27 }"
+            commands << "\$true"
+
+            def command = commands.join(';')
+            log.debug "removeNetworkInterface: ${command}"
+            def out = wrapExecuteCommand(generateCommandString(command), opts)
+            log.debug "removeNetworkInterface results: success=${out.success} exitCode=${out.exitCode} data=${out.data} error=${out.error}"
+            rtn.success = out.success && out.exitCode == '0'
+            if (!rtn.success) {
+                rtn.error = cleanPowerShellError(out.error) ?: out.msg ?: 'Failed to remove network adapter'
+            }
+        } catch (e) {
+            log.error "removeNetworkInterface error: ${e}", e
             rtn.error = e.message
         }
         return rtn
