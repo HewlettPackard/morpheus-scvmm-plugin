@@ -1426,6 +1426,12 @@ foreach (\$network in \$networks) {
         return rtn
     }
 
+    /**
+     * Builds the Grant-SCIPAddress command for {@link #reserveIPAddress}. The pool is looked up by id; the grant is
+     * scoped by {@code grant.objectType} / {@code grant.objectId} when given, requests {@code ipAddress} when given,
+     * and carries {@code grant.description} (double quotes escaped for PowerShell). Output is piped through
+     * {@code Select-Object ID,Address} so the caller receives the SCVMM grant id and the address.
+     */
     static String buildReserveIPAddressCommand(poolId, ipAddress = null, Map grant = [:]) {
         def objectType = grant?.objectType?.toString() ?: GRANT_TO_VIRTUAL_MACHINE
         def args = new StringBuilder("Grant-SCIPAddress -GrantToObjectType \"${objectType}\" -StaticIPAddressPool \$ippool")
@@ -2318,15 +2324,6 @@ For (\$i=0; \$i -le 10; \$i++) {
     }
 
     /**
-     * Adds a new virtual network adapter to an existing VM.
-     * @param opts scvmm connection opts
-     * @param vmId the SCVMM VM ID
-     * @param nicProps map with keys:
-     *        networkExternalId (VMNetwork ID), subnetExternalId (optional VMSubnet ID),
-     *        vlanEnabled (Boolean), vlanId (Integer)
-     * @return map with success flag and, on success, adapterId / macAddress of the created adapter
-     */
-    /**
      * Converts a PowerShell remoting error stream into a readable message. PowerShell emits errors as CLIXML
      * ({@code #< CLIXML <Objs ...><S S="Error">...</S>}) with CR/LF encoded as {@code _x000D__x000A_}; this
      * extracts the error strings and drops the "To restart the job" / stack-position noise so the UI shows
@@ -2353,6 +2350,17 @@ For (\$i=0; \$i -le 10; \$i++) {
         return message ?: text
     }
 
+    /**
+     * Adds a new virtual network adapter to an existing VM.
+     * @param opts scvmm connection opts
+     * @param vmId the SCVMM VM ID
+     * @param nicProps map with keys:
+     *        networkExternalId (VMNetwork ID), subnetExternalId (optional VMSubnet ID),
+     *        vlanEnabled (Boolean), vlanId (Integer)
+     * @return map with success flag and, on success, adapterId / slotId / macAddress of the created adapter.
+     *         macAddress is usually null: the adapter is created with a dynamic MAC, which Hyper-V assigns only
+     *         when the VM powers on; VirtualMachineSync back-fills it. On failure error carries the SCVMM message.
+     */
     def addNetworkInterface(opts, vmId, Map nicProps = [:]) {
         log.debug("addNetworkInterface: vmId: ${vmId}, nicProps: ${nicProps}")
         def rtn = [success: false]
@@ -2411,8 +2419,9 @@ For (\$i=0; \$i -le 10; \$i++) {
      * Removes a virtual network adapter from an existing VM.
      * @param opts scvmm connection opts
      * @param vmId the SCVMM VM ID
-     * @param nicProps map with keys: adapterId (SCVMM adapter ID) and/or macAddress
-     * @return map with success flag
+     * @param nicProps map with keys: adapterId (SCVMM adapter ID) and/or macAddress; the adapter is located by id
+     *        first, falling back to MAC
+     * @return map with success flag; on failure error carries the SCVMM message
      */
     def removeNetworkInterface(opts, vmId, Map nicProps = [:]) {
         log.debug("removeNetworkInterface: vmId: ${vmId}, nicProps: ${nicProps}")
