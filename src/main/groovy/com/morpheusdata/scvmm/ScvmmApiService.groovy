@@ -353,22 +353,31 @@ if(\$vm) {
 		VirtualDiskDrives=@(\$vm.VirtualDiskDrives.ID)
 		ipAddress=''
 		internalIp=''
+		HostId=\$vm.HostId
 		NetworkAdapters=@()
 	}
 	foreach (\$na in \$networkAdapters) {
-		\$data.NetworkAdapters += New-Object PSObject -property @{
-			ID=\$na.ID
-			MACAddress=\$na.MACAddress
-			IPv4AddressType=\$na.IPv4AddressType.toString()
-			IPv4Addresses=@(\$na.IPv4Addresses)
-			VMNetwork=\$na.VMNetwork.Name
-		}
 		foreach (\$ip in \$na.IPv4Addresses) {
 			if([string]::IsNullOrEmpty(\$data.ipAddress)) {
 				\$data.ipAddress = \$ip
 				\$data.internalIp = \$ip
 			}
 		}
+		\$nic = New-Object PSObject -property @{
+			ID               = \$na.ID
+			Name             = \$na.Name
+			IPv4Addresses    = @(\$na.IPv4Addresses)
+			IPv4AddressType  = \$na.IPv4AddressType.ToString()
+			IPv6Addresses    = @(\$na.IPv6Addresses)
+			IPv6AddressType  = \$na.IPv6AddressType.ToString()
+			MacAddress       = \$na.MacAddress
+			VirtualNetworkId = \$na.VMNetwork.ID
+			VMNetwork        = \$na.VMNetwork.Name
+			VLanID           = \$na.VLanID
+			SlotId           = \$na.SlotId
+			Enabled          = \$na.Enabled
+		}
+		\$data.NetworkAdapters += \$nic
 	}
 	\$report += \$data
 } else {
@@ -1939,7 +1948,7 @@ Status=\$job.Status.toString()
             return '[none]'
         }
         def parts = adapters.collect { na ->
-            "${na?.MACAddress ?: '?'} type=${na?.IPv4AddressType ?: '?'} ips=${na?.IPv4Addresses ?: []} net=${na?.VMNetwork ?: '?'}"
+            "${na?.MacAddress ?: '?'} type=${na?.IPv4AddressType ?: '?'} ips=${na?.IPv4Addresses ?: []} net=${na?.VMNetwork ?: '?'}"
         }
         return "[${parts.join(', ')}]"
     }
