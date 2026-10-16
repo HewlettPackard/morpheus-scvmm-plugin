@@ -32,7 +32,7 @@ import com.morpheusdata.scvmm.sync.DatastoresSync
 import com.morpheusdata.scvmm.util.MorpheusUtil
 import groovy.json.JsonSlurper
 
-class ScvmmProvisionProvider extends AbstractProvisionProvider implements WorkloadProvisionProvider, HostProvisionProvider, ResourceProvisionProvider, ProvisionProvider.HypervisorProvisionFacet, HostProvisionProvider.ResizeFacet, WorkloadProvisionProvider.ResizeFacet, ProvisionProvider.BlockDeviceNameFacet {
+class ScvmmProvisionProvider extends AbstractProvisionProvider implements WorkloadProvisionProvider, HostProvisionProvider, ResourceProvisionProvider, ProvisionProvider.HypervisorProvisionFacet, HostProvisionProvider.ResizeFacet, WorkloadProvisionProvider.ResizeFacet, ProvisionProvider.BlockDeviceNameFacet, ProvisionProvider.HypervisorConsoleFacet {
     public static final String PROVIDER_CODE = 'scvmm.provision'
     public static final String PROVISION_TYPE_CODE = 'scvmm'
     public static final diskNames = ['sda', 'sdb', 'sdc', 'sdd', 'sde', 'sdf', 'sdg', 'sdh', 'sdi', 'sdj', 'sdk', 'sdl']
@@ -879,14 +879,6 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 if (createResults.success == true) {
                     node = context.services.computeServer.get(nodeId)
                     if (createResults.server) {
-						/*if (server.cloud.getConfigProperty('enableVnc')) {
-                            //credentials
-                            server.consoleHost = server.parentServer?.name
-                            server.consoleType = 'vmrdp'
-                            server.sshUsername = server.cloud.accountCredentialData?.username ?: server.cloud.getConfigProperty('username')
-                            server.consolePassword = server.cloud.accountCredentialData?.password ?: server.cloud.getConfigProperty('password')
-                            server.consolePort = 2179
-                        }*/
                         def serverDisks = createResults.server.disks
                         if (serverDisks && server.volumes) {
                             storageVolumes = server.volumes
@@ -913,6 +905,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 						server.externalId = createResults.server.id
 						server.internalId = createResults.server.VMId
 						server.parentServer = node
+						if (cloud.getConfigProperty('enableVnc')) {
+							// Hypervisor (VMConnect) console credentials; consoleHost is refreshed to the actual
+							// Hyper-V host in refreshServerPlacement once SCVMM reports final placement.
+							server.consoleHost = MorpheusUtil.getConsoleHost(server.parentServer)
+							server.consoleType = 'vmrdp'
+							server.consoleUsername = MorpheusUtil.getConsoleUsername(cloud)
+							server.consolePassword = MorpheusUtil.getConsolePassword(cloud)
+							server.consolePort = 2179
+						}
 						server.osDevice = '/dev/sda'
 						server.dataDevice = '/dev/sda'
 						server.lvmEnabled = false
@@ -1321,29 +1322,110 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         return rtn
     }
 
-    private void updateServerHost(ComputeServer server, Map scvmmOpts) {
-        try {
-            def serverDetails = apiService.getServerDetails(scvmmOpts, server.externalId)
-            def hostId = serverDetails?.server?.HostId
-            if (hostId) {
-                def hosts = context.services.computeServer.list(
-                    new DataQuery()
-                        .withFilter('cloud.id', server.cloud.id)
-                        .withFilter('computeServerType.code', 'scvmmHypervisor')
-                )
-                def parentServer = hosts?.find { it.externalId == hostId }
-                if (parentServer && server.parentServer?.id != parentServer.id) {
-                    // Reload after the remote call so concurrent agent check-in updates are not overwritten
-                    def latestServer = context.services.computeServer.get(server.id) ?: server
-                    latestServer.parentServer = parentServer
-                    if (latestServer.consoleType == 'vmrdp') {
-                        latestServer.consoleHost = parentServer.name
-                    }
-                    context.services.computeServer.save(latestServer)
-                }
+    /**
+     * Re-reads the VM's current placement from SCVMM and, if it moved (or its vmrdp console target is
+     * stale), updates {@code parentServer} / {@code consoleHost} and persists the server.
+     * Shared by the post-provision placement check and the hypervisor-console connect hook.
+     * @return the resolved parent host, or null if SCVMM did not report one we know about
+     */
+    protected ComputeServer refreshServerPlacement(ComputeServer server, Map scvmmOpts) {
+        def serverDetails = apiService.getServerDetails(scvmmOpts, server.externalId)
+        def hostId = serverDetails?.server?.HostId
+        if (!hostId) {
+            log.debug("refreshServerPlacement: SCVMM returned no HostId for ${server.externalId}")
+            return null
+        }
+        def hosts = context.services.computeServer.list(
+            new DataQuery()
+                .withFilter('cloud.id', server.cloud.id)
+                .withFilter('computeServerType.code', 'scvmmHypervisor')
+        )
+        def parentServer = hosts?.find { it.externalId == hostId }
+        if (!parentServer) {
+            log.warn("refreshServerPlacement: no synced Hyper-V host with externalId ${hostId} for ${server.name}")
+            return null
+        }
+        // Reload after the remote call so concurrent agent check-in updates are not overwritten
+        def latestServer = context.services.computeServer.get(server.id) ?: server
+        def save = false
+        if (latestServer.parentServer?.id != parentServer.id) {
+            latestServer.parentServer = parentServer
+            save = true
+        }
+        if (latestServer.consoleType == 'vmrdp') {
+            def consoleHost = MorpheusUtil.getConsoleHost(parentServer)
+            if (latestServer.consoleHost != consoleHost) {
+                latestServer.consoleHost = consoleHost
+                save = true
             }
+        }
+        if (save) {
+            context.services.computeServer.save(latestServer)
+        }
+        return parentServer
+    }
+
+    /**
+     * HypervisorConsoleFacet: invoked by core immediately before each hypervisor console connection
+     * for a server that already has console settings. Mirrors the embedded SCVMM getVmRdpInfo path so
+     * a VM that was live-migrated connects to its current Hyper-V host instead of a stale one.
+     */
+    @Override
+    ServiceResponse updateServerHost(ComputeServer server) {
+        log.debug("updateServerHost (console): ${server?.id}")
+        try {
+            def fetchedServer = context.services.computeServer.get(server.id)
+            if (!fetchedServer?.externalId || !fetchedServer.cloud) {
+                return ServiceResponse.error("Server ${server?.id} is not bound to an SCVMM VM")
+            }
+            def parentServer = refreshServerPlacement(fetchedServer, fetchScvmmConnectionDetails(fetchedServer))
+            if (!parentServer) {
+                return ServiceResponse.error("Unable to resolve the Hyper-V host for ${fetchedServer.name}")
+            }
+            return ServiceResponse.success([host: MorpheusUtil.getConsoleHost(parentServer)])
         } catch (e) {
-            log.error("updateServerHost error: ${e}", e)
+            log.error("updateServerHost (console) error: ${e}", e)
+            return ServiceResponse.error(e.message)
+        }
+    }
+
+    /**
+     * HypervisorConsoleFacet: invoked by core before a hypervisor console connection when the server has
+     * no console settings yet (e.g. brownfield or provisioned before console access was enabled on the
+     * cloud). Populates the vmrdp console fields from the current SCVMM placement and cloud credentials.
+     */
+    @Override
+    ServiceResponse enableConsoleAccess(ComputeServer server) {
+        log.debug("enableConsoleAccess: ${server?.id}")
+        try {
+            def fetchedServer = context.services.computeServer.get(server.id)
+            if (!fetchedServer?.externalId || !fetchedServer.cloud) {
+                return ServiceResponse.error("Server ${server?.id} is not bound to an SCVMM VM")
+            }
+            Cloud cloud = fetchedServer.cloud
+            if (!cloud.getConfigProperty('enableVnc')) {
+                return ServiceResponse.error("Hypervisor console is not enabled on cloud ${cloud.name}")
+            }
+            def parentServer = refreshServerPlacement(fetchedServer, fetchScvmmConnectionDetails(fetchedServer)) ?: fetchedServer.parentServer
+            if (!parentServer) {
+                return ServiceResponse.error("Unable to resolve the Hyper-V host for ${fetchedServer.name}")
+            }
+            if (!cloud.accountCredentialLoaded) {
+                def credentials = context.services.accountCredential.loadCredentials(cloud)
+                cloud.accountCredentialData = credentials?.data
+                cloud.accountCredentialLoaded = true
+            }
+            def latestServer = context.services.computeServer.get(fetchedServer.id) ?: fetchedServer
+            latestServer.consoleType = 'vmrdp'
+            latestServer.consoleHost = MorpheusUtil.getConsoleHost(parentServer)
+            latestServer.consolePort = 2179
+            latestServer.consoleUsername = MorpheusUtil.getConsoleUsername(cloud)
+            latestServer.consolePassword = MorpheusUtil.getConsolePassword(cloud)
+            context.services.computeServer.save(latestServer)
+            return ServiceResponse.success([host: latestServer.consoleHost])
+        } catch (e) {
+            log.error("enableConsoleAccess error: ${e}", e)
+            return ServiceResponse.error(e.message)
         }
     }
 
@@ -1448,10 +1530,14 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 			fetchedServer.externalIp = serverDetails.server?.ipAddress
 			fetchedServer.powerState = ComputeServer.PowerState.on
 			def newIpAddress = serverDetails.server?.ipAddress
-			def macAddress = serverDetails.server?.macAddress
-			fetchedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
+			def networkAdapter = findPrimaryNetworkAdapter(serverDetails.server as Map, newIpAddress)
+			fetchedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, networkAdapter)
             def hostOpts = fetchScvmmConnectionDetails(fetchedServer)
-            updateServerHost(fetchedServer, hostOpts)
+            try {
+                refreshServerPlacement(fetchedServer, hostOpts)
+            } catch (e) {
+                log.error("refreshServerPlacement error: ${e}", e)
+            }
 			return new ServiceResponse<ProvisionResponse>(true, null, null,
 					new ProvisionResponse(privateIp: fetchedServer.internalIp, publicIp: fetchedServer.externalIp, success: true))
 		} else {
@@ -2300,18 +2386,24 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
     }
 
-    private saveAndGetNetworkInterface(ComputeServer server, privateIp, publicIp, index, macAddress) {
-        log.debug("applyComputeServerNetworkIp: ${privateIp}")
+    private saveAndGetNetworkInterface(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
+        log.debug("applyComputeServerNetworkIp: ${privateIp}, adapter: ${networkAdapter?.ID}")
 		def rtn = [:]
         ComputeServerInterface netInterface
+        def macAddress = networkAdapter?.MacAddress
+        def adapterExternalId = networkAdapter?.ID
         if (privateIp) {
             privateIp = privateIp?.toString().contains("\n") ? privateIp.toString().replace("\n", "") : privateIp.toString()
             def newInterface = false
             server.internalIp = privateIp
             server.sshHost = privateIp
-            server.macAddress = macAddress
+            if (macAddress) {
+                server.macAddress = macAddress
+            }
             log.debug("Setting private ip on server:${server.sshHost}")
-            netInterface = server.interfaces?.find { it.ipAddress == privateIp }
+            netInterface = server.interfaces?.find { adapterExternalId && it.externalId == adapterExternalId }
+            if (netInterface == null)
+                netInterface = server.interfaces?.find { it.ipAddress == privateIp }
 
             if (netInterface == null) {
                 if (index == 0)
@@ -2339,7 +2431,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 netInterface.publicIpAddress = publicIp
                 server.externalIp = publicIp
             }
-            netInterface.macAddress = macAddress
+            // Bind the interface to the SCVMM adapter so VirtualMachineSync matches it by externalId
+            if (adapterExternalId) {
+                netInterface.externalId = adapterExternalId
+            }
+            if (macAddress) {
+                netInterface.macAddress = macAddress
+            }
+            if (networkAdapter?.VLanID != null) {
+                netInterface.vlanId = networkAdapter.VLanID.toString()
+            }
             if (newInterface == true)
                 context.async.computeServer.computeServerInterface.create([netInterface], server).blockingGet()
             else
@@ -2351,12 +2452,29 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         return rtn
     }
 
-	private applyComputeServerNetworkIp(ComputeServer server, privateIp, publicIp, index, macAddress) {
-		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, macAddress).netInterface
+	private applyComputeServerNetworkIp(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
+		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, networkAdapter).netInterface
 	}
 
-	private applyNetworkIpAndGetServer(ComputeServer server, privateIp, publicIp, index, macAddress) {
-		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, macAddress).server
+	private applyNetworkIpAndGetServer(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
+		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, networkAdapter).server
+	}
+
+	/**
+	 * Picks the SCVMM network adapter that backs the primary interface: prefer the adapter holding the
+	 * detected IP, then SlotId 0, then the first enabled adapter.
+	 */
+	protected static Map findPrimaryNetworkAdapter(Map serverDetail, ipAddress) {
+		List<Map> adapters = (serverDetail?.NetworkAdapters ?: []).findAll { it } as List<Map>
+		if (!adapters) {
+			return null
+		}
+		def ip = ipAddress?.toString()?.trim()
+		def byIp = ip ? adapters.find { adapter ->
+			def ips = ScvmmApiService.normalizeAddresses(adapter.IPv4Addresses) + ScvmmApiService.normalizeAddresses(adapter.IPv6Addresses)
+			ips.contains(ip)
+		} : null
+		return byIp ?: adapters.find { it.SlotId?.toString() == '0' } ?: adapters.first()
 	}
 
     @Override
@@ -2390,7 +2508,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         return rtn
     }
 
-	private LinkedHashMap<String, Object> fetchScvmmConnectionDetails(ComputeServer server) {
+	protected LinkedHashMap<String, Object> fetchScvmmConnectionDetails(ComputeServer server) {
 		def node = pickScvmmController(server.cloud)
 		def scvmmOpts = apiService.getScvmmCloudOpts(context, server.cloud, node)
 		scvmmOpts += apiService.getScvmmControllerOpts(server.cloud, node)
@@ -2412,8 +2530,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 					fetchedServer = context.async.computeServer.get(server.id).blockingGet()
 				}
 				def newIpAddress = serverDetail.server?.ipAddress
-				def macAddress = serverDetail.server?.macAddress
-				def savedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, macAddress)
+				def networkAdapter = findPrimaryNetworkAdapter(serverDetail.server as Map, newIpAddress)
+				def savedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, networkAdapter)
                 context.async.computeServer.save(savedServer).blockingGet()
                 rtn.success = true
             }
