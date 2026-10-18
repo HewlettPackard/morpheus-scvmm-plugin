@@ -1986,7 +1986,8 @@ if(\$VM) {
             executeCommand("\$libraryshare = Get-SCLibraryShare -VMMServer localhost | where { \$_.Path -eq \"${rootSharePath}\" }; Read-SCLibraryShare -Path \"${sharePath}\" -LibraryShare \$libraryshare", importOpts)
         }
         rtn.success = true
-        rtn.sharePath = "${sharePath}\\${resourceName}"
+        // Plain String: this path is persisted in the workload config, and Jackson serializes a GString as an object
+        rtn.sharePath = "${sharePath}\\${resourceName}".toString()
 
         return rtn
     }

@@ -1240,20 +1240,13 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		def config = fetchedWorkload.configMap ?: [:]
 		// Handle DVD cleanup if needed
 		if (config.deleteDvdOnComplete?.removeIsoFromDvd) {
-			apiService.setCdrom(scvmmOpts)
-			if (config.deleteDvdOnComplete?.deleteIso) {
-				apiService.deleteIso(scvmmOpts, config.deleteDvdOnComplete.deleteIso)
-			}
+			ejectAndDeleteIso(scvmmOpts, config.deleteDvdOnComplete.deleteIso)
 		}
 		// Same for the clone source's re-mounted ISO, now that both VMs have booted
 		def parentCleanup = config.cloneParentDvdCleanup
 		if (parentCleanup?.externalId) {
 			try {
-				def parentOpts = scvmmOpts + [externalId: parentCleanup.externalId]
-				apiService.setCdrom(parentOpts)
-				if (parentCleanup.deleteIso) {
-					apiService.deleteIso(parentOpts, parentCleanup.deleteIso)
-				}
+				ejectAndDeleteIso(scvmmOpts + [externalId: parentCleanup.externalId], parentCleanup.deleteIso)
 				config.remove('cloneParentDvdCleanup')
 				fetchedWorkload.setConfigMap(config)
 				context.async.workload.save(fetchedWorkload).blockingGet()
@@ -1262,6 +1255,19 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 			}
 		}
 		return ServiceResponse.success()
+    }
+
+    protected void ejectAndDeleteIso(Map scvmmOpts, isoPath) {
+        def ejectResults = apiService.setCdrom(scvmmOpts)
+        if (!ejectResults?.success) {
+            log.warn("finalizeWorkload: failed to eject DVD on ${scvmmOpts.externalId}: ${ejectResults?.error ?: ejectResults?.msg}")
+        }
+        if (isoPath) {
+            def deleteResults = apiService.deleteIso(scvmmOpts, isoPath.toString())
+            if (!deleteResults?.success) {
+                log.warn("finalizeWorkload: failed to delete ISO ${isoPath} for ${scvmmOpts.externalId}: ${deleteResults?.error ?: deleteResults?.msg}")
+            }
+        }
     }
 
     /**
