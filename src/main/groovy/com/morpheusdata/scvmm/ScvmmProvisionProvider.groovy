@@ -734,7 +734,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 					virtualImage = context.services.virtualImage.get(containerConfig.template?.toLong())
 				}
 
-                scvmmOpts.scvmmGeneration = virtualImage?.getConfigProperty('generation') ?: 'generation1'
+                scvmmOpts += getScvmmImageOpts(virtualImage)
                 scvmmOpts.isSyncdImage = virtualImage?.refType == 'ComputeZone'
                 scvmmOpts.isTemplate = !(virtualImage?.remotePath != null) && !virtualImage?.systemImage
                 scvmmOpts.templateId = virtualImage?.externalId
@@ -1287,6 +1287,15 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     static getContainerDataDiskList(container) {
         def rtn = container.server?.volumes?.findAll { it.rootVolume == false }?.sort { it.id }
         return rtn
+    }
+
+    Map getScvmmImageOpts(VirtualImage virtualImage) {
+        def platform = virtualImage?.osType?.platform?.toString()?.toLowerCase() ?: virtualImage?.platform?.toLowerCase()
+        return [
+            scvmmGeneration: virtualImage?.getConfigProperty('generation') ?: 'generation1',
+            secureBoot: virtualImage?.secureBoot == true,
+            secureBootTemplate: platform == 'windows' ? 'MicrosoftWindows' : 'MicrosoftUEFICertificateAuthority'
+        ]
     }
 
     def getScvmmContainerOpts(container) {
@@ -2325,9 +2334,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 				def osplatform = virtualImage?.osType?.platform?.toString()?.toLowerCase() ?: virtualImage?.platform?.toString()?.toLowerCase()
 				server.osType = ['windows', 'osx'].contains(osplatform) ? osplatform : 'linux'
 				server.parentServer = node
-                scvmmOpts.secureBoot = virtualImage?.uefi ?: false
+                scvmmOpts += getScvmmImageOpts(virtualImage)
                 scvmmOpts.imageId = imageId
-                scvmmOpts.scvmmGeneration = virtualImage?.getConfigProperty('generation') ?: 'generation1'
                 scvmmOpts.diskMap = context.services.virtualImage.getImageDiskMap(virtualImage)
                 server = saveAndGetMorpheusServer(server, true)
                 scvmmOpts += getScvmmServerOpts(server)
