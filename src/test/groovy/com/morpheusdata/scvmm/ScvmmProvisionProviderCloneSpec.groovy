@@ -5,9 +5,13 @@ package com.morpheusdata.scvmm
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.Instance
+import com.morpheusdata.model.OsType
+import com.morpheusdata.model.PlatformType
+import com.morpheusdata.model.TaskResult
 import com.morpheusdata.model.VirtualImage
 import com.morpheusdata.model.Workload
 import com.morpheusdata.response.PrepareCloneInstanceResponse
+import io.reactivex.rxjava3.core.Single
 import spock.lang.Specification
 import spock.lang.Subject
 
@@ -72,5 +76,67 @@ class ScvmmProvisionProviderCloneSpec extends Specification {
         !result.success
         result.msg.contains('source image')
         result.data == null
+    }
+
+    // cloud-init on a cloned disk only re-runs if its cache is cleared on the source first
+
+    private static Instance cloudInitLinuxInstance(ComputeServer.PowerState power = ComputeServer.PowerState.on) {
+        VirtualImage image = new VirtualImage(id: 49L, isCloudInit: true)
+        ComputeServer sourceServer = new ComputeServer(id: 107L, name: 'src', externalId: 'vm-guid', sourceImage: image,
+                serverOs: new OsType(platform: PlatformType.linux), powerState: power, sshUsername: 'morpheus', sshPassword: 'pw')
+        new Instance(id: 66L, containers: [new Workload(id: 68L, server: sourceServer)])
+    }
+
+    def "prepareCloneInstance clears the cloud-init cache inside a running Linux cloud-init source"() {
+        given:
+        Instance instance = cloudInitLinuxInstance()
+
+        when:
+        def result = provider.prepareCloneInstance(instance, [cloneInstanceId: 66L])
+
+        then:
+        1 * context.executeCommandOnServer({ it.id == 107L }, ScvmmProvisionProvider.CLOUD_INIT_CACHE_RESET_COMMAND,
+                false, 'morpheus', 'pw', null, null, null, null, true, true) >> Single.just(new TaskResult(success: true))
+        result.success
+        result.data.cloneContainerId == 68L
+    }
+
+    def "prepareCloneInstance still succeeds when the cloud-init cache reset fails"() {
+        given:
+        Instance instance = cloudInitLinuxInstance()
+
+        when:
+        def result = provider.prepareCloneInstance(instance, [cloneInstanceId: 66L])
+
+        then:
+        1 * context.executeCommandOnServer(*_) >> Single.just(new TaskResult(success: false, error: 'agent offline'))
+        result.success
+    }
+
+    def "prepareCloneInstance does not touch the guest when the source is #why"() {
+        when:
+        def result = provider.prepareCloneInstance(instance, [cloneInstanceId: 66L])
+
+        then:
+        0 * context.executeCommandOnServer(*_)
+        result.success
+
+        where:
+        why                    | instance
+        'powered off'          | cloudInitLinuxInstance(ComputeServer.PowerState.off)
+        'a Windows image'      | windowsInstance()
+        'not cloud-init'       | plainInstance()
+    }
+
+    private static Instance windowsInstance() {
+        VirtualImage image = new VirtualImage(id: 50L, isCloudInit: true)
+        ComputeServer s = new ComputeServer(id: 108L, externalId: 'vm-guid', sourceImage: image, serverOs: new OsType(platform: PlatformType.windows), powerState: ComputeServer.PowerState.on)
+        new Instance(id: 70L, containers: [new Workload(id: 71L, server: s)])
+    }
+
+    private static Instance plainInstance() {
+        VirtualImage image = new VirtualImage(id: 51L, isCloudInit: false)
+        ComputeServer s = new ComputeServer(id: 109L, externalId: 'vm-guid', sourceImage: image, serverOs: new OsType(platform: PlatformType.linux), powerState: ComputeServer.PowerState.on)
+        new Instance(id: 72L, containers: [new Workload(id: 73L, server: s)])
     }
 }
