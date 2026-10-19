@@ -20,6 +20,8 @@ import groovy.util.logging.Slf4j
 
 class HostSync {
 
+    static final String MAINTENANCE_MODE_STATUS = 'In Maintenance Mode'
+
     private Cloud cloud
     private ComputeServer node
     private MorpheusContext context
@@ -113,15 +115,16 @@ class HostSync {
                 if (maxSocketsChanged) {
                     existingItem.maxSockets = maxSockets
                 }
+                def server = existingItem
                 if (clusterChanged || osChanged) {
-                    def savedServer = context.async.computeServer.save(existingItem).blockingGet()
-                    log.debug("savedServer?.id: ${savedServer?.id}")
-                    if (savedServer) {
-                        updateHostStats(savedServer, masterItem)
-                    }
+                    server = context.async.computeServer.save(existingItem).blockingGet()
+                    log.debug("savedServer?.id: ${server?.id}")
                     log.debug("updated host")
-                } else if (maxSocketsChanged) {
-                    context.async.computeServer.save(existingItem).blockingGet()
+                }
+                // Refresh on every sync so capacity, power state and maintenance mode do not go stale.
+                // A pending maxSockets change is persisted by updateHostStats to avoid a second save.
+                if (server) {
+                    updateHostStats(server, masterItem, maxSocketsChanged && !(clusterChanged || osChanged))
                 }
             }
         } catch (e) {
@@ -207,7 +210,7 @@ class HostSync {
         return osType
     }
 
-    def updateHostStats(ComputeServer server, hostMap) {
+    def updateHostStats(ComputeServer server, hostMap, boolean forceSave = false) {
         log.debug("HostSync: updateHostStats: hostMap: ${hostMap}")
         try {
             //storage
@@ -223,7 +226,7 @@ class HostSync {
             //power state
             def powerState = hostMap.hyperVState == 'Running' ? 'on' : hostMap.hyperVState == 'Stopped' ? 'off' : 'unknown'
             //save it all
-            def updates = false
+            def updates = forceSave
             if (powerState == 'on') {
                 updates = true
             }
@@ -259,6 +262,16 @@ class HostSync {
             if (server.powerState != powerState) {
                 server.powerState = powerState
                 updates = true
+            }
+            // status is SCVMM's OverallStateString. Keep the prior value when it is absent so a sparse
+            // payload cannot clear the flag.
+            def status = hostMap.status?.toString()?.trim()
+            if (status) {
+                def maintenanceMode = status.equalsIgnoreCase(MAINTENANCE_MODE_STATUS)
+                if (server.maintenanceMode != maintenanceMode) {
+                    server.maintenanceMode = maintenanceMode
+                    updates = true
+                }
             }
             if (hostMap.name && hostMap.name != server.hostname) {
                 server.hostname = hostMap.name
