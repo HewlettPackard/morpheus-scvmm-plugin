@@ -7,6 +7,7 @@ This plugin integrates Microsoft SCVMM with Morpheus, enabling cloud sync, provi
 - [Features](#features)
 - [Requirements](#requirements)
 - [Repository structure](#repository-structure)
+- [Knowledge base](#knowledge-base)
 - [Building the plugin](#building-the-plugin)
 - [License](#license)
 - [Installing](#installing)
@@ -61,6 +62,12 @@ This plugin integrates Microsoft SCVMM with Morpheus, enabling cloud sync, provi
   - `tests/` — Test cases for plugin functionality
 - `build/` — Build output (generated JARs, assets, classes)
 - `gradle/` — Gradle wrapper files and configuration
+---
+
+## Knowledge base
+
+Architecture notes, a symptom-driven triage playbook, design decision records, a feature-planning checklist and the provenance log distilled from past investigations live in [`docs/knowledge/`](docs/knowledge/README.md). Copilot loads [`.github/copilot-instructions.md`](.github/copilot-instructions.md) and the skills under `.github/skills/` on top of it.
+
 ---
 
 ## Building the plugin
