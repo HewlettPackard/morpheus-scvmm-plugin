@@ -26,7 +26,7 @@ CI publishes `main` to HPE Artifactory (`morpheus-open-source-plugins`); GitHub 
 * Groovy, dynamic typing, `def` result maps (`[success:false, msg/error/errOut/errorMsg]`) — check the **key name at every caller**; `TaskResult` has `error`, not `errorData`/`errorOutput`; `ServiceResponse.error()` does not set `msg`.
 * Spock specs in `src/test/groovy/com/morpheusdata/scvmm/**`, one `*Spec` per concern; pure PowerShell builders are tested by asserting on the generated script (`new ScvmmApiService(Mock(MorpheusContext))`). Spock gotchas: `setup()` stubs beat `given:`, private methods on a `GroovySpy` run for real, `computeServer.get()` returns `Maybe`, `List<String>.contains(GString)` is false.
 * Logging via `PrefixedLoggerFactory.getLogger(Class)`; never log credentials or full `opts` at INFO; log `success/exitCode/data/error`, never `${out}`.
-* Commit subjects keep the `MORPH-xxxxx:` prefix; no Jira keys in code comments; comments ≤ 2 lines. Published PR branches are updated by **merge**, not rebase (ADR-0016). Repo pushes/commits use the `ckeskar23` identity (SSH alias `github-ckeskar23`); do not edit shared `.git/config`.
+* Commit subjects keep the `MORPH-xxxxx:` prefix; no Jira keys in code comments; comments ≤ 2 lines. Published PR branches are updated by **merge**, not rebase (ADR-0016).
 * Mark "verified on appliance" vs "unit-tested only" in PR descriptions; the QA lab is a single-node cluster with no CSVs.
 
 ## Top recurring pitfalls

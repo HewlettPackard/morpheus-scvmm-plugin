@@ -70,7 +70,6 @@ Everything here is something that actually tripped up past work (see [session-lo
 
 - [ ] Title/subject keeps the `MORPH-xxxxx:` prefix (rebases have dropped it); no Jira numbers in code comments (reviewer preference); comments ≤ 2 lines.
 - [ ] PR body: root cause (newcomer-readable), what changed, design decisions reviewers should weigh (with VMware/HVM/embedded comparison where relevant), testing with **actual log lines**, explicit "not in scope" list, and whether paths were unit-tested only. Replace the body, don't append.
-- [ ] Commit as the repo persona (`ckeskar23`) via per-command env vars / SSH alias; never change shared `.git/config` in a worktree; the app token cannot push or edit those PRs.
 - [ ] Published branches: `git merge origin/main`, no rebase/force-push (ADR-0016). State the merge order if other open PRs overlap and who takes the semantic fix-up.
 - [ ] Squash-merged base PR? `git rebase origin/main` on the dependent branch drops the duplicate; verify `gh pr view` state before continuing.
 - [ ] Add a row to [session-log.md](session-log.md) / [triage-playbook.md](triage-playbook.md) / a new ADR when the work changes a documented behaviour.

@@ -10,5 +10,8 @@ Option 1 — add `maintenanceMode` to plugin-core `ComputeServer` (morpheus-ui m
 ## Alternatives considered
 Option 2 — store the flag in a host config property and filter in memory (works on current API but not queryable; rejected by user). Checking maintenance only in `updateHostStats` (would never run for existing hosts).
 
+## Open question
+Has the plugin-core `ComputeServer.maintenanceMode` change been proposed upstream (PR against morpheus-plugin-core), and which API/appliance version would carry it? Unanswered as of 2026-10-19.
+
 ## Consequences
 Needs a plugin-core release and an appliance shipping it; CI fails until then. No runtime guard was added for older appliances — contrast ADR-0018.

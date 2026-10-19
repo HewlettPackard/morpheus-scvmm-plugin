@@ -9,8 +9,17 @@ Distilled, maintained context for working on `morpheus-scvmm-plugin`: how the pl
 | [decisions/](decisions/README.md) | You are about to change behaviour and want to know whether it was already decided, why, and what was rejected (ADR-0001 … ADR-0020). |
 | [feature-planning-checklist.md](feature-planning-checklist.md) | Writing a story, reviewing a design, implementing, testing on a real SCVMM, or opening a PR. |
 | [session-log.md](session-log.md) | You want the provenance of a statement (which session, date, Jira, PR) or the list of gaps the mining could not resolve. |
+| [jira-drafts.md](jira-drafts.md) | Draft tickets for bugs confirmed still present on `main` that have no PR yet. Not posted anywhere; copy into Jira when ready. |
 
 Always-loaded summary for Copilot: [`.github/copilot-instructions.md`](../../.github/copilot-instructions.md). Task-specific entry points: `.github/skills/scvmm-bug-triage`, `scvmm-system-design`, `scvmm-feature-planning`.
+
+## Open questions
+
+Raised while building this knowledge base; answers should be recorded in the linked place and the item removed here.
+
+1. **PR #193 (clone cloud-init, MORPH-15705):** were the three lab-verified commits (`8354bab4`, `ee7de736`, `d2cc77c0`) pushed? The PR's remote head looks pre-rebase. → [triage-playbook.md §4](triage-playbook.md), [session-log.md](session-log.md)
+2. **`MORPH-953-pool-lease-reconcile`:** fold into PR #187 or keep as a follow-up PR? → [ADR-0015](decisions/0015-reconcile-pool-leases-from-scvmm.md)
+3. **`ComputeServer.maintenanceMode` (MORPH-18569):** has the plugin-core change been proposed upstream, and which API/appliance version carries it? → [ADR-0017](decisions/0017-maintenance-mode-via-plugin-api-field.md)
 
 ## Conventions
 

@@ -10,5 +10,8 @@ Plugin-side reconciliation: after each pool sync, list VMM grants (`Get-SCIPAddr
 ## Alternatives considered
 Stop parenting pools to the hidden server (rejected — core needs `poolServer` for IPAM routing); back the hidden server with an `AccountIntegration` (unverified); core tickets.
 
+## Open question
+Should this branch be folded into PR #187 before it merges, or stay a separate follow-up PR? Unanswered as of 2026-10-19.
+
 ## Consequences
 Upgrades self-heal within two refreshes; pool/server DB ids still churn (instance configs referencing old pool ids were not verified). Design plugin-owned state to be rebuildable from the cloud.
