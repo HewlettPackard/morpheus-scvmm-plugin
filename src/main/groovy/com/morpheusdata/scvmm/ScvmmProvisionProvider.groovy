@@ -2065,6 +2065,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         ProvisionResponse provisionResponse = new ProvisionResponse()
         try {
             def config = server.getConfigMap()
+            def clusterId = server.resourcePool?.externalId
             config.resourcePool = ""   // keep it blank else server creation failed
             Cloud cloud = server.cloud
             def account = server.account
@@ -2078,13 +2079,6 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
             def imageType = config.templateTypeSelect ?: 'default'
             def virtualImage
-            def clusterId
-            if (config.resourcePool) {
-                def pool = server.resourcePool
-                if (pool) {
-                    clusterId = pool.externalId
-                }
-            }
 
             // host, datastore configuration
             ComputeServer node
