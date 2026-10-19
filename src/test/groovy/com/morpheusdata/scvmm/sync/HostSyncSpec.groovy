@@ -253,7 +253,7 @@ class HostSyncSpec extends Specification {
 		server.resourcePool.is(cluster)
 	}
 
-	def "updateMatchedHosts does not save a host whose cluster, OS and sockets are unchanged"() {
+	def "updateMatchedHosts refreshes stats of a host whose cluster, OS and sockets are unchanged"() {
 		given:
 		def sync = Spy(wired()) { getHypervisorOs(_) >> new OsType(code: 'windows') }
 		def server = serverWithCapacity(maxSockets: 2L, serverOs: new OsType(code: 'windows'))
@@ -263,9 +263,9 @@ class HostSyncSpec extends Specification {
 		when:
 		updateMatchedHosts.invoke(sync, [new SyncTask.UpdateItem(existingItem: server, masterItem: VmmPayloads.host(cpuCount: '2', totalMemory: '999'))], [])
 
-		then: 'stats (e.g. memory) are only refreshed on a cluster/OS change'
-		0 * computeServerService.save(_)
-		server.maxMemory == 0L
+		then: 'stats (e.g. memory) are refreshed on every sync, saved once'
+		1 * computeServerService.save(server) >> Single.just(server)
+		server.maxMemory == 999L
 	}
 
 	def "updateHostStats maps hyperVState #state to powerState #power"() {

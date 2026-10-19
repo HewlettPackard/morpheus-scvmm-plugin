@@ -114,10 +114,10 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
 
         then:
         result == [[name: 'Auto', value: '']]
-        0 * computeServerService.listIdentityProjections(_)
+        0 * computeServerService.list(_)
     }
 
-    def "scvmmHost lists enabled powered-on hosts of the cloud sorted by name"() {
+    def "scvmmHost lists enabled powered-on, non-maintenance hosts of the cloud sorted by name"() {
         given:
         cloudService.get(1L) >> zone()
         DataQuery captured
@@ -126,7 +126,11 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
         def result = provider.scvmmHost([zoneId: 1L])
 
         then:
-        1 * computeServerService.listIdentityProjections(_) >> { DataQuery q -> captured = q; [[id: 11L, name: 'host-a'], [id: 12L, name: 'host-b']] }
+        1 * computeServerService.list(_) >> { DataQuery q -> captured = q; [
+            new ComputeServer(id: 11L, name: 'host-a'),
+            new ComputeServer(id: 12L, name: 'host-b', maintenanceMode: null),
+            new ComputeServer(id: 13L, name: 'host-c', maintenanceMode: true)
+        ] }
         result == [[name: 'host-a', value: 11L], [name: 'host-b', value: 12L]]
         filterValue(captured, 'account.id') == 5L
         filterValue(captured, 'enabled') == true
@@ -135,7 +139,7 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
         captured.sort == 'name'
         captured.order == DataQuery.SortOrder.asc
         !captured.joins.contains('resourcePool')
-        // plan said "maintenance-mode hosts excluded": there is no maintenance filter, only enabled + powerState
+        // maintenance hosts are dropped in memory (null treated as eligible), not via a query filter
         !captured.filters*.name.any { it?.toString()?.toLowerCase()?.contains('maintenance') }
     }
 
@@ -148,7 +152,7 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
         provider.scvmmHost([zoneId: 1L] + params)
 
         then:
-        1 * computeServerService.listIdentityProjections(_) >> { DataQuery q -> captured = q; [] }
+        1 * computeServerService.list(_) >> { DataQuery q -> captured = q; [] }
         captured.joins.contains('resourcePool')
         filterValue(captured, 'resourcePool.id') == 42L
 
@@ -163,7 +167,7 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
     def "scvmmHost returns an empty list when the cloud has no matching hosts"() {
         given:
         cloudService.get(1L) >> zone()
-        computeServerService.listIdentityProjections(_) >> []
+        computeServerService.list(_) >> []
 
         expect:
         provider.scvmmHost([zoneId: 1L]) == []
@@ -176,7 +180,7 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
 
         then:
         thrown(NullPointerException)
-        0 * computeServerService.listIdentityProjections(_)
+        0 * computeServerService.list(_)
     }
 
     def "scvmmVirtualImages maps images to name/value and drops leftover temporary templates"() {
