@@ -2686,7 +2686,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                                 context.services.storageVolume.save(existingVolume)
                             } else {
                                 log.error "Error in resizing volume: ${resizeResults}"
-                                rtn.error = resizeResults.error ?: "Error in resizing volume"
+                                rtn.error = resizeResults.error ?: resizeResults.errOut ?: "Error in resizing volume"
                             }
                         }
                     }
