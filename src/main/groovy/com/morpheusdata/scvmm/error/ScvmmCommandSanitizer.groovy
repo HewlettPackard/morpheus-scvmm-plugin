@@ -79,7 +79,7 @@ class ScvmmCommandSanitizer {
     private static final Set<String> SENSITIVE_KEYS = ['sshPassword', 'password', 'privateKey', 'credentialPassword', 'secret', 'token', 'cloudConfigBytes', 'cloudConfigUser'] as Set
 
     /**
-     * Shallow copy of an opts map with credential-bearing keys masked, for safe DEBUG logging.
+     * Copy of an opts map with credential-bearing keys masked, for safe DEBUG logging.
      */
     static Map redactOpts(Map opts) {
         if (opts == null) {
@@ -90,12 +90,27 @@ class ScvmmCommandSanitizer {
             String key = k?.toString()
             if (SENSITIVE_KEYS.any { it.equalsIgnoreCase(key) } || key?.toLowerCase()?.contains('password')) {
                 rtn[k] = v == null ? null : REDACTED
-            } else if (v instanceof Map) {
-                rtn[k] = redactOpts(v)
             } else {
-                rtn[k] = v
+                rtn[k] = redactValue(v)
             }
         }
         rtn
+    }
+
+    private static Object redactValue(Object value) {
+        if (value instanceof Map) {
+            return redactOpts(value)
+        }
+        if (value instanceof Collection) {
+            return value.collect { redactValue(it) }
+        }
+        if (value == null || value instanceof Number || value instanceof Boolean) {
+            return value
+        }
+        if (value instanceof CharSequence) {
+            return redact(value.toString())
+        }
+        // Model toString() methods can dump credential fields and entire associated models.
+        return value.class.simpleName
     }
 }

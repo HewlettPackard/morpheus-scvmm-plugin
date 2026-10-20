@@ -49,7 +49,7 @@ class ScvmmApiService {
             output = morpheusContext.executeWindowsCommand(host, port, opts.sshUsername, opts.sshPassword, command, null, false).blockingGet()
         } catch (ScvmmException e) {
             throw e
-        } catch (Throwable t) {
+        } catch (Exception t) {
             // RxJava / reflection wrap checked exceptions; report the root cause so the message is meaningful
             Throwable root = ScvmmErrorTranslator.rootCause(t)
             throw new ScvmmConnectionException("WinRM call to ${host}:${port} failed: ${root.message ?: root.class.simpleName}".toString(), host, port, root)
@@ -85,7 +85,8 @@ class ScvmmApiService {
     def wrapExecuteCommand(String command, Map opts = [:], boolean failOnError = true) {
         def out = executeCommand(command, opts)
 
-        if (out.success != true) {
+        if (out.success != true || (out.exitCode != null && out.exitCode != '' && out.exitCode != '0')) {
+            out.success = false
             String errorText = combinedErrorText(out)
             if (failOnError) {
                 throw ScvmmCommandException.fromOutput(command, errorText, out.exitCode)
@@ -104,7 +105,7 @@ class ScvmmApiService {
             try {
                 out.data = new groovy.json.JsonSlurper().parseText(payload)
                 if (log.isDebugEnabled()) {
-                    log.debug "Received: ${ScvmmCommandSanitizer.truncate(JsonOutput.toJson(out.data), 4000)}"
+                    log.debug "Received JSON response for ${ScvmmCommandSanitizer.summarize(command)}"
                 }
             } catch (Exception e) {
                 if (out.success != true && !failOnError) {
@@ -482,8 +483,7 @@ if(\$vm) {
             }
         } catch (e) {
             log.error("getServerDetails error for VM ${externalId}: ${e.message}", e)
-            rtn.msg = ScvmmErrorTranslator.userMessage(e)
-            rtn.exception = e
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }
@@ -1903,7 +1903,7 @@ foreach (\$network in \$networks) {
                     // the expected count.. we are good
                     log.debug "serverStatus: ${serverDetail.server?.Status}, opts.dataDisks: ${opts.dataDisks?.size()}, additionalTemplateDisks: ${opts.additionalTemplateDisks?.size()}"
 
-                     if (serverDetail.server?.Status != 'UnderCreation' &&
+                     if (serverDetail.server?.Status != 'CreationFailed' && serverDetail.server?.Status != 'UnderCreation' &&
                              serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
                         // additionalTemplateDisks are created after VM creation
                         // data disks are created and attached after vm creation
@@ -1926,10 +1926,13 @@ foreach (\$network in \$networks) {
                         pending = false
                     }
                 } else {
+                    if (serverDetail.connectionFailure) {
+                        return serverDetail
+                    }
                     lastState = serverDetail.error == 'VM_NOT_FOUND' ? 'VM not found in SCVMM' : "details unavailable: ${ScvmmCommandSanitizer.firstLine(serverDetail.msg) ?: serverDetail.error ?: 'unknown'}".toString()
                 }
                 attempts++
-                if (pending && attempts > SERVER_CREATED_MAX_ATTEMPTS) {
+                if (pending && attempts >= SERVER_CREATED_MAX_ATTEMPTS) {
                     pending = false
                     def timeout = new ScvmmTimeoutException("virtual machine ${vmId} (${opts.name}) to finish creating in SCVMM".toString(), attempts, System.currentTimeMillis() - start, lastState)
                     log.error("checkServerCreated: ${timeout.message}")
@@ -1975,14 +1978,17 @@ foreach (\$network in \$networks) {
                             def failure = new ScvmmJobFailedException(jobId?.toString(), jobDetail?.Name?.toString(), jobDetail?.Status?.toString(), jobDetail?.ErrorInfo?.toString())
                             log.error("waitForJobToComplete: ${failure.message}")
                             ScvmmErrorTranslator.toResultMap(failure, rtn)
-                            rtn.errorInfo = jobDetail?.ErrorInfo
+                            rtn.errorInfo = failure.errorInfo
                         }
                     }
                 } else {
+                    if (getJobResults.connectionFailure) {
+                        return getJobResults + [jobId: jobId]
+                    }
                     lastState = "job details unavailable: ${ScvmmCommandSanitizer.firstLine(getJobResults.msg) ?: 'unknown'}".toString()
                 }
                 attempts++
-                if (pending && attempts > JOB_MAX_ATTEMPTS) {
+                if (pending && attempts >= JOB_MAX_ATTEMPTS) {
                     pending = false
                     def timeout = new ScvmmTimeoutException("SCVMM job ${jobId} to complete".toString(), attempts, System.currentTimeMillis() - start, lastState)
                     log.error("waitForJobToComplete: ${timeout.message}")
@@ -2047,6 +2053,7 @@ ErrorInfo=\$errorInfo
                 refreshVM(opts, vmId)
                 def serverDetail = getServerDetails(opts, vmId)
                 if (serverDetail.success == true && serverDetail.server) {
+                    notFoundAttempts = 0
                     def scvmmIp = serverDetail.server?.internalIp
                     def ipAddress = scvmmIp ?: server?.externalIp
                     def adapterSummary = describeAdapters(serverDetail.server?.NetworkAdapters)
@@ -2066,7 +2073,12 @@ ErrorInfo=\$errorInfo
                         }
                     }
 
-                    if (waitForIp && !ipAddress) {
+                    if (serverDetail.server?.Status == 'CreationFailed') {
+                        rtn.server = serverDetail.server
+                        rtn.msg = "SCVMM reports virtual machine ${vmId} (${server?.name}) as CreationFailed. Check the Jobs view in the VMM console for the failed job.".toString()
+                        rtn.error = rtn.msg
+                        pending = false
+                    } else if (waitForIp && !ipAddress) {
                         // Keep waiting
                     } else {
                         // Most likely, server gets its IP from cloud-init calling back to cloudconfigcontroller/ipaddress... wait for that to happen
@@ -2075,13 +2087,6 @@ ErrorInfo=\$errorInfo
                             rtn.success = true
                             rtn.server = serverDetail.server
                             rtn.server.ipAddress = ipAddress ?: server?.internalIp
-                            pending = false
-                        } else if (serverDetail.server?.Status == 'CreationFailed') {
-                            rtn.success = false
-                            rtn.server = serverDetail.server
-                            rtn.server.ipAddress = ipAddress ?: server?.internalIp
-                            rtn.msg = "SCVMM reports virtual machine ${vmId} (${server?.name}) as CreationFailed. Check the Jobs view in the VMM console for the failed job.".toString()
-                            log.error("checkServerReady: ${rtn.msg}")
                             pending = false
                         } else {
                             log.debug("check server loading server: ip: ${server.internalIp}")
@@ -2094,21 +2099,25 @@ ErrorInfo=\$errorInfo
                         }
                     }
                 } else {
+                    if (serverDetail.connectionFailure) {
+                        return serverDetail
+                    }
                     if (serverDetail.error == 'VM_NOT_FOUND') {
                         notFoundAttempts++
                         lastState = "VM not found in SCVMM (${notFoundAttempts} consecutive lookups)".toString()
                     } else {
+                        notFoundAttempts = 0
                         lastState = "details unavailable: ${ScvmmCommandSanitizer.firstLine(serverDetail.msg) ?: serverDetail.error ?: 'unknown'}".toString()
                     }
                 }
 
                 attempts++
-                if (pending && notFoundAttempts > SERVER_READY_MAX_NOT_FOUND) {
+                if (pending && notFoundAttempts >= SERVER_READY_MAX_NOT_FOUND) {
                     pending = false
                     rtn.msg = "Virtual machine ${vmId} (${server?.name}) was not found in SCVMM after ${notFoundAttempts} lookups over ${ScvmmTimeoutException.formatDuration(System.currentTimeMillis() - start)}. It may have been deleted or the creation job failed.".toString()
                     rtn.error = 'VM_NOT_FOUND'
                     log.error("checkServerReady: ${rtn.msg}")
-                } else if (pending && attempts > SERVER_READY_MAX_ATTEMPTS) {
+                } else if (pending && attempts >= SERVER_READY_MAX_ATTEMPTS) {
                     pending = false
                     String awaited = waitForIp ? "virtual machine ${vmId} (${server?.name}) to be Running with an IP address" : "virtual machine ${vmId} (${server?.name}) to be Running"
                     def timeout = new ScvmmTimeoutException(awaited.toString(), attempts, System.currentTimeMillis() - start, lastState)
@@ -2194,12 +2203,14 @@ if(\$VM) {
   \$ignore = Stop-SCVirtualMachine -VM \$VM -Force
   \$ignore = Remove-SCVirtualMachine -VM \$VM 
 } 
-\$ignore = Remove-Item -Path  \"${serverFolder}\" -Recurse -Force
+"""
+                wrapExecuteCommand(generateCommandString(command), opts)
+                def cleanupCommand = """\$ignore = Remove-Item -Path  \"${serverFolder}\" -Recurse -Force
 \$ignore = Remove-Item -LiteralPath \"${diskFolder}\" -Recurse -Force"""
                 // tolerated: the folder removals routinely fail when the paths no longer exist
-                def out = wrapExecuteCommand(generateCommandString(command), opts, false)
+                def out = wrapExecuteCommand(generateCommandString(cleanupCommand), opts, false)
                 if (out.success != true) {
-                    log.warn("deleteServer: SCVMM reported an error while deleting VM ${vmId} (continuing): ${ScvmmCommandSanitizer.firstLine(out.error)}")
+                    log.warn("deleteServer: temporary folder cleanup for VM ${vmId} failed: ${ScvmmCommandSanitizer.firstLine(out.error)}")
                     rtn.warning = ScvmmCommandSanitizer.firstLine(out.error)
                 }
                 rtn.success = true
@@ -2584,7 +2595,7 @@ For (\$i=0; \$i -le 10; \$i++) {
             }
         } catch (e) {
             log.error "updateNetworkInterface error: ${e}", e
-            rtn.error = e.message
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }
@@ -2676,7 +2687,7 @@ For (\$i=0; \$i -le 10; \$i++) {
             }
         } catch (e) {
             log.error "addNetworkInterface error: ${e}", e
-            rtn.error = e.message
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }
@@ -2722,7 +2733,7 @@ For (\$i=0; \$i -le 10; \$i++) {
             }
         } catch (e) {
             log.error "removeNetworkInterface error: ${e}", e
-            rtn.error = e.message
+            ScvmmErrorTranslator.toResultMap(e, rtn)
         }
         return rtn
     }

@@ -13,15 +13,17 @@ class ScvmmResponseParseException extends ScvmmException {
         super(message,
                 'The SCVMM host returned an unexpected (non-JSON) response. Check the host for PowerShell errors or an outdated VMM console.',
                 cause)
-        this.payloadSample = payloadSample
-        this.commandSummary = commandSummary
+        this.payloadSample = ScvmmCommandSanitizer.payloadSample(payloadSample)
+        this.commandSummary = ScvmmCommandSanitizer.summarize(commandSummary)
     }
 
     static ScvmmResponseParseException fromPayload(String command, String payload, Throwable cause) {
         String sample = ScvmmCommandSanitizer.payloadSample(payload)
         String summary = ScvmmCommandSanitizer.summarize(command)
-        String message = "Unable to parse SCVMM response as JSON (${cause?.message ?: 'parse error'}). Payload sample: ${sample} [command: ${summary}]".toString()
-        new ScvmmResponseParseException(message, sample, summary, cause)
+        // Parser messages can repeat the entire payload, defeating both redaction and truncation.
+        String message = "Unable to parse SCVMM response as JSON (${cause?.class?.simpleName ?: 'parse error'}). Payload sample: ${sample} [command: ${summary}]".toString()
+        new ScvmmResponseParseException(message, sample, summary,
+                new IllegalArgumentException('SCVMM response is not valid JSON'))
     }
 
     @Override

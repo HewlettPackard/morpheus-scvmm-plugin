@@ -70,9 +70,26 @@ class ScvmmExceptionSpec extends Specification {
         then:
         e.payloadSample.length() <= ScvmmCommandSanitizer.MAX_PAYLOAD_SAMPLE_LENGTH
         e.payloadSample.endsWith('...')
-        e.message.contains('Unexpected character')
+        e.message.contains('RuntimeException')
         e.userMessage.contains('non-JSON')
         e.commandSummary == 'Get-Foo'
+    }
+
+    def "exception details redact credentials regardless of constructor"() {
+        given:
+        def e = new ScvmmCommandException('password=topsecret', 'password=topsecret',
+                'Get-X -Password topsecret', 'password=topsecret', '1',
+                new RuntimeException('password=topsecret'))
+        def parse = ScvmmResponseParseException.fromPayload('Get-X', '{"password":"topsecret", bad',
+                new RuntimeException('Unexpected character topsecret ' + ('x' * 5000)))
+
+        expect:
+        !e.message.contains('topsecret')
+        !e.userMessage.contains('topsecret')
+        !e.toDetailMap().toString().contains('topsecret')
+        !parse.toDetailMap().toString().contains('topsecret')
+        !parse.cause.message.contains('topsecret')
+        parse.message.length() < 1000
     }
 
     def "ScvmmJobFailedException carries job details and prefers ErrorInfo for the user message"() {

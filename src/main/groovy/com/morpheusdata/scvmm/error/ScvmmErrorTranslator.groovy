@@ -80,6 +80,8 @@ class ScvmmErrorTranslator {
         rtn.msg = context ? "${context}: ${message}".toString() : message
         rtn.error = t?.message ? ScvmmCommandSanitizer.redact(t.message) : rtn.msg
         rtn.errorType = t instanceof ScvmmException ? t.errorType : (t?.class?.simpleName ?: 'Unknown')
+        rtn.data = details(t, context)
+        rtn.connectionFailure = isConnectionFailure(t)
         ScvmmKnownErrors.KnownError known = ScvmmKnownErrors.match(t)
         if (known) {
             rtn.errorCode = known.code
@@ -116,7 +118,7 @@ class ScvmmErrorTranslator {
         if (t == null) {
             return false
         }
-        if (t instanceof ScvmmConnectionException) {
+        if (t instanceof ScvmmConnectionException || rootCause(t) instanceof ScvmmConnectionException) {
             return true
         }
         // our own polling timeouts / parse failures mean the host answered; they are not connection failures

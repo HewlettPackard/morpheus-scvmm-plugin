@@ -19,8 +19,8 @@ class ScvmmCommandException extends ScvmmException {
 
     ScvmmCommandException(String message, String userMessage, String commandSummary, String errorOutput, String exitCode, Throwable cause) {
         super(message, userMessage, cause)
-        this.commandSummary = commandSummary
-        this.errorOutput = errorOutput
+        this.commandSummary = ScvmmCommandSanitizer.summarize(commandSummary)
+        this.errorOutput = ScvmmCommandSanitizer.redact(errorOutput)
         this.exitCode = exitCode
     }
 

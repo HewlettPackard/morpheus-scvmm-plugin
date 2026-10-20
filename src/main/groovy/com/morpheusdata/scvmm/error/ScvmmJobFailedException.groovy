@@ -16,7 +16,7 @@ class ScvmmJobFailedException extends ScvmmException {
         this.jobId = jobId
         this.jobName = jobName
         this.jobStatus = jobStatus
-        this.errorInfo = errorInfo
+        this.errorInfo = ScvmmCommandSanitizer.redact(errorInfo)
     }
 
     private static String buildMessage(String jobId, String jobName, String jobStatus, String errorInfo) {
