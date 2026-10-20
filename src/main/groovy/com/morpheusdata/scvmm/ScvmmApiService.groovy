@@ -3251,7 +3251,8 @@ For (\$i=0; \$i -le 10; \$i++) {
     }
 
     def wrapExecuteCommand(String command, Map opts = [:]) {
-        log.debug "Executing command: ${command} with opts: ${opts}"
+        // log the target, not the whole opts map: it carries sshPassword and cloud config
+        log.debug "Executing command on ${opts?.sshHost ?: 'unknown host'} (cloud ${opts?.zoneId ?: opts?.zone?.id ?: '?'}): ${command}"
         def out = executeCommand(command, opts)
 
         if (out.data) {
