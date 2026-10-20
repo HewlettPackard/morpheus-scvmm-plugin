@@ -618,6 +618,30 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         return new ServiceResponse<PrepareCloneInstanceResponse>(true, null, null, cloneResponse)
     }
 
+    static final String CLOUD_INIT_CACHE_RESET_COMMAND = 'sudo rm -fr /etc/cloud/cloud.cfg.d/99-manual-cache.cfg /var/lib/cloud/sem/* /var/lib/cloud/instance /var/lib/cloud/instances/* ; sync'
+
+    // Reset cloud-init's cache in the running Linux source (bash/sudo over SSH; Windows uses sysprep) so the clone boots as a new instance.
+    // Returns true only if the cache was cleared; otherwise the clone must get its agent from Morpheus over SSH.
+    protected boolean resetCloudInitCacheForClone(ComputeServer sourceServer) {
+        def isLinuxCloudInit = sourceServer?.sourceImage?.isCloudInit() && sourceServer.serverOs?.platform == PlatformType.linux
+        if (!isLinuxCloudInit || sourceServer.powerState == ComputeServer.PowerState.off) {
+            log.debug("clone: skipping cloud-init cache reset for ${sourceServer?.name} (cloudInit=${sourceServer?.sourceImage?.isCloudInit()}, platform=${sourceServer?.serverOs?.platform}, power=${sourceServer?.powerState})")
+            return false
+        }
+        try {
+            def result = context.executeCommandOnServer(sourceServer, CLOUD_INIT_CACHE_RESET_COMMAND, false,
+                    sourceServer.sshUsername, sourceServer.sshPassword, null, null, null, null, true, true).blockingGet()
+            if (result?.success) {
+                log.info("clone: cleared cloud-init cache on ${sourceServer.name} before clone")
+                return true
+            }
+            log.warn("clone: could not clear cloud-init cache on ${sourceServer.name}: ${result?.error ?: result?.output}; Morpheus will install the agent on the clone")
+        } catch (e) {
+            log.warn("clone: cloud-init cache reset failed on ${sourceServer.name}: ${e.message}; Morpheus will install the agent on the clone", e)
+        }
+        return false
+    }
+
     /**
      * This method is a key entry point in provisioning a workload. This could be a vm, a container, or something else.
      * Information associated with the passed Workload object is used to kick off the workload provision request
@@ -641,6 +665,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         def containerId = workload?.id
         Cloud cloud = server.cloud
 		def scvmmOpts = [:]
+		def cloneAgentViaCloudInit = false
         try {
             def containerConfig = workload.getConfigMap()
 			WorkloadType workloadType = context.services.workloadType.get(workload.workloadType.id)
@@ -865,6 +890,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     Workload parentContainer = context.services.workload.get(opts.cloneContainerId.toLong())
                     scvmmOpts.cloneContainerId = parentContainer.id
                     scvmmOpts.cloneVMId = parentContainer.server.externalId
+                    // Must run while the source is still up, before it is stopped for the clone
+                    def cloudInitCacheReset = resetCloudInitCacheForClone(context.services.computeServer.get(parentContainer.server.id))
                     if (parentContainer.status == Workload.Status.running) {
                         stopWorkload(parentContainer)
                         scvmmOpts.startClonedVM = true
@@ -873,7 +900,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     def cloneBaseOpts = [:]
                     cloneBaseOpts.cloudInitIsoNeeded = (parentContainer.server.sourceImage && parentContainer.server.sourceImage.isCloudInit && parentContainer.server.serverOs?.platform != 'windows')
                     if (cloneBaseOpts.cloudInitIsoNeeded) {
-                        def initOptions = constructCloudInitOptions(parentContainer, workloadRequest, opts.installAgent, scvmmOpts.platform, virtualImage, scvmmOpts.networkConfig, scvmmOpts.licenses, scvmmOpts)
+                        def parentCloudConfig = cloudConfigSourceForCloneParent(parentContainer.server)
+                        def initOptions = constructCloudInitOptions(parentContainer, workloadRequest, opts.installAgent, scvmmOpts.platform, virtualImage, scvmmOpts.networkConfig, scvmmOpts.licenses, scvmmOpts, parentCloudConfig)
+                        // Cloud-init installs the clone's agent only if it will re-run (cache cleared); else Morpheus does over SSH
+                        cloneAgentViaCloudInit = (cloudInitCacheReset && opts.installAgent == true && initOptions.installAgent == false)
                         def clonedScvmmOpts = apiService.getScvmmZoneOpts(context, cloud)
                         clonedScvmmOpts += apiService.getScvmmControllerOpts(cloud, controllerNode)
                         clonedScvmmOpts += getScvmmContainerOpts(parentContainer)
@@ -894,10 +924,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 def createResults = apiService.createServer(scvmmOpts)
                 log.debug("createResults: ${createResults}")
                 scvmmOpts.deleteDvdOnComplete = createResults.deleteDvdOnComplete
+                // Clone only: both the clone's and the source's ISOs stay mounted until finalizeWorkload so cloud-init
+                // can read them (the source re-runs cloud-init on restart after its cache reset).
+                scvmmOpts.cloneBaseResults = createResults.cloneBaseResults
 				// Adding the deleteDvdOnComplete to the workload config for future reference in the finalize step.
 				// This is done as adding it to scvmmOpts above doesn't persist it anywhere.
 				def workloadConfig = workload.configMap
 				workloadConfig.deleteDvdOnComplete = createResults.deleteDvdOnComplete
+				if (scvmmOpts.cloneVMId && createResults.cloneBaseResults?.cloudInitIsoPath) {
+					workloadConfig.cloneParentDvdCleanup = [externalId: scvmmOpts.cloneVMId, deleteIso: createResults.cloneBaseResults.cloudInitIsoPath]
+				}
 				workload.setConfigMap(workloadConfig)
 				context.async.workload.save(workload).blockingGet()
                 if (createResults.success == true) {
@@ -950,11 +986,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 						log.info("Starting Server  ${scvmmOpts.name}")
 						apiService.startServer(scvmmOpts, scvmmOpts.externalId)
 						provisionResponse.success = true
-						// By default installAgent is true.
-						// 1. The below section instructs the subsequent code to
-						// 1a. skip agent installation for Linux VMs (as cloud init will take care of installing agent)
-						// 1b. If we are in a Clone scenario, we don't want to skip agent installation here.
-						if (server?.platform == 'linux' && !scvmmOpts.cloneVMId) {
+						// Cloud-init installs the agent on Linux VMs (clones only when agent mode is cloud-init); otherwise Morpheus does
+						if (server?.platform == 'linux' && (!scvmmOpts.cloneVMId || cloneAgentViaCloudInit)) {
 							provisionResponse.installAgent = false
 						}
 						log.debug("provisionResponse.success: ${provisionResponse.success}")
@@ -1033,16 +1066,17 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 					}
 				}
 
-				// Always check for DVD/ISO cleanup on the parent VM
-				if (scvmmOpts.cloneBaseOpts?.clonedScvmmOpts) {
+				// On success the source's DVD/ISO is cleaned up in finalizeWorkload; on failure nothing finalizes, so do it now
+				if (!rtn.success && scvmmOpts.cloneBaseOpts?.clonedScvmmOpts) {
 					log.debug "Checking for DVD/ISO cleanup on parent VM: ${scvmmOpts.cloneVMId}"
 					def setCdromResults = apiService.setCdrom(scvmmOpts.cloneBaseOpts.clonedScvmmOpts)
 					if (!setCdromResults.success) {
 						log.error "Failed to unmount DVD of parent VM. Please unmount manually as this may cause issues for further clone operations."
 					}
-					if (scvmmOpts.deleteDvdOnComplete?.deleteIso) {
-						log.debug "Deleting ISO of parent VM: ${scvmmOpts.deleteDvdOnComplete.deleteIso}"
-						apiService.deleteIso(scvmmOpts.cloneBaseOpts.clonedScvmmOpts, scvmmOpts.deleteDvdOnComplete.deleteIso)
+					def parentIsoPath = scvmmOpts.cloneBaseResults?.cloudInitIsoPath
+					if (parentIsoPath) {
+						log.debug "Deleting ISO of parent VM: ${parentIsoPath}"
+						apiService.deleteIso(scvmmOpts.cloneBaseOpts.clonedScvmmOpts, parentIsoPath)
 					}
 				}
 			} catch (Exception ex) {
@@ -1109,7 +1143,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         additionalTemplateDisks
     }
 
-    private constructCloudInitOptions(Workload container, WorkloadRequest workloadRequest, installAgent, platform, VirtualImage virtualImage, networkConfig, licenses, scvmmOpts) {
+    private constructCloudInitOptions(Workload container, WorkloadRequest workloadRequest, installAgent, platform, VirtualImage virtualImage, networkConfig, licenses, scvmmOpts, Map cloudConfigSource = null) {
         log.debug("constructCloudInitOptions: ${container}, ${installAgent}, ${platform}")
         def rtn = [:]
         ComputeServer server = container.server
@@ -1126,17 +1160,29 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         rtn.installAgent = installAgent && (cloudConfigOpts.installAgent != true)
         // If cloudConfigOpts.installAgent == true, it means we are installing the agent via cloud config.. so do NOT install is via morpheus
         cloudConfigOpts.licenses = licenses
-        rtn.cloudConfigUser = workloadRequest?.cloudConfigUser ?: null
-        rtn.cloudConfigMeta = workloadRequest?.cloudConfigMeta ?: null
-        rtn.cloudConfigNetwork = workloadRequest?.cloudConfigNetwork ?: null
+        // Cloud-config of the workload being provisioned, unless the caller supplies another server's (clone source ISO)
+        def source = cloudConfigSource ?: [cloudConfigUser: workloadRequest?.cloudConfigUser, cloudConfigMeta: workloadRequest?.cloudConfigMeta, cloudConfigNetwork: workloadRequest?.cloudConfigNetwork]
+        rtn.cloudConfigUser = source.cloudConfigUser ?: null
+        rtn.cloudConfigMeta = source.cloudConfigMeta ?: null
+        rtn.cloudConfigNetwork = source.cloudConfigNetwork ?: null
         if (cloudConfigOpts.licenseApplied) {
             rtn.licenseApplied = true
         }
         rtn.unattendCustomized = cloudConfigOpts.unattendCustomized
-        rtn.cloudConfigUnattend = workloadRequest.cloudConfigUser
+        rtn.cloudConfigUnattend = source.cloudConfigUser
         def isoBuffer = context.services.provision.buildIsoOutputStream(virtualImage.isSysprep, PlatformType.valueOf(platform), rtn.cloudConfigMeta, rtn.cloudConfigUnattend, rtn.cloudConfigNetwork)
         rtn.cloudConfigBytes = isoBuffer
         return rtn
+    }
+
+    // The clone source re-runs cloud-init after cloning, so its re-mounted ISO must carry its own identity (as embedded).
+    // Core stores each server's first-boot cloud-config; fall back to the clone request if the source has none.
+    protected Map cloudConfigSourceForCloneParent(ComputeServer parentServer) {
+        if (parentServer?.cloudConfigUser && parentServer?.cloudConfigMeta) {
+            return [cloudConfigUser: parentServer.cloudConfigUser, cloudConfigMeta: parentServer.cloudConfigMeta, cloudConfigNetwork: parentServer.cloudConfigNetwork]
+        }
+        log.warn("clone source ${parentServer?.name} has no stored cloud-config; rebuilding its ISO from the clone request")
+        return null
     }
 
     def getDiskExternalIds(VirtualImage virtualImage, cloud) {
@@ -1219,14 +1265,37 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		def scvmmOpts = getAllScvmmOpts(workload)
 		// Fetch the workload again to get the latest configMap with deleteDvdOnComplete
 		def fetchedWorkload = context.async.workload.get(workload.id).blockingGet()
+		def config = fetchedWorkload.configMap ?: [:]
 		// Handle DVD cleanup if needed
-		if (fetchedWorkload.configMap?.deleteDvdOnComplete?.removeIsoFromDvd) {
-			apiService.setCdrom(scvmmOpts)
-			if (fetchedWorkload.configMap?.deleteDvdOnComplete?.deleteIso) {
-				apiService.deleteIso(scvmmOpts, fetchedWorkload.configMap.deleteDvdOnComplete.deleteIso)
+		if (config.deleteDvdOnComplete?.removeIsoFromDvd) {
+			ejectAndDeleteIso(scvmmOpts, config.deleteDvdOnComplete.deleteIso)
+		}
+		// Same for the clone source's re-mounted ISO, now that both VMs have booted
+		def parentCleanup = config.cloneParentDvdCleanup
+		if (parentCleanup?.externalId) {
+			try {
+				ejectAndDeleteIso(scvmmOpts + [externalId: parentCleanup.externalId], parentCleanup.deleteIso)
+				config.remove('cloneParentDvdCleanup')
+				fetchedWorkload.setConfigMap(config)
+				context.async.workload.save(fetchedWorkload).blockingGet()
+			} catch (e) {
+				log.warn("finalizeWorkload: clone source DVD/ISO cleanup failed for ${parentCleanup.externalId}: ${e.message}")
 			}
 		}
 		return ServiceResponse.success()
+    }
+
+    protected void ejectAndDeleteIso(Map scvmmOpts, isoPath) {
+        def ejectResults = apiService.setCdrom(scvmmOpts)
+        if (!ejectResults?.success) {
+            log.warn("finalizeWorkload: failed to eject DVD on ${scvmmOpts.externalId}: ${ejectResults?.error ?: ejectResults?.msg}")
+        }
+        if (isoPath) {
+            def deleteResults = apiService.deleteIso(scvmmOpts, isoPath.toString())
+            if (!deleteResults?.success) {
+                log.warn("finalizeWorkload: failed to delete ISO ${isoPath} for ${scvmmOpts.externalId}: ${deleteResults?.error ?: deleteResults?.msg}")
+            }
+        }
     }
 
     /**

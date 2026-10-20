@@ -5,9 +5,13 @@ package com.morpheusdata.scvmm
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.Instance
+import com.morpheusdata.model.OsType
+import com.morpheusdata.model.PlatformType
+import com.morpheusdata.model.TaskResult
 import com.morpheusdata.model.VirtualImage
 import com.morpheusdata.model.Workload
 import com.morpheusdata.response.PrepareCloneInstanceResponse
+import io.reactivex.rxjava3.core.Single
 import spock.lang.Specification
 import spock.lang.Subject
 
@@ -72,5 +76,67 @@ class ScvmmProvisionProviderCloneSpec extends Specification {
         !result.success
         result.msg.contains('source image')
         result.data == null
+    }
+
+    // cloud-init on a cloned disk only re-runs if its cache is cleared on the source first; runWorkload uses the
+    // result to decide whether cloud-init or Morpheus installs the clone's agent
+
+    private static ComputeServer cloudInitLinuxServer(ComputeServer.PowerState power = ComputeServer.PowerState.on) {
+        new ComputeServer(id: 107L, name: 'src', externalId: 'vm-guid', sourceImage: new VirtualImage(id: 49L, isCloudInit: true),
+                serverOs: new OsType(platform: PlatformType.linux), powerState: power, sshUsername: 'morpheus', sshPassword: 'pw')
+    }
+
+    def "prepareCloneInstance does not touch the source guest"() {
+        given:
+        Instance instance = new Instance(id: 66L, containers: [new Workload(id: 68L, server: cloudInitLinuxServer())])
+
+        when:
+        def result = provider.prepareCloneInstance(instance, [cloneInstanceId: 66L])
+
+        then:
+        0 * context.executeCommandOnServer(*_)
+        result.success
+        result.data.cloneContainerId == 68L
+    }
+
+    def "resetCloudInitCacheForClone clears the cache inside a running Linux cloud-init source and returns true"() {
+        when:
+        def cleared = provider.resetCloudInitCacheForClone(cloudInitLinuxServer())
+
+        then:
+        1 * context.executeCommandOnServer({ it.id == 107L }, ScvmmProvisionProvider.CLOUD_INIT_CACHE_RESET_COMMAND,
+                false, 'morpheus', 'pw', null, null, null, null, true, true) >> Single.just(new TaskResult(success: true))
+        cleared
+    }
+
+    def "resetCloudInitCacheForClone returns false so Morpheus installs the agent when the reset #why"() {
+        when:
+        def cleared = provider.resetCloudInitCacheForClone(cloudInitLinuxServer())
+
+        then:
+        1 * context.executeCommandOnServer(*_) >> response
+        !cleared
+
+        where:
+        why      | response
+        'fails'  | Single.just(new TaskResult(success: false, error: 'permission denied'))
+        'throws' | Single.error(new RuntimeException('ssh timeout'))
+    }
+
+    def "resetCloudInitCacheForClone does not touch the guest and returns false when the source is #why"() {
+        when:
+        def cleared = provider.resetCloudInitCacheForClone(server)
+
+        then:
+        0 * context.executeCommandOnServer(*_)
+        !cleared
+
+        where:
+        why                    | server
+        'powered off'          | cloudInitLinuxServer(ComputeServer.PowerState.off)
+        'a Windows image'      | new ComputeServer(id: 108L, sourceImage: new VirtualImage(id: 50L, isCloudInit: true), serverOs: new OsType(platform: PlatformType.windows), powerState: ComputeServer.PowerState.on)
+        'an unknown platform'  | new ComputeServer(id: 110L, sourceImage: new VirtualImage(id: 52L, isCloudInit: true), serverOs: null, powerState: ComputeServer.PowerState.on)
+        'not cloud-init'       | new ComputeServer(id: 109L, sourceImage: new VirtualImage(id: 51L, isCloudInit: false), serverOs: new OsType(platform: PlatformType.linux), powerState: ComputeServer.PowerState.on)
+        'missing'              | null
     }
 }

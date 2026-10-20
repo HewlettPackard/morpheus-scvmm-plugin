@@ -2024,7 +2024,8 @@ if(\$VM) {
             executeCommand("\$libraryshare = Get-SCLibraryShare -VMMServer localhost | where { \$_.Path -eq \"${rootSharePath}\" }; Read-SCLibraryShare -Path \"${sharePath}\" -LibraryShare \$libraryshare", importOpts)
         }
         rtn.success = true
-        rtn.sharePath = "${sharePath}\\${resourceName}"
+        // Plain String: this path is persisted in the workload config, and Jackson serializes a GString as an object
+        rtn.sharePath = "${sharePath}\\${resourceName}".toString()
 
         return rtn
     }
@@ -2067,6 +2068,7 @@ foreach(\$share in \$shares) {
         return wrapExecuteCommand(generateCommandString(commands.join(';')), opts)
     }
 
+    // Mounts the library ISO at cdPath in the VM's DVD drive; with no cdPath it ejects whatever is mounted.
     def setCdrom(opts, cdPath = null) {
         log.debug("setCdrom: ${cdPath}")
         def commands = []
