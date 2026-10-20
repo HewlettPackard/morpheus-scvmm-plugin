@@ -622,11 +622,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     static final String CLOUD_INIT_CACHE_RESET_COMMAND = 'sudo rm -fr /etc/cloud/cloud.cfg.d/99-manual-cache.cfg /var/lib/cloud/sem/* /var/lib/cloud/instance /var/lib/cloud/instances/* ; sync'
 
     // Reset cloud-init's cache in the running source guest so the clone boots as a new instance (as embedded does).
-    // Best effort: a failure must not block the clone.
+    // Linux only: the reset is a bash/sudo command over SSH, and Windows images use sysprep, not cloud-init. Best effort.
     protected void resetCloudInitCacheForClone(ComputeServer sourceServer) {
-        def isLinuxCloudInit = sourceServer?.sourceImage?.isCloudInit && sourceServer.serverOs?.platform?.toString() != 'windows'
-        if (!isLinuxCloudInit || sourceServer.powerState?.toString() == 'off') {
-            log.debug("prepareCloneInstance: skipping cloud-init cache reset for ${sourceServer?.name} (cloudInit=${sourceServer?.sourceImage?.isCloudInit}, platform=${sourceServer?.serverOs?.platform}, power=${sourceServer?.powerState})")
+        def isLinuxCloudInit = sourceServer?.sourceImage?.isCloudInit() && sourceServer.serverOs?.platform == PlatformType.linux
+        if (!isLinuxCloudInit || sourceServer.powerState == ComputeServer.PowerState.off) {
+            log.debug("prepareCloneInstance: skipping cloud-init cache reset for ${sourceServer?.name} (cloudInit=${sourceServer?.sourceImage?.isCloudInit()}, platform=${sourceServer?.serverOs?.platform}, power=${sourceServer?.powerState})")
             return
         }
         try {
@@ -900,7 +900,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     def cloneBaseOpts = [:]
                     cloneBaseOpts.cloudInitIsoNeeded = (parentContainer.server.sourceImage && parentContainer.server.sourceImage.isCloudInit && parentContainer.server.serverOs?.platform != 'windows')
                     if (cloneBaseOpts.cloudInitIsoNeeded) {
-                        def parentCloudConfig = cloudConfigSourceForCloneParent(parentContainer.server, workloadRequest)
+                        def parentCloudConfig = cloudConfigSourceForCloneParent(parentContainer.server)
                         def initOptions = constructCloudInitOptions(parentContainer, workloadRequest, opts.installAgent, scvmmOpts.platform, virtualImage, scvmmOpts.networkConfig, scvmmOpts.licenses, scvmmOpts, parentCloudConfig)
                         // When the agent mode is cloud-init the clone's cloud-init run installs the agent (as embedded)
                         cloneAgentViaCloudInit = (opts.installAgent == true && initOptions.installAgent == false)
@@ -1177,7 +1177,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
     // The clone source re-runs cloud-init after cloning, so its re-mounted ISO must carry its own identity (as embedded).
     // Core stores each server's first-boot cloud-config; fall back to the clone request if the source has none.
-    protected Map cloudConfigSourceForCloneParent(ComputeServer parentServer, WorkloadRequest workloadRequest) {
+    protected Map cloudConfigSourceForCloneParent(ComputeServer parentServer) {
         if (parentServer?.cloudConfigUser && parentServer?.cloudConfigMeta) {
             return [cloudConfigUser: parentServer.cloudConfigUser, cloudConfigMeta: parentServer.cloudConfigMeta, cloudConfigNetwork: parentServer.cloudConfigNetwork]
         }

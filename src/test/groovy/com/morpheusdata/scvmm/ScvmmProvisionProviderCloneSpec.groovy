@@ -125,7 +125,14 @@ class ScvmmProvisionProviderCloneSpec extends Specification {
         why                    | instance
         'powered off'          | cloudInitLinuxInstance(ComputeServer.PowerState.off)
         'a Windows image'      | windowsInstance()
+        'an unknown platform'  | unknownPlatformInstance()
         'not cloud-init'       | plainInstance()
+    }
+
+    private static Instance unknownPlatformInstance() {
+        VirtualImage image = new VirtualImage(id: 52L, isCloudInit: true)
+        ComputeServer s = new ComputeServer(id: 110L, externalId: 'vm-guid', sourceImage: image, serverOs: null, powerState: ComputeServer.PowerState.on)
+        new Instance(id: 74L, containers: [new Workload(id: 75L, server: s)])
     }
 
     private static Instance windowsInstance() {

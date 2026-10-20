@@ -2030,6 +2030,7 @@ foreach(\$share in \$shares) {
         return wrapExecuteCommand(generateCommandString(commands.join(';')), opts)
     }
 
+    // Mounts the library ISO at cdPath in the VM's DVD drive; with no cdPath it ejects whatever is mounted.
     def setCdrom(opts, cdPath = null) {
         log.debug("setCdrom: ${cdPath}")
         def commands = []
