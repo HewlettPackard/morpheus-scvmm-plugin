@@ -53,7 +53,7 @@ class ScvmmKnownErrors {
     static final List<KnownError> KNOWN_ERRORS = Collections.unmodifiableList([
             // --- authentication / authorization ---
             new KnownError('winrm.auth', Category.CONNECTION,
-                    /(\b401\b|Unauthorized|Access is denied|access denied|Logon failure|user name or password is incorrect|The WinRM client cannot process the request.*(Kerberos|Negotiate|authentication)|The credentials? (is|are) invalid|WinRM.*cannot process the request.*credential)/,
+                    /(\b401\b|Unauthorized|Logon failure|user name or password is incorrect|Connecting to remote server.*access (is )?denied|The WinRM client cannot process the request.*(Kerberos|Negotiate|authentication)|The credentials? (is|are) invalid|WinRM.*(access (is )?denied|cannot process the request.*credential))/,
                     'Authentication to the SCVMM host failed. Verify the username (DOMAIN\\user) and password, and that the account is a VMM administrator.',
                     'password'),
             // --- transport / listener ---
@@ -73,6 +73,8 @@ class ScvmmKnownErrors {
                     /(You cannot access VMM management server|Unable to connect to the VMM management server|VMM server .* is not (available|responding)|Virtual Machine Manager cannot process the request because an error occurred while authenticating)/,
                     'The SCVMM host cannot reach the VMM management server (localhost). Verify the VMM service is running on the host.'),
             // --- VMM: provisioning ---
+            new KnownError('vmm.access-denied', Category.VMM, /access (is )?denied/,
+                    'SCVMM denied access to the requested resource. Verify the account has permission to the VM, host, library share and filesystem path used by the operation.'),
             new KnownError('vmm.generation2-mismatch', Category.VMM, /which includes generation 2/, GENERATION_2_MISMATCH_MESSAGE),
             new KnownError('vmm.generation1-mismatch', Category.VMM, /which includes generation 1/, GENERATION_1_MISMATCH_MESSAGE),
             new KnownError('vmm.placement', Category.VMM,
@@ -118,6 +120,9 @@ class ScvmmKnownErrors {
         Throwable current = t
         int depth = 0
         while (current != null && depth < 8) {
+            if (current instanceof ScvmmTimeoutException || current instanceof ScvmmResponseParseException) {
+                return null
+            }
             KnownError hit = match(textOf(current))
             if (hit) {
                 return hit

@@ -97,6 +97,8 @@ class ScvmmApiServiceReleaseIPAddressSpec extends Specification {
 
         then:
         !rtn.success
-        rtn.msg == 'Error revoking an IP address from SCVMM'
+        rtn.msg.startsWith('Error revoking an IP address from SCVMM: ')
+        rtn.msg.contains('timed out')
+        rtn.errorCode == 'winrm.timeout'
     }
 }

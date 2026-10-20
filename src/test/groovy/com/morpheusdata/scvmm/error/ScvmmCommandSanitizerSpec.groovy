@@ -87,4 +87,19 @@ class ScvmmCommandSanitizerSpec extends Specification {
         opts.sshPassword == 'p'
         opts.nested.password == 'x'
     }
+
+    def "redactOpts redacts nested lists and does not dump credential-bearing models"() {
+        given:
+        def model = new com.morpheusdata.model.ComputeServer(sshPassword: 'topsecret')
+        def opts = [items: [[password: 'topsecret']], server: model]
+
+        when:
+        def safe = ScvmmCommandSanitizer.redactOpts(opts)
+
+        then:
+        safe.items[0].password == '***'
+        safe.server == 'ComputeServer'
+        !safe.toString().contains('topsecret')
+        model.sshPassword == 'topsecret'
+    }
 }

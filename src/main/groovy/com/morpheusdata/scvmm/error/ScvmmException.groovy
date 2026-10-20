@@ -20,8 +20,8 @@ class ScvmmException extends RuntimeException {
     }
 
     ScvmmException(String message, String userMessage, Throwable cause) {
-        super(message, cause)
-        this.userMessage = userMessage
+        super(ScvmmCommandSanitizer.redact(message), cause)
+        this.userMessage = ScvmmCommandSanitizer.redact(userMessage)
     }
 
     String getUserMessage() {
@@ -44,7 +44,7 @@ class ScvmmException extends RuntimeException {
             rtn.userMessage = userMessage
         }
         if (cause && !cause.is(this)) {
-            rtn.cause = "${cause.class.simpleName}: ${cause.message}".toString()
+            rtn.cause = "${cause.class.simpleName}: ${ScvmmCommandSanitizer.payloadSample(cause.message)}".toString()
         }
         rtn
     }

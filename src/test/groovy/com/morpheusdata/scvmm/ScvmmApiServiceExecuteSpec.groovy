@@ -235,7 +235,7 @@ class ScvmmApiServiceExecuteSpec extends Specification {
         service.listClouds(opts)
 
         then:
-        thrown(ScvmmConnectionException) // 'Access is denied' is classified as an auth/connection failure
+        thrown(ScvmmCommandException)
     }
 
     def "startServer converts an API failure into a result map with a user message"() {
@@ -258,13 +258,60 @@ class ScvmmApiServiceExecuteSpec extends Specification {
 
     def "releaseIPAddress treats an already-released address as success"() {
         given:
-        context.executeWindowsCommand(*_) >> Single.just(result(success: false, exitCode: '1', error: 'Revoke-SCIPAddress : Unable to find the specified allocated IP address'))
+        context.executeWindowsCommand(*_) >> Single.just(result(success: true, exitCode: '0',
+                data: "\"${ScvmmApiService.RELEASE_IP_ALREADY_RELEASED}\""))
 
         when:
         def rtn = service.releaseIPAddress(opts, 'pool1', 'ip1')
 
         then:
         rtn.success == true
+        !rtn.released
+    }
+
+    def "nonzero exit code fails even when WinRM reports success (#tolerated)"() {
+        given:
+        context.executeWindowsCommand(*_) >> Single.just(result(success: true, exitCode: '27',
+                output: 'Set-SCVirtualNetworkAdapter failed'))
+
+        when:
+        def out = null
+        def failure = null
+        try {
+            out = service.wrapExecuteCommand('Set-SCVirtualNetworkAdapter', opts, !tolerated)
+        } catch (ScvmmCommandException e) {
+            failure = e
+        }
+
+        then:
+        if (tolerated) {
+            assert !out.success
+            assert out.error.contains('Set-SCVirtualNetworkAdapter failed')
+            assert failure == null
+        } else {
+            assert failure.exitCode == '27'
+            assert failure.errorOutput.contains('Set-SCVirtualNetworkAdapter failed')
+        }
+
+        where:
+        tolerated << [false, true]
+    }
+
+    def "NIC and server detail failures preserve translated diagnostics"() {
+        given:
+        context.executeWindowsCommand(*_) >> Single.just(result(success: false, exitCode: '1',
+                error: 'Set-SCVirtualNetworkAdapter : access denied'))
+
+        expect:
+        [
+                service.getServerDetails(opts, 'vm1'),
+                service.updateNetworkInterface(opts, 'vm1', [adapterId: 'nic1', networkExternalId: 'net1']),
+                service.addNetworkInterface(opts, 'vm1', [networkExternalId: 'net1']),
+                service.removeNetworkInterface(opts, 'vm1', [adapterId: 'nic1'])
+        ].every {
+            !it.success && it.msg.contains('denied access') && it.errorType == 'ScvmmCommandException' &&
+                    it.data.command && !it.connectionFailure
+        }
     }
 
     def "releaseIPAddress reports other failures"() {
@@ -278,5 +325,33 @@ class ScvmmApiServiceExecuteSpec extends Specification {
         rtn.success == false
         rtn.msg.startsWith('Error revoking an IP address from SCVMM: ')
         rtn.msg.contains('something else went wrong')
+    }
+
+    def "deleteServer does not tolerate VM deletion failures or proceed to folder cleanup"() {
+        when:
+        def rtn = service.deleteServer(opts + [rootSharePath: 'C:\\library', diskRoot: 'C:\\vms',
+                serverFolder: 'vm1'], 'vm1')
+
+        then:
+        1 * context.executeWindowsCommand(_, _, _, _, { it.contains('Remove-SCVirtualMachine') }, _, _) >>
+                Single.just(result(success: false, exitCode: '1', error: 'VM is in use by another job'))
+        0 * context.executeWindowsCommand(_, _, _, _, { it.contains('Remove-Item') }, _, _)
+        !rtn.success
+        rtn.errorType == 'ScvmmCommandException'
+        rtn.msg.contains('another job')
+    }
+
+    def "deleteServer still tolerates missing cleanup directories"() {
+        when:
+        def rtn = service.deleteServer(opts + [rootSharePath: 'C:\\library', diskRoot: 'C:\\vms',
+                serverFolder: 'vm1'], 'vm1')
+
+        then:
+        1 * context.executeWindowsCommand(_, _, _, _, { it.contains('Remove-SCVirtualMachine') }, _, _) >>
+                Single.just(result(success: true, exitCode: '0'))
+        1 * context.executeWindowsCommand(_, _, _, _, { it.contains('Remove-Item') }, _, _) >>
+                Single.just(result(success: false, exitCode: '1', error: 'Cannot find path C:\\library\\vm1'))
+        rtn.success
+        rtn.warning.contains('Cannot find path')
     }
 }
