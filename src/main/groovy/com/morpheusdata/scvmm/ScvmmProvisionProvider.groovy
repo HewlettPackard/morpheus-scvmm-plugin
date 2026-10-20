@@ -1672,6 +1672,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 	        }
 	        if (!rtn.success) {
 	            def timeout = new ScvmmTimeoutException("the Morpheus agent on ${server?.name} (${server?.externalId}) to check in".toString(), attempts, System.currentTimeMillis() - start, 'agentInstalled=false')
+	            ScvmmErrorTranslator.toResultMap(timeout, rtn)
 	            rtn.msg = "${timeout.message} Verify the appliance URL is reachable from the VM and that the agent install completed.".toString()
 	            rtn.error = timeout.message
 	            rtn.timedOut = true
@@ -2662,7 +2663,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 				if (agentWait.success) {
 					fetchedServer = context.async.computeServer.get(server.id).blockingGet()
 				} else {
-					log.warn("waitForHost: ${agentWait.msg}")
+					rtn.warning = agentWait.msg
 				}
                 provisionResponse.privateIp = serverDetail.server.ipAddress
                 provisionResponse.publicIp = serverDetail.server.ipAddress
@@ -2705,6 +2706,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 				def agentWait = waitForAgentInstall(fetchedServer)
 				if (agentWait.success) {
 					fetchedServer = context.async.computeServer.get(server.id).blockingGet()
+				} else {
+					rtn.warning = agentWait.msg
 				}
 				def newIpAddress = serverDetail.server?.ipAddress
 				def networkAdapter = findPrimaryNetworkAdapter(serverDetail.server as Map, newIpAddress)

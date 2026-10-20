@@ -73,6 +73,21 @@ class ScvmmProvisionProviderSpec extends Specification {
         new BulkSaveResult<ComputeServer>(null, null, [server], [])
     }
 
+    def "agent timeout retains awaited server duration and last observed state"() {
+        when:
+        def result = provider.waitForAgentInstall(staleServer(), 0)
+
+        then:
+        !result.success
+        result.timedOut
+        result.msg.contains('vm-25')
+        result.msg.contains('0 attempts')
+        result.msg.contains('agentInstalled=false')
+        result.data.errorType == 'ScvmmTimeoutException'
+        result.data.durationMs >= 0
+        !result.connectionFailure
+    }
+
     // ---------------------------------------------------------------- getServerDetails
 
     def "getServerDetails persists the server re-fetched after checkServerReady, not the pre-poll copy"() {
