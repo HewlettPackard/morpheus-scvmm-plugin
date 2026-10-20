@@ -36,7 +36,7 @@ class ScvmmCloudProviderSyncSpec extends Specification {
         results.every { !it.connectionFailure }
     }
 
-    def "runSyncWorkers stops after a connection failure and marks the remaining workers skipped"() {
+    def "runSyncWorkers records a connection failure but still attempts remaining workers"() {
         given:
         List<String> ran = []
         List<Map> workers = [
@@ -49,22 +49,28 @@ class ScvmmCloudProviderSyncSpec extends Specification {
         List<Map> results = provider.runSyncWorkers(cloud, workers)
 
         then:
-        ran == ['A', 'B']
+        ran == ['A', 'B', 'C']
         results[1].connectionFailure
         results[1].error.contains('WinRM')
-        results[2].skipped
-        !results[2].success
-        results[2].error.contains('skipped')
+        results[2].success
     }
 
-    def "runSyncWorker does not propagate any Throwable from the worker"() {
+    def "runSyncWorker does not swallow fatal JVM errors"() {
         when:
-        Map result = provider.runSyncWorker(cloud, 'Boom', { throw new StackOverflowError('deep') })
+        provider.runSyncWorker(cloud, 'Boom', { throw new StackOverflowError('deep') })
 
         then:
-        notThrown(Throwable)
-        !result.success
-        result.error == 'deep'
+        thrown(StackOverflowError)
+    }
+
+    def "runSyncWorker recognizes wrapped connections and failed ServiceResponses"() {
+        expect:
+        provider.runSyncWorker(cloud, 'wrapped', {
+            throw new RuntimeException('wrapper', new ScvmmConnectionException('transport gone', 'host', 5985))
+        }).connectionFailure
+        !provider.runSyncWorker(cloud, 'response', {
+            com.morpheusdata.response.ServiceResponse.error('bad inventory', [:])
+        }).success
     }
 
     def "summarizeSyncFailures lists only real failures with their causes"() {

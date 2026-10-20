@@ -93,7 +93,7 @@ class HostSync {
             throw e
         } catch (e) {
             log.error("HostSync error: ${e.message}", e)
-            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
+            return ScvmmErrorTranslator.toResultMap(e)
         }
         return [success: true]
     }
@@ -134,7 +134,7 @@ class HostSync {
                 }
             }
         } catch (e) {
-            log.error("HostSync: updateMatchedHosts error: ${e}", e)
+            throw e
         }
     }
 
@@ -183,7 +183,7 @@ class HostSync {
                 }
             }
         } catch (e) {
-            log.error("HostSync: addMissingHosts error: ${e}", e)
+            throw e
         }
     }
 
@@ -203,7 +203,7 @@ class HostSync {
             }
             context.async.computeServer.bulkRemove(removeList).blockingGet()
         } catch (ex) {
-            log.error("HostSync: removeMissingHosts error: ${ex}", ex)
+            throw ex
         }
     }
 
@@ -287,7 +287,7 @@ class HostSync {
                 context.async.computeServer.save(server).blockingGet()
             }
         } catch (e) {
-            log.warn("HostSync: error updating host stats: ${e}", e)
+            throw e
         }
     }
 }

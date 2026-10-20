@@ -102,7 +102,7 @@ class VirtualMachineSync {
             throw ex
         } catch (ex) {
             log.error("VirtualMachineSync error: ${ex.message}", ex)
-            return [success: false, msg: ScvmmErrorTranslator.userMessage(ex)]
+            return ScvmmErrorTranslator.toResultMap(ex)
         }
         return [success: true]
     }
@@ -159,7 +159,7 @@ class VirtualMachineSync {
                 }
             }
         } catch (ex) {
-            log.error("Error in adding VM: ${ex.message}", ex)
+            throw ex
         }
     }
 
@@ -339,18 +339,18 @@ class VirtualMachineSync {
                                 saves << currentServer
                             }
                         } catch (ex) {
-                            log.error("Error Updating Virtual Machine ${currentServer?.name} - ${currentServer.externalId} - ${ex}", ex)
+                            throw ex
                         }
                     }
                 } catch (Exception e) {
-                    log.error "Error in updating stats: ${e.message}", e
+                    throw e
                 }
             }
             if (saves) {
                 context.async.computeServer.bulkSave(saves).blockingGet()
             }
         } catch (Exception e) {
-            log.error "Error in updating virtual machines: ${e.message}", e
+            throw e
         }
     }
 
@@ -474,7 +474,7 @@ class VirtualMachineSync {
                 changes = true
             }
         } catch (e) {
-            log.error("syncVolumes error: ${e}", e)
+            throw e
         }
         return changes
     }
@@ -732,7 +732,7 @@ class VirtualMachineSync {
                 }
             }
         } catch (e) {
-            log.error("syncInterfaces error: ${e}", e)
+            throw e
         }
         return changed
     }

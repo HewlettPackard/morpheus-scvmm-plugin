@@ -97,7 +97,7 @@ class IpPoolsSync {
             throw e
         } catch (e) {
             log.error("IpPoolsSync error: ${e.message}", e)
-            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
+            return ScvmmErrorTranslator.toResultMap(e)
         }
         return [success: true]
     }
@@ -183,7 +183,7 @@ class IpPoolsSync {
                 updateNetworkForPool(networks, pool, mapping?.NetworkID, mapping?.SubnetID, networkMapping)
             }
         } catch (e) {
-            log.error("Error in addMissingIpPools: ${e}", e)
+            throw e
         }
     }
 
@@ -203,7 +203,7 @@ class IpPoolsSync {
                 log.debug("updateNetworkForPool: SCVMM pool ${pool?.name} (${pool?.externalId}) reports no VM network (networkId=${networkId}); not linking")
             }
         } catch (e) {
-            log.error("Error in updateNetworkForPool: ${e}", e)
+            throw e
         }
     }
 
@@ -291,7 +291,7 @@ class IpPoolsSync {
                 }
             }
         } catch (e) {
-            log.error("Error in linkNetworkToPool: ${e}", e)
+            throw e
         }
     }
 
@@ -397,7 +397,7 @@ class IpPoolsSync {
                 }
             }
         } catch (e) {
-            log.error("Error in updateMatchedIpPools: ${e}", e)
+            throw e
         }
     }
 }

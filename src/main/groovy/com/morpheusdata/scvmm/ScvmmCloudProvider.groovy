@@ -503,7 +503,7 @@ class ScvmmCloudProvider implements CloudProvider {
 					]
 					def vmSitches = apiService.listClouds(scvmmOpts)
 					log.debug("vmSitches: ${vmSitches}")
-					if (vmSitches.success == true) {
+					if (vmSitches.success == true && vmSitches.clouds) {
 						rtn.success = true
 					} else {
 						rtn.msg = vmSitches.msg ?: 'SCVMM did not return any clouds (Get-SCCloud). Verify the VMM console is installed on the host and the account is a VMM administrator.'
@@ -514,7 +514,7 @@ class ScvmmCloudProvider implements CloudProvider {
 			}
 		} catch (ScvmmException e) {
 			// connection / auth / command failures already carry an actionable message
-			log.warn("validate cloud ${cloudInfo?.name}: ${e.message}")
+			log.error("validate cloud ${cloudInfo?.id}: ${e.message}", e)
 			ServiceResponse translated = ScvmmErrorTranslator.toServiceResponse(e)
 			rtn.msg = translated.msg
 			rtn.errors = (rtn.errors ?: [:]) + (translated.errors?.findAll { k, v -> k != 'error' } ?: [:])
@@ -714,27 +714,21 @@ class ScvmmCloudProvider implements CloudProvider {
 			log.error("refresh zone ${cloudInfo?.name} error: ${e.message}", e)
 			response = ScvmmErrorTranslator.toServiceResponse(e, 'Cloud refresh failed')
 		}
+		if (!response.success && !response.msg) {
+			response.msg = response.errors?.error
+		}
 		return response
 	}
 
 	/**
 	 * Runs each sync worker in isolation, recording success/failure/duration. A worker failure does not prevent the
-	 * remaining workers from running, except a connection failure, after which the remaining workers are skipped
-	 * because the host is unreachable.
+	 * remaining workers from running, including after a transient connection failure.
 	 */
 	protected List<Map> runSyncWorkers(Cloud cloud, List<Map> workers) {
 		List<Map> results = []
-		boolean connectionLost = false
 		for (Map worker : workers) {
-			if (connectionLost) {
-				results << [name: worker.name, success: false, skipped: true, durationMs: 0L, error: 'skipped: SCVMM host connection lost']
-				continue
-			}
 			Map result = runSyncWorker(cloud, worker.name as String, worker.run as Closure)
 			results << result
-			if (result.connectionFailure) {
-				connectionLost = true
-			}
 		}
 		results
 	}
@@ -744,24 +738,22 @@ class ScvmmCloudProvider implements CloudProvider {
 		Map rtn = [name: name, success: false, durationMs: 0L, error: null, connectionFailure: false]
 		try {
 			def result = work.call()
-			if (result instanceof Map && result.success == false) {
-				rtn.error = ScvmmCommandSanitizer.firstLine(result.msg?.toString()) ?: 'sync reported failure'
+			if ((result instanceof Map || result instanceof ServiceResponse) && result.success == false) {
+				rtn.error = ScvmmCommandSanitizer.firstLine(ScvmmCommandSanitizer.redact(result.msg?.toString())) ?: 'sync reported failure'
+				rtn.connectionFailure = result instanceof Map && result.connectionFailure == true
 			} else {
 				rtn.success = true
 			}
-		} catch (ScvmmConnectionException e) {
-			rtn.connectionFailure = true
+		} catch (Exception e) {
+			rtn.connectionFailure = ScvmmErrorTranslator.isConnectionFailure(e)
 			rtn.error = ScvmmErrorTranslator.summary(e)
-			log.error("${cloud.name}: ${name} failed, SCVMM host unreachable: ${e.message}")
-		} catch (Throwable e) {
-			rtn.error = ScvmmErrorTranslator.summary(e)
-			log.error("${cloud.name}: ${name} failed: ${e.message}", e)
+			log.error("cloud ${cloud.id}: ${name} failed: ${rtn.error}", e)
 		}
 		rtn.durationMs = System.currentTimeMillis() - start
 		if (rtn.success) {
 			log.debug("${cloud.name}: ${name} in ${rtn.durationMs}ms")
 		} else {
-			log.warn("${cloud.name}: ${name} FAILED in ${rtn.durationMs}ms: ${rtn.error}")
+			log.debug("${cloud.name}: ${name} FAILED in ${rtn.durationMs}ms: ${rtn.error}")
 		}
 		rtn
 	}
@@ -784,7 +776,7 @@ class ScvmmCloudProvider implements CloudProvider {
 		try {
 			def scvmmOpts = apiService.getScvmmZoneAndHypervisorOpts(context, cloud, node)
 			def listResults = apiService.listAllNetworks(scvmmOpts)
-			if (listResults.success == true && listResults.networks) {
+			if (listResults.success == true) {
 				rtn.success = true
 			} else {
 				rtn.msg = listResults.msg ?: 'SCVMM returned no networks (Get-SCLogicalNetwork / Get-SCVMNetwork)'

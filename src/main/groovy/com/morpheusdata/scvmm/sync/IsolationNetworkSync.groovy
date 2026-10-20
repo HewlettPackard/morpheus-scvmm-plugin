@@ -76,7 +76,7 @@ class IsolationNetworkSync {
             throw e
         } catch (e) {
             log.error("IsolationNetworkSync error: ${e.message}", e)
-            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
+            return ScvmmErrorTranslator.toResultMap(e)
         }
         return [success: true]
     }
@@ -110,7 +110,7 @@ class IsolationNetworkSync {
             //create networks
             morpheusContext.async.cloud.network.create(networkAdds).blockingGet()
         } catch (e) {
-            log.error "Error in adding Isolation Network sync ${e}", e
+            throw e
         }
     }
 
@@ -141,7 +141,7 @@ class IsolationNetworkSync {
                 morpheusContext.async.cloud.network.save(itemsToUpdate).blockingGet()
             }
         } catch(e) {
-            log.error "Error in update Isolation Network sync ${e}", e
+            throw e
         }
     }
 }

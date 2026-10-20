@@ -79,13 +79,16 @@ class RegisteredStorageFileSharesSync {
                     return context.async.cloud.datastore.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
             } else {
+                if (!listResults.success) {
+                    return [success: false, msg: listResults.msg ?: 'SCVMM file share listing failed']
+                }
                 log.info("Not getting the RegisteredStorageFileShares data")
             }
         } catch (ScvmmConnectionException e) {
             throw e
         } catch (e) {
             log.error("RegisteredStorageFileSharesSync error: ${e.message}", e)
-            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
+            return ScvmmErrorTranslator.toResultMap(e)
         }
         return [success: true]
     }
@@ -147,7 +150,7 @@ class RegisteredStorageFileSharesSync {
             }
             syncVolumeForEachHosts(hostToShareMap, objList)
         } catch (e) {
-            log.error "Error in adding RegisteredStorageFileSharesSync ${e}", e
+            throw e
         }
     }
 
@@ -218,7 +221,7 @@ class RegisteredStorageFileSharesSync {
             }
             syncVolumeForEachHosts(hostToShareMap, objList)
         } catch (e) {
-            log.error "Error in update updateMatchedFileShares ${e}", e
+            throw e
         }
     }
 
@@ -329,7 +332,7 @@ class RegisteredStorageFileSharesSync {
                 }.start()
             }
         } catch (e) {
-            log.error "error in cacheRegisteredStorageFileShares: ${e}", e
+            throw e
         }
     }
 
