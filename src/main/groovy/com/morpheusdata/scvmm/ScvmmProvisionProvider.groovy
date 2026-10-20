@@ -615,31 +615,31 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 cloneContainerId: sourceWorkload.id,
                 snapshotToWorkloadMap: [:]
         )
-        resetCloudInitCacheForClone(sourceServer)
         return new ServiceResponse<PrepareCloneInstanceResponse>(true, null, null, cloneResponse)
     }
 
     static final String CLOUD_INIT_CACHE_RESET_COMMAND = 'sudo rm -fr /etc/cloud/cloud.cfg.d/99-manual-cache.cfg /var/lib/cloud/sem/* /var/lib/cloud/instance /var/lib/cloud/instances/* ; sync'
 
-    // Reset cloud-init's cache in the running source guest so the clone boots as a new instance (as embedded does).
-    // Linux only: the reset is a bash/sudo command over SSH, and Windows images use sysprep, not cloud-init. Best effort.
-    protected void resetCloudInitCacheForClone(ComputeServer sourceServer) {
+    // Reset cloud-init's cache in the running Linux source (bash/sudo over SSH; Windows uses sysprep) so the clone boots as a new instance.
+    // Returns true only if the cache was cleared; otherwise the clone must get its agent from Morpheus over SSH.
+    protected boolean resetCloudInitCacheForClone(ComputeServer sourceServer) {
         def isLinuxCloudInit = sourceServer?.sourceImage?.isCloudInit() && sourceServer.serverOs?.platform == PlatformType.linux
         if (!isLinuxCloudInit || sourceServer.powerState == ComputeServer.PowerState.off) {
-            log.debug("prepareCloneInstance: skipping cloud-init cache reset for ${sourceServer?.name} (cloudInit=${sourceServer?.sourceImage?.isCloudInit()}, platform=${sourceServer?.serverOs?.platform}, power=${sourceServer?.powerState})")
-            return
+            log.debug("clone: skipping cloud-init cache reset for ${sourceServer?.name} (cloudInit=${sourceServer?.sourceImage?.isCloudInit()}, platform=${sourceServer?.serverOs?.platform}, power=${sourceServer?.powerState})")
+            return false
         }
         try {
             def result = context.executeCommandOnServer(sourceServer, CLOUD_INIT_CACHE_RESET_COMMAND, false,
                     sourceServer.sshUsername, sourceServer.sshPassword, null, null, null, null, true, true).blockingGet()
             if (result?.success) {
-                log.info("prepareCloneInstance: cleared cloud-init cache on ${sourceServer.name} before clone")
-            } else {
-                log.warn("prepareCloneInstance: could not clear cloud-init cache on ${sourceServer.name}: ${result?.error ?: result?.output}; cloud-init may not re-run on the clone")
+                log.info("clone: cleared cloud-init cache on ${sourceServer.name} before clone")
+                return true
             }
+            log.warn("clone: could not clear cloud-init cache on ${sourceServer.name}: ${result?.error ?: result?.output}; Morpheus will install the agent on the clone")
         } catch (e) {
-            log.warn("prepareCloneInstance: cloud-init cache reset failed on ${sourceServer.name}: ${e.message}", e)
+            log.warn("clone: cloud-init cache reset failed on ${sourceServer.name}: ${e.message}; Morpheus will install the agent on the clone", e)
         }
+        return false
     }
 
     /**
@@ -892,6 +892,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     Workload parentContainer = context.services.workload.get(opts.cloneContainerId.toLong())
                     scvmmOpts.cloneContainerId = parentContainer.id
                     scvmmOpts.cloneVMId = parentContainer.server.externalId
+                    // Must run while the source is still up, before it is stopped for the clone
+                    def cloudInitCacheReset = resetCloudInitCacheForClone(context.services.computeServer.get(parentContainer.server.id))
                     if (parentContainer.status == Workload.Status.running) {
                         stopWorkload(parentContainer)
                         scvmmOpts.startClonedVM = true
@@ -902,8 +904,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     if (cloneBaseOpts.cloudInitIsoNeeded) {
                         def parentCloudConfig = cloudConfigSourceForCloneParent(parentContainer.server)
                         def initOptions = constructCloudInitOptions(parentContainer, workloadRequest, opts.installAgent, scvmmOpts.platform, virtualImage, scvmmOpts.networkConfig, scvmmOpts.licenses, scvmmOpts, parentCloudConfig)
-                        // When the agent mode is cloud-init the clone's cloud-init run installs the agent (as embedded)
-                        cloneAgentViaCloudInit = (opts.installAgent == true && initOptions.installAgent == false)
+                        // Cloud-init installs the clone's agent only if it will re-run (cache cleared); else Morpheus does over SSH
+                        cloneAgentViaCloudInit = (cloudInitCacheReset && opts.installAgent == true && initOptions.installAgent == false)
                         def clonedScvmmOpts = apiService.getScvmmZoneOpts(context, cloud)
                         clonedScvmmOpts += apiService.getScvmmControllerOpts(cloud, controllerNode)
                         clonedScvmmOpts += getScvmmContainerOpts(parentContainer)

@@ -78,72 +78,65 @@ class ScvmmProvisionProviderCloneSpec extends Specification {
         result.data == null
     }
 
-    // cloud-init on a cloned disk only re-runs if its cache is cleared on the source first
+    // cloud-init on a cloned disk only re-runs if its cache is cleared on the source first; runWorkload uses the
+    // result to decide whether cloud-init or Morpheus installs the clone's agent
 
-    private static Instance cloudInitLinuxInstance(ComputeServer.PowerState power = ComputeServer.PowerState.on) {
-        VirtualImage image = new VirtualImage(id: 49L, isCloudInit: true)
-        ComputeServer sourceServer = new ComputeServer(id: 107L, name: 'src', externalId: 'vm-guid', sourceImage: image,
+    private static ComputeServer cloudInitLinuxServer(ComputeServer.PowerState power = ComputeServer.PowerState.on) {
+        new ComputeServer(id: 107L, name: 'src', externalId: 'vm-guid', sourceImage: new VirtualImage(id: 49L, isCloudInit: true),
                 serverOs: new OsType(platform: PlatformType.linux), powerState: power, sshUsername: 'morpheus', sshPassword: 'pw')
-        new Instance(id: 66L, containers: [new Workload(id: 68L, server: sourceServer)])
     }
 
-    def "prepareCloneInstance clears the cloud-init cache inside a running Linux cloud-init source"() {
+    def "prepareCloneInstance does not touch the source guest"() {
         given:
-        Instance instance = cloudInitLinuxInstance()
+        Instance instance = new Instance(id: 66L, containers: [new Workload(id: 68L, server: cloudInitLinuxServer())])
 
-        when:
-        def result = provider.prepareCloneInstance(instance, [cloneInstanceId: 66L])
-
-        then:
-        1 * context.executeCommandOnServer({ it.id == 107L }, ScvmmProvisionProvider.CLOUD_INIT_CACHE_RESET_COMMAND,
-                false, 'morpheus', 'pw', null, null, null, null, true, true) >> Single.just(new TaskResult(success: true))
-        result.success
-        result.data.cloneContainerId == 68L
-    }
-
-    def "prepareCloneInstance still succeeds when the cloud-init cache reset fails"() {
-        given:
-        Instance instance = cloudInitLinuxInstance()
-
-        when:
-        def result = provider.prepareCloneInstance(instance, [cloneInstanceId: 66L])
-
-        then:
-        1 * context.executeCommandOnServer(*_) >> Single.just(new TaskResult(success: false, error: 'agent offline'))
-        result.success
-    }
-
-    def "prepareCloneInstance does not touch the guest when the source is #why"() {
         when:
         def result = provider.prepareCloneInstance(instance, [cloneInstanceId: 66L])
 
         then:
         0 * context.executeCommandOnServer(*_)
         result.success
+        result.data.cloneContainerId == 68L
+    }
+
+    def "resetCloudInitCacheForClone clears the cache inside a running Linux cloud-init source and returns true"() {
+        when:
+        def cleared = provider.resetCloudInitCacheForClone(cloudInitLinuxServer())
+
+        then:
+        1 * context.executeCommandOnServer({ it.id == 107L }, ScvmmProvisionProvider.CLOUD_INIT_CACHE_RESET_COMMAND,
+                false, 'morpheus', 'pw', null, null, null, null, true, true) >> Single.just(new TaskResult(success: true))
+        cleared
+    }
+
+    def "resetCloudInitCacheForClone returns false so Morpheus installs the agent when the reset #why"() {
+        when:
+        def cleared = provider.resetCloudInitCacheForClone(cloudInitLinuxServer())
+
+        then:
+        1 * context.executeCommandOnServer(*_) >> response
+        !cleared
 
         where:
-        why                    | instance
-        'powered off'          | cloudInitLinuxInstance(ComputeServer.PowerState.off)
-        'a Windows image'      | windowsInstance()
-        'an unknown platform'  | unknownPlatformInstance()
-        'not cloud-init'       | plainInstance()
+        why      | response
+        'fails'  | Single.just(new TaskResult(success: false, error: 'permission denied'))
+        'throws' | Single.error(new RuntimeException('ssh timeout'))
     }
 
-    private static Instance unknownPlatformInstance() {
-        VirtualImage image = new VirtualImage(id: 52L, isCloudInit: true)
-        ComputeServer s = new ComputeServer(id: 110L, externalId: 'vm-guid', sourceImage: image, serverOs: null, powerState: ComputeServer.PowerState.on)
-        new Instance(id: 74L, containers: [new Workload(id: 75L, server: s)])
-    }
+    def "resetCloudInitCacheForClone does not touch the guest and returns false when the source is #why"() {
+        when:
+        def cleared = provider.resetCloudInitCacheForClone(server)
 
-    private static Instance windowsInstance() {
-        VirtualImage image = new VirtualImage(id: 50L, isCloudInit: true)
-        ComputeServer s = new ComputeServer(id: 108L, externalId: 'vm-guid', sourceImage: image, serverOs: new OsType(platform: PlatformType.windows), powerState: ComputeServer.PowerState.on)
-        new Instance(id: 70L, containers: [new Workload(id: 71L, server: s)])
-    }
+        then:
+        0 * context.executeCommandOnServer(*_)
+        !cleared
 
-    private static Instance plainInstance() {
-        VirtualImage image = new VirtualImage(id: 51L, isCloudInit: false)
-        ComputeServer s = new ComputeServer(id: 109L, externalId: 'vm-guid', sourceImage: image, serverOs: new OsType(platform: PlatformType.linux), powerState: ComputeServer.PowerState.on)
-        new Instance(id: 72L, containers: [new Workload(id: 73L, server: s)])
+        where:
+        why                    | server
+        'powered off'          | cloudInitLinuxServer(ComputeServer.PowerState.off)
+        'a Windows image'      | new ComputeServer(id: 108L, sourceImage: new VirtualImage(id: 50L, isCloudInit: true), serverOs: new OsType(platform: PlatformType.windows), powerState: ComputeServer.PowerState.on)
+        'an unknown platform'  | new ComputeServer(id: 110L, sourceImage: new VirtualImage(id: 52L, isCloudInit: true), serverOs: null, powerState: ComputeServer.PowerState.on)
+        'not cloud-init'       | new ComputeServer(id: 109L, sourceImage: new VirtualImage(id: 51L, isCloudInit: false), serverOs: new OsType(platform: PlatformType.linux), powerState: ComputeServer.PowerState.on)
+        'missing'              | null
     }
 }
