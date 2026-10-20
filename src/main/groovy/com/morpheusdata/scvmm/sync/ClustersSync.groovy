@@ -66,13 +66,16 @@ class ClustersSync {
                     chooseOwnerPoolDefaults(cloud.owner)
                 }
             } else {
+                if (!listResults.success) {
+                    return [success: false, msg: listResults.msg ?: 'SCVMM cluster listing failed']
+                }
                 log.info("Not getting the listClusters")
             }
         } catch (ScvmmConnectionException e) {
             throw e
         } catch (e) {
             log.error("ClustersSync error: ${e.message}", e)
-            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
+            return ScvmmErrorTranslator.toResultMap(e)
         }
         return [success: true]
     }
@@ -124,7 +127,7 @@ class ClustersSync {
                 morpheusContext.async.resourcePermission.bulkCreate(resourcePerms).blockingGet()
             }
         } catch (e) {
-            log.error "Error in addMissingResourcePools: ${e}", e
+            throw e
         }
     }
 
@@ -166,7 +169,7 @@ class ClustersSync {
                 morpheusContext.async.cloud.pool.bulkSave(itemsToUpdate).blockingGet()
             }
         } catch(e) {
-            log.error "Error in updateMatchedResourcePools ${e}", e
+            throw e
         }
     }
 
@@ -209,7 +212,7 @@ class ClustersSync {
                 morpheusContext.async.cloud.pool.bulkRemove(deleteList).blockingGet()
             }
         } catch (e) {
-            log.error("Error in removeMissingResourcePools: ${e}", e)
+            throw e
         }
     }
 

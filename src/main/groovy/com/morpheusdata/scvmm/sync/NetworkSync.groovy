@@ -81,7 +81,7 @@ class NetworkSync {
             throw e
         } catch (e) {
             log.error("NetworkSync error: ${e.message}", e)
-            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
+            return ScvmmErrorTranslator.toResultMap(e)
         }
         return [success: true]
     }
@@ -146,7 +146,7 @@ class NetworkSync {
                 }
             }
         } catch (e) {
-            log.error("Error in addMissingNetworks: ${e}", e)
+            throw e
         }
     }
 
@@ -180,7 +180,7 @@ class NetworkSync {
                 }.start()
             }
         } catch(e) {
-            log.error("Error in updateMatchedNetworks: ${e}", e)
+            throw e
         }
     }
 
@@ -217,7 +217,7 @@ class NetworkSync {
             //create networkSubnets
             morpheusContext.async.networkSubnet.create(subnetAdds, network).blockingGet()
         } catch (e) {
-            log.error("Error in addMissingNetworkSubnet: ${e}", e)
+            throw e
         }
     }
 
@@ -288,7 +288,7 @@ class NetworkSync {
                 morpheusContext.async.networkSubnet.save(itemsToUpdate).blockingGet()
             }
         } catch(e) {
-            log.error "Error in updateMatchedNetworkSubnet ${e}", e
+            throw e
         }
 
     }

@@ -32,12 +32,18 @@ class CloudCapabilityProfilesSync {
 
             if(scvmmCloud.regionCode) {
                 def cloudResults = apiService.getCloud(scvmmOpts)
+                if (!cloudResults.success) {
+                    return [success: false, msg: cloudResults.msg ?: 'SCVMM cloud lookup failed']
+                }
                 if(cloudResults.success == true && cloudResults?.cloud?.CapabilityProfiles) {
                     scvmmCloud.setConfigProperty('capabilityProfiles', cloudResults?.cloud?.CapabilityProfiles)
                     morpheusContext.services.cloud.save(scvmmCloud)
                 }
             } else {
                 def capabilityProfileResults = apiService.getCapabilityProfiles(scvmmOpts)
+                if (!capabilityProfileResults.success) {
+                    return [success: false, msg: capabilityProfileResults.msg ?: 'SCVMM capability profile listing failed']
+                }
                 if(capabilityProfileResults.success == true && capabilityProfileResults?.capabilityProfiles) {
                     scvmmCloud.setConfigProperty('capabilityProfiles', capabilityProfileResults.capabilityProfiles.collect { it.Name })
                     morpheusContext.services.cloud.save(scvmmCloud)
@@ -47,7 +53,7 @@ class CloudCapabilityProfilesSync {
             throw e
         } catch (e) {
             log.error("CloudCapabilityProfilesSync error: ${e.message}", e)
-            return [success: false, msg: ScvmmErrorTranslator.userMessage(e)]
+            return ScvmmErrorTranslator.toResultMap(e)
         }
         return [success: true]
     }

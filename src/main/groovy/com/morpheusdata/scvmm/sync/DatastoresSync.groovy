@@ -113,7 +113,7 @@ class DatastoresSync {
             throw ex
         } catch (ex) {
             log.error("DatastoresSync error: ${ex.message}", ex)
-            return [success: false, msg: ScvmmErrorTranslator.userMessage(ex)]
+            return ScvmmErrorTranslator.toResultMap(ex)
         }
         return [success: true]
     }
@@ -123,7 +123,7 @@ class DatastoresSync {
         try {
             context.services.cloud.datastore.bulkRemove(removeList)
         } catch (ex) {
-            log.error("DatastoresSync: removeMissingDatastores error: {}", ex.getMessage())
+            throw ex
         }
     }
 
@@ -181,7 +181,7 @@ class DatastoresSync {
                 }
             }
         } catch (e) {
-            log.error("Error in updateMatchedDatastores method: ${e}", e)
+            throw e
         }
     }
 
@@ -220,7 +220,7 @@ class DatastoresSync {
                 }
             }
         } catch (e) {
-            log.error "Error in adding Datastores sync ${e}", e
+            throw e
         }
     }
 
@@ -345,7 +345,7 @@ class DatastoresSync {
             }
 
         } catch (ex) {
-            log.error "Error in volumeSync Datastores ${ex}", ex
+            throw ex
         }
     }
 
