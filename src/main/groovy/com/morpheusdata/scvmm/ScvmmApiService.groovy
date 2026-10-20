@@ -372,6 +372,7 @@ if(\$vm) {
 			IPv6AddressType  = \$na.IPv6AddressType.ToString()
 			MacAddress       = \$na.MacAddress
 			VirtualNetworkId = \$na.VMNetwork.ID
+			VMNetwork        = \$na.VMNetwork.Name
 			VLanID           = \$na.VLanID
 			SlotId           = \$na.SlotId
 			Enabled          = \$na.Enabled
@@ -1447,21 +1448,29 @@ foreach (\$network in \$networks) {
         return "\$ippool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"${poolId}\"; ${args} | Select-Object ID,Address"
     }
 
+    static final String RELEASE_IP_REVOKED = 'revoked'
+    static final String RELEASE_IP_ALREADY_RELEASED = 'already-released'
+
+    /**
+     * Revokes a granted SCVMM pool address back to its pool. SCVMM returns {@code Assigned} addresses itself when the
+     * owning VM is removed, so by the time the appliance asks us to release the grant it is often already gone; a
+     * missing grant is therefore treated as success rather than an error.
+     */
     def releaseIPAddress(opts, poolId, ipId) {
         def rtn = [success: true]
         try {
-            def command = generateCommandString("\$ippool = Get-SCStaticIPAddressPool -VMMServer localhost -ID \"$poolId\"; \$ipaddress = Get-SCIPAddress -ID \"$ipId\"; \$ignore = Revoke-SCIPAddress \$ipaddress")
+            def command = generateCommandString("""\$ipaddress = Get-SCIPAddress -VMMServer localhost -ID \"$ipId\" -ErrorAction SilentlyContinue; \$result = \"${RELEASE_IP_ALREADY_RELEASED}\"; if (\$ipaddress) { \$ignore = Revoke-SCIPAddress \$ipaddress -ReturnToPool \$true; \$result = \"${RELEASE_IP_REVOKED}\" }; \$result""")
             def out = wrapExecuteCommand(command, opts)
-            log.info("releaseIPAddress: ${out}")
+            log.info("releaseIPAddress ${ipId} (pool ${poolId}): success=${out.success} exitCode=${out.exitCode} data=${out.data} error=${out.error}")
             if (out.success && out.exitCode == '0') {
-                // Do nothing
-            } else {
-                if (out.errorData?.contains("Unable to find the specified allocated IP address")) {
-                    // It has already been deleted somehow
-                    rtn.success = true
-                } else {
-                    rtn.success = false
+                rtn.released = out.data?.first() == RELEASE_IP_REVOKED
+                if (!rtn.released) {
+                    log.info("releaseIPAddress ${ipId}: grant not present in SCVMM (already released)")
                 }
+            } else {
+                rtn.success = false
+                rtn.msg = out.error ?: out.output ?: "Error revoking an IP address from SCVMM"
+                log.warn("releaseIPAddress ${ipId} failed: ${rtn.msg}")
             }
         } catch (ex) {
             rtn.success = false
@@ -1852,10 +1861,22 @@ Status=\$job.Status.toString()
                 refreshVM(opts, vmId)
                 def serverDetail = getServerDetails(opts, vmId)
                 if (serverDetail.success == true && serverDetail.server) {
-                    def ipAddress = serverDetail.server?.internalIp ?: server?.externalIp
-                    log.debug "ipAddress found: ${ipAddress}"
+                    def scvmmIp = serverDetail.server?.internalIp
+                    def ipAddress = scvmmIp ?: server?.externalIp
+                    def adapterSummary = describeAdapters(serverDetail.server?.NetworkAdapters)
                     if (ipAddress) {
+                        log.debug("checkServerReady: ${vmId} ip ${ipAddress} found via ${scvmmIp ? 'SCVMM adapter' : 'Morpheus externalIp'}; adapters=${adapterSummary}")
                         server.internalIp = ipAddress
+                    } else {
+                        def waitMsg = "checkServerReady: ${vmId} (${server?.name}) attempt ${attempts + 1}/300 - waiting for SCVMM to report a guest IPv4 " +
+                                "on any enabled adapter (reported via Hyper-V integration services); state=${serverDetail.server?.VirtualMachineState}, " +
+                                "status=${serverDetail.server?.Status}, morpheus externalIp=${server?.externalIp ?: 'none'}, adapters=${adapterSummary}"
+                        // Surface progress at INFO roughly once a minute without flooding the log
+                        if (attempts % 12 == 0) {
+                            log.info(waitMsg)
+                        } else {
+                            log.debug(waitMsg)
+                        }
                     }
 
                     if (waitForIp && !ipAddress) {
@@ -1890,13 +1911,30 @@ Status=\$job.Status.toString()
                 }
 
                 attempts++
-                if (attempts > 300 || notFoundAttempts > 10)
+                if (attempts > 300 || notFoundAttempts > 10) {
+                    log.warn("checkServerReady: ${vmId} giving up after ${attempts} attempts (vm not found ${notFoundAttempts}x); " +
+                            "no IPv4 address was reported by SCVMM for the guest")
                     pending = false
+                }
             }
         } catch (e) {
             log.error("An Exception Has Occurred", e)
         }
         return rtn
+    }
+
+    /**
+     * Compact one-line view of the adapters returned by getServerDetails, e.g.
+     * {@code [00:15:5D:E9:36:1F type=Dynamic ips=[] net=cxo-1, 00:15:5D:E9:36:20 type=Static ips=[10.157.232.117] net=cxo-1]}.
+     */
+    protected String describeAdapters(adapters) {
+        if (!adapters) {
+            return '[none]'
+        }
+        def parts = adapters.collect { na ->
+            "${na?.MacAddress ?: '?'} type=${na?.IPv4AddressType ?: '?'} ips=${na?.IPv4Addresses ?: []} net=${na?.VMNetwork ?: '?'}"
+        }
+        return "[${parts.join(', ')}]"
     }
 
     def startServer(opts, vmId) {
@@ -2729,6 +2767,20 @@ For (\$i=0; \$i -le 10; \$i++) {
         return rtn
     }
 
+    /**
+     * Whether a marshalled interface map wants static addressing. Prefers the interface's own
+     * doStatic/networkType; falls back to the supplied default only when the map declares neither.
+     */
+    protected static boolean interfaceIsStatic(Map networkInterface, fallback) {
+        if (networkInterface?.doStatic != null) {
+            return networkInterface.doStatic as boolean
+        }
+        if (networkInterface?.networkType) {
+            return networkInterface.networkType == 'static'
+        }
+        return fallback as boolean
+    }
+
     // TODO needs more error handling
     def buildCreateServerCommands(opts) {
         log.debug "buildCreateServerCommands: ${opts}"
@@ -2763,11 +2815,15 @@ For (\$i=0; \$i -le 10; \$i++) {
         def deployingToCloud = opts.zone.regionCode ? true : false
         def volumePaths = (opts.volumePaths && opts.volumePaths?.size() == 1 + dataDisks?.size()) ? opts.volumePaths : null
 
-        // Static v DHCP
-        def doStatic = networkConfig?.doStatic
-        def doPool = doStatic && networkConfig?.primaryInterface?.poolType == 'scvmm'
-        def ipAddress = networkConfig?.primaryInterface?.ipAddress
-        def poolId = networkConfig?.primaryInterface?.networkPool?.externalId
+        // Static v DHCP. The appliance marks networkConfig.doStatic deprecated and leaves it false;
+        // the authoritative per-NIC mode lives on the interface map.
+        def primaryInterface = networkConfig?.primaryInterface
+        def doStatic = interfaceIsStatic(primaryInterface, networkConfig?.doStatic)
+        def doPool = doStatic && primaryInterface?.poolType == 'scvmm'
+        def ipAddress = primaryInterface?.ipAddress
+        def poolId = primaryInterface?.networkPool?.externalId
+        log.info("buildCreateServerCommands: primary NIC doStatic=${doStatic}, poolType=${primaryInterface?.poolType}, " +
+                "doPool=${doPool}, poolId=${poolId}, ipAddress=${ipAddress}")
         def vlanEnabled = networkConfig.primaryInterface?.vlanId > 0
         def vlanId = networkConfig.primaryInterface?.vlanId
         // network may be a vlan network... therefore, the externalId includes the VLAN id.. need to remove it
@@ -2822,7 +2878,11 @@ For (\$i=0; \$i -le 10; \$i++) {
                 def extraSubnetExternalId = extraInterface?.subnet?.externalId?.take(36)
                 def extraIpAddress = extraInterface?.ipAddress
                 def extraPoolId = extraInterface?.networkPool?.externalId
-                def extraDoPool = (doStatic && extraInterface?.poolType == 'scvmm' && extraIpAddress && extraPoolId) as boolean
+                // Each NIC carries its own static/dhcp mode; networkConfig.doStatic only reflects the primary NIC.
+                def extraDoStatic = interfaceIsStatic(extraInterface, doStatic)
+                def extraDoPool = (extraDoStatic && extraInterface?.poolType == 'scvmm' && extraIpAddress && extraPoolId) as boolean
+                log.info("buildCreateServerCommands: extra NIC ${extraIndex} (${extraInterface?.name}) doStatic=${extraDoStatic}, " +
+                        "poolType=${extraInterface?.poolType}, doPool=${extraDoPool}, poolId=${extraPoolId}, ipAddress=${extraIpAddress}")
                 if (extraDoPool) {
                     extraPoolInterfaces << [index: extraIndex, adapterIndex: createdAdapterCount, ipAddress: extraIpAddress, poolId: extraPoolId]
                 }
@@ -3193,6 +3253,8 @@ For (\$i=0; \$i -le 10; \$i++) {
     }
 
     def wrapExecuteCommand(String command, Map opts = [:]) {
+        // log the target, not the whole opts map: it carries sshPassword and cloud config
+        log.debug "Executing command on ${opts?.sshHost ?: 'unknown host'} (cloud ${opts?.zoneId ?: opts?.zone?.id ?: '?'}): ${command}"
         def out = executeCommand(command, opts)
 
         if (out.data) {
@@ -3200,12 +3262,9 @@ For (\$i=0; \$i -le 10; \$i++) {
             if (!out.data.startsWith('[')) {
                 payload = "[${out.data}]"
             }
-            try {
-                log.debug "Received: ${JsonOutput.prettyPrint(payload)}"
-            } catch (e) {
-//				File file = new File("/Users/bob/Desktop/bad.json")
-//				file.write payload
-            }
+
+            log.debug "Received: ${JsonOutput.prettyPrint(payload)}"
+            
             out.data = new groovy.json.JsonSlurper().parseText(payload)
         }
         out

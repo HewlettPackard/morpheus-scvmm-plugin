@@ -217,6 +217,86 @@ class ScvmmApiServiceBuildCreateServerCommandsSpec extends Specification {
         ]
     }
 
+    def "primary pool NIC is bound even though the appliance leaves networkConfig.doStatic false"() {
+        given: "the exact shape the appliance sends: deprecated top-level flag false, mode on the interface"
+        def networkConfig = [
+            doStatic        : false,
+            doDhcp          : false,
+            havePool        : false,
+            primaryInterface: [
+                network    : [externalId: PRIMARY_NET],
+                networkType: 'static',
+                doStatic   : true,
+                poolType   : 'scvmm',
+                ipAddress  : '10.157.232.119',
+                networkPool: [externalId: PRIMARY_POOL],
+                vlanId     : 0,
+            ],
+        ]
+
+        when:
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(networkConfig)))
+
+        then:
+        adapterCommands(cmds).every { it.contains('-IPv4AddressType Static') }
+        cmds.contains('$VNAConfig = $VNAConfigs[0]')
+        cmds.contains("\$ipaddress = Get-SCIPAddress -IPAddress \"10.157.232.119\"".toString())
+        adapterConfigSets(cmds).size() == 1
+    }
+
+    def "extra pool interface is configured when the primary NIC is DHCP"() {
+        given: "the exact shape the appliance sends for a DHCP primary + static pool secondary"
+        def networkConfig = [
+            doStatic        : false,
+            doDhcp          : true,
+            primaryInterface: [network: [externalId: PRIMARY_NET], networkType: 'dhcp', doStatic: false, doDhcp: true, vlanId: 0],
+            extraInterfaces : [[
+                network    : [externalId: EXTRA_NET_0],
+                networkType: 'static',
+                doStatic   : true,
+                doDhcp     : false,
+                poolType   : 'scvmm',
+                ipAddress  : '10.157.232.117',
+                networkPool: [externalId: EXTRA_POOL],
+                vlanId     : 0,
+            ]],
+        ]
+
+        when:
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(networkConfig)))
+
+        then:
+        !cmds.contains('$VNAConfig = $VNAConfigs[0]')
+        cmds.contains('$VNAConfigExtra0 = $VNAConfigs[1]')
+        cmds.contains("\$ipaddressExtra0 = Get-SCIPAddress -IPAddress \"10.157.232.117\"".toString())
+        adapterCommands(cmds).findAll { it.contains('-VMNetwork $VMNetworkExtra0') }.every { it.contains('-IPv4AddressType Static') }
+        adapterConfigSets(cmds) == [
+            '$ignore = Set-SCVirtualNetworkAdapterConfiguration -VirtualNetworkAdapterConfiguration $VNAConfigExtra0 -IPv4Address $ipaddressExtra0 -IPv4AddressPool $ippoolExtra0 -MACAddress "00:00:00:00:00:00"',
+        ]
+    }
+
+    def "extra interface that is explicitly DHCP is not pool bound even when the primary is static"() {
+        given:
+        def networkConfig = poolPrimary() + [
+            extraInterfaces: [[
+                network    : [externalId: EXTRA_NET_0],
+                networkType: 'dhcp',
+                doStatic   : false,
+                poolType   : 'scvmm',
+                ipAddress  : '10.1.0.20',
+                networkPool: [externalId: EXTRA_POOL],
+                vlanId     : 0,
+            ]]
+        ]
+
+        when:
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(networkConfig)))
+
+        then:
+        !cmds.any { it.contains('VNAConfigExtra0') }
+        adapterConfigSets(cmds).size() == 1
+    }
+
     def "skipped extra interface without a network does not shift adapter indexes"() {
         given:
         def networkConfig = poolPrimary() + [
