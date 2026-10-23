@@ -728,8 +728,8 @@ foreach (\$VHDconf in \$Disks) {
 		ID=\$VHDconf.ID
 		ObjectType=\$VHDConf.ObjectType.ToString()
 		Name=\$VHDconf.Name
-		VHDType=\$VHD.VHDType.ToString()
-        VHDFormat=\$VHD.VHDFormatType.ToString()
+		VHDType=\$VHDconf.VHDType.ToString()
+		VHDFormat=\$VHDconf.VHDFormatType.ToString()
 		Location=\$VHDconf.Location
 		TotalSize=\$VHDconf.MaximumSize
 		UsedSize=\$VHDconf.Size
