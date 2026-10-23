@@ -434,7 +434,7 @@ class TemplatesSync {
             def maxStorage = 0
 
             def existingVolumes = addLocation.volumes
-            def masterItems = externalVolumes
+            def masterItems = externalVolumes?.findAll { it != null }
 
             def existingItems = Observable.fromIterable(existingVolumes)
             def diskNumber = masterItems.size()
