@@ -842,6 +842,15 @@ class ScvmmCloudProvider implements CloudProvider {
 	}
 
 	/**
+	 * Returns whether a cloud supports costing through Morpheus standard costing
+	 * @return Boolean
+	 */
+	@Override
+	Boolean hasCosting() {
+		return true
+	}
+
+	/**
 	 * Limits the datastore dropdown during provisioning to the storage the selected cluster can actually place on.
 	 * {@link com.morpheusdata.scvmm.sync.DatastoresSync} records that scoping on {@code assignedZonePools}. Morpheus
 	 * keeps datastores that carry no pool association at all, which would let one host's local storage be offered for
