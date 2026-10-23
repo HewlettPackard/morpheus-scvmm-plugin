@@ -34,6 +34,25 @@ class ScvmmIPAMProviderSpec extends Specification {
         !provider.creatable
     }
 
+    def "IPAM failures retain structured API diagnostics"() {
+        given:
+        def pool = new NetworkPool(externalId: 'pool1')
+        def failure = com.morpheusdata.scvmm.error.ScvmmErrorTranslator.toResultMap(
+                new com.morpheusdata.scvmm.error.ScvmmConnectionException('WinRM 401 Unauthorized', 'vmm', 5985))
+        provider.getScvmmOpts(pool, null) >> SCVMM_OPTS
+        apiService.reserveIPAddress(*_) >> failure
+        apiService.releaseIPAddress(*_) >> failure
+
+        expect:
+        [
+                provider.createHostRecord(null, pool, new NetworkPoolIp(), null, false, false),
+                provider.deleteHostRecord(pool, new NetworkPoolIp(externalId: 'ip1'), true)
+        ].every {
+            !it.success && it.msg.contains('Authentication') && it.errorCode == 'winrm.auth' &&
+                    it.data.errorType == 'ScvmmConnectionException'
+        }
+    }
+
     def "declares the scvmm network pool type matching the appliance seed"() {
         when:
         def poolTypes = provider.networkPoolTypes

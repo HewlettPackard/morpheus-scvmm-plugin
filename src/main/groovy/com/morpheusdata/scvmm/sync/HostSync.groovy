@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ComputeUtility
@@ -81,12 +83,19 @@ class HostSync {
                         removeMissingHosts(removeItems)
                     }.start()
                 }
+            } else if (listResults.success != true) {
+                log.error "Error in getting hosts : ${listResults.msg}"
+                return [success: false, msg: listResults.msg ?: 'SCVMM host listing failed']
             } else {
-                log.error "Error in getting hosts : ${listResults}"
+                log.info "HostSync: no hosts returned"
             }
+        } catch (ScvmmConnectionException e) {
+            throw e
         } catch (e) {
-            log.error("HostSync error: ${e}", e)
+            log.error("HostSync error: ${e.message}", e)
+            return ScvmmErrorTranslator.toResultMap(e)
         }
+        return [success: true]
     }
 
     private updateMatchedHosts(List<SyncTask.UpdateItem<ComputeServer, Map>> updateList, clusters) {
@@ -125,7 +134,7 @@ class HostSync {
                 }
             }
         } catch (e) {
-            log.error("HostSync: updateMatchedHosts error: ${e}", e)
+            throw e
         }
     }
 
@@ -174,7 +183,7 @@ class HostSync {
                 }
             }
         } catch (e) {
-            log.error("HostSync: addMissingHosts error: ${e}", e)
+            throw e
         }
     }
 
@@ -194,7 +203,7 @@ class HostSync {
             }
             context.async.computeServer.bulkRemove(removeList).blockingGet()
         } catch (ex) {
-            log.error("HostSync: removeMissingHosts error: ${ex}", ex)
+            throw ex
         }
     }
 
@@ -278,7 +287,7 @@ class HostSync {
                 context.async.computeServer.save(server).blockingGet()
             }
         } catch (e) {
-            log.warn("HostSync: error updating host stats: ${e}", e)
+            throw e
         }
     }
 }

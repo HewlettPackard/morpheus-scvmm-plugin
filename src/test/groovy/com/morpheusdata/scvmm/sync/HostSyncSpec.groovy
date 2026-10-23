@@ -91,6 +91,34 @@ class HostSyncSpec extends Specification {
 		1 * computeServerService.save(server) >> Single.just(server)
 	}
 
+	def "host persistence failures propagate out of the sync callback"() {
+		given:
+		ComputeServer server = serverWithCapacity(maxSockets: 2L)
+		computeServerService.save(server) >> Single.error(new IllegalStateException('host save failed'))
+
+		when:
+		hostSync.updateHostStats(server, hostStats(cpuCount: '2'))
+
+		then:
+		def error = thrown(IllegalStateException)
+		error.message == 'host save failed'
+	}
+
+	def "SyncTask propagates callback failures to the worker boundary"() {
+		given:
+		def task = new SyncTask(io.reactivex.rxjava3.core.Observable.empty(), [[id: 'host1']])
+		task.addMatchFunction { a, b -> false }.onAdd {
+			throw new IllegalStateException('host callback failed')
+		}
+
+		when:
+		task.start()
+
+		then:
+		def error = thrown(Exception)
+		com.morpheusdata.scvmm.error.ScvmmErrorTranslator.rootCause(error).message == 'host callback failed'
+	}
+
 	private static ComputeServer serverWithCapacity(Map overrides) {
 		Map values = [
 			maxCpu     : 2L,

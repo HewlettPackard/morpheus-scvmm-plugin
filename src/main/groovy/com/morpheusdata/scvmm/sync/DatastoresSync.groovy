@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
@@ -107,9 +109,13 @@ class DatastoresSync {
                     return context.async.cloud.datastore.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
             }
+        } catch (ScvmmConnectionException ex) {
+            throw ex
         } catch (ex) {
-            log.error("DatastoresSync error: {}", ex.getMessage())
+            log.error("DatastoresSync error: ${ex.message}", ex)
+            return ScvmmErrorTranslator.toResultMap(ex)
         }
+        return [success: true]
     }
 
     private removeMissingDatastores(List<DatastoreIdentityProjection> removeList) {
@@ -117,7 +123,7 @@ class DatastoresSync {
         try {
             context.services.cloud.datastore.bulkRemove(removeList)
         } catch (ex) {
-            log.error("DatastoresSync: removeMissingDatastores error: {}", ex.getMessage())
+            throw ex
         }
     }
 
@@ -175,7 +181,7 @@ class DatastoresSync {
                 }
             }
         } catch (e) {
-            log.error("Error in updateMatchedDatastores method: ${e}", e)
+            throw e
         }
     }
 
@@ -214,7 +220,7 @@ class DatastoresSync {
                 }
             }
         } catch (e) {
-            log.error "Error in adding Datastores sync ${e}", e
+            throw e
         }
     }
 
@@ -339,7 +345,7 @@ class DatastoresSync {
             }
 
         } catch (ex) {
-            log.error "Error in volumeSync Datastores ${ex}", ex
+            throw ex
         }
     }
 

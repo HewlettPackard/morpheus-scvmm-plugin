@@ -17,6 +17,7 @@ import com.morpheusdata.model.NetworkPoolType
 import com.morpheusdata.model.OptionType
 import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.scvmm.helper.NetworkPoolServerHelper
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 
@@ -142,8 +143,7 @@ class ScvmmIPAMProvider implements IPAMProvider {
             }
             def results = apiService.reserveIPAddress(scvmmOpts, networkPool.externalId, networkPoolIp?.ipAddress)
             if (!results.success || !results.ipAddress) {
-                return error(results.msg ?:
-                        "Unable to reserve an IP address from SCVMM pool ${networkPool.externalId}")
+                return failure(results, "Unable to reserve an IP address from SCVMM pool ${networkPool.externalId}")
             }
             networkPoolIp.ipAddress = results.ipAddress.Address
             networkPoolIp.externalId = results.ipAddress.ID
@@ -152,7 +152,7 @@ class ScvmmIPAMProvider implements IPAMProvider {
             return ServiceResponse.success(networkPoolIp)
         } catch (e) {
             log.error("createHostRecord error: ${e}", e)
-            return error("Error reserving an IP address from SCVMM: ${e.message}")
+            return ScvmmErrorTranslator.toServiceResponse(e, 'Error reserving an IP address from SCVMM')
         }
     }
 
@@ -178,19 +178,27 @@ class ScvmmIPAMProvider implements IPAMProvider {
             }
             def results = apiService.releaseIPAddress(scvmmOpts, networkPool.externalId, poolIp.externalId)
             if (!results.success) {
-                return error(results.msg ?:
-                        "Unable to release IP address ${poolIp.ipAddress} back to SCVMM pool ${networkPool.externalId}")
+                return failure(results, "Unable to release IP address ${poolIp.ipAddress} back to SCVMM pool ${networkPool.externalId}")
             }
             return ServiceResponse.success()
         } catch (e) {
             log.error("deleteHostRecord error: ${e}", e)
-            return error("Error releasing an IP address back to SCVMM: ${e.message}")
+            return ScvmmErrorTranslator.toServiceResponse(e, 'Error releasing an IP address back to SCVMM')
         }
     }
 
     // ServiceResponse.error(String) only populates the errors map; callers in the appliance read msg
     private static ServiceResponse error(String msg) {
-        return ServiceResponse.error(msg, [:])
+        ServiceResponse response = ServiceResponse.error(msg)
+        response.msg = msg
+        return response
+    }
+
+    private static ServiceResponse failure(Map results, String fallback) {
+        ServiceResponse response = error(results.msg ?: fallback)
+        response.data = results.data
+        response.errorCode = results.errorCode ?: results.errorType
+        return response
     }
 
     protected Map getScvmmOpts(NetworkPool networkPool, NetworkPoolServer poolServer = null) {

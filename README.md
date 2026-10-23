@@ -124,8 +124,22 @@ You can use finer controls if you want to enable/disable `IsAvailableForPlacemen
 
 ### Syncing SCVMM Resources
 
+Each inventory worker is attempted independently, including after a transient connection error.
+An empty network inventory is not treated as a connection failure. Cloud validation reports an
+empty `Get-SCCloud` result explicitly. VM readiness now stops immediately on `CreationFailed`,
+and command failures include nonzero exit codes even when WinRM reports success.
+Deleting a VM no longer tolerates a failed VM removal; subsequent directory cleanup remains best effort.
+
 - After adding the SCVMM cloud in Morpheus, resources such as hosts, networks, and VMs will be automatically synced.
 - Navigate to **Infrastructure > Clouds** and select your SCVMM cloud to view synced resources.
+- Each sync stage (networks, clusters, hosts, datastores, file shares, capability profiles, templates, IP pools, VMs)
+  runs independently. If one stage fails, the remaining stages still run and the cloud is left in a **Warning**
+  state with a status message listing the failed stage(s) and cause, e.g.
+  `Sync completed with 1 of 10 worker(s) failing - IpPoolsSync: SCVMM reported an error: ...`.
+- If the SCVMM host cannot be reached over WinRM (host down, listener disabled, authentication rejected) the cloud is
+  marked **Offline** and the status message names the connection problem. Cloud validation, provisioning and power
+  actions surface the same translated messages (for example an authentication failure or a generation 1/2 VHD
+  mismatch) rather than a generic error.
 
 ### Provisioning Virtual Machines
 
