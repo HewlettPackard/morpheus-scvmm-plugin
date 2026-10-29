@@ -31,6 +31,7 @@ class IpPoolsSync {
     private ScvmmApiService apiService
     private NetworkPoolServer poolServer
     private LogInterface log = PrefixedLoggerFactory.getLogger(IpPoolsSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('IpPoolsSync', log)
 
     /**
      * @param poolServer the hidden per-cloud pool server SCVMM pools are parented to; resolved from the cloud when null
@@ -99,7 +100,7 @@ class IpPoolsSync {
             log.error("IpPoolsSync error: ${e.message}", e)
             return ScvmmErrorTranslator.toResultMap(e)
         }
-        return [success: true]
+        return itemFailures.result()
     }
 
     private addMissingIpPools(Collection<Map> addList, List<Network> networks, NetworkPoolType poolType, networkMapping) {
@@ -183,7 +184,7 @@ class IpPoolsSync {
                 updateNetworkForPool(networks, pool, mapping?.NetworkID, mapping?.SubnetID, networkMapping)
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -203,7 +204,7 @@ class IpPoolsSync {
                 log.debug("updateNetworkForPool: SCVMM pool ${pool?.name} (${pool?.externalId}) reports no VM network (networkId=${networkId}); not linking")
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -291,7 +292,7 @@ class IpPoolsSync {
                 }
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -397,7 +398,7 @@ class IpPoolsSync {
                 }
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 }

@@ -21,6 +21,7 @@ class ClustersSync {
     private Cloud cloud
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(ClustersSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('ClustersSync', log)
 
     ClustersSync(MorpheusContext morpheusContext, Cloud cloud) {
         this.cloud = cloud
@@ -77,7 +78,7 @@ class ClustersSync {
             log.error("ClustersSync error: ${e.message}", e)
             return ScvmmErrorTranslator.toResultMap(e)
         }
-        return [success: true]
+        return itemFailures.result()
     }
 
     private addMissingResourcePools(Collection<Map> addList){
@@ -127,7 +128,7 @@ class ClustersSync {
                 morpheusContext.async.resourcePermission.bulkCreate(resourcePerms).blockingGet()
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -168,8 +169,8 @@ class ClustersSync {
             if (itemsToUpdate.size() > 0) {
                 morpheusContext.async.cloud.pool.bulkSave(itemsToUpdate).blockingGet()
             }
-        } catch(e) {
-            throw e
+        } catch (e) {
+            itemFailures.record(e)
         }
     }
 
@@ -212,7 +213,7 @@ class ClustersSync {
                 morpheusContext.async.cloud.pool.bulkRemove(deleteList).blockingGet()
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 

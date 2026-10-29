@@ -27,6 +27,7 @@ class HostSync {
     private MorpheusContext context
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(HostSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('HostSync', log)
 
     HostSync(Cloud cloud, ComputeServer node, MorpheusContext context) {
         this.cloud = cloud
@@ -95,7 +96,7 @@ class HostSync {
             log.error("HostSync error: ${e.message}", e)
             return ScvmmErrorTranslator.toResultMap(e)
         }
-        return [success: true]
+        return itemFailures.result()
     }
 
     private updateMatchedHosts(List<SyncTask.UpdateItem<ComputeServer, Map>> updateList, clusters) {
@@ -134,7 +135,7 @@ class HostSync {
                 }
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -183,7 +184,7 @@ class HostSync {
                 }
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -203,7 +204,7 @@ class HostSync {
             }
             context.async.computeServer.bulkRemove(removeList).blockingGet()
         } catch (ex) {
-            throw ex
+            itemFailures.record(ex)
         }
     }
 
@@ -287,7 +288,7 @@ class HostSync {
                 context.async.computeServer.save(server).blockingGet()
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 }

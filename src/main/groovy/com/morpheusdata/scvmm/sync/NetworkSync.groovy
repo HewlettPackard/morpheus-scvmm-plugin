@@ -28,6 +28,7 @@ class NetworkSync {
     private Cloud cloud
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(NetworkSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('NetworkSync', log)
 
     NetworkSync(MorpheusContext morpheusContext, Cloud cloud) {
         this.cloud = cloud
@@ -83,7 +84,7 @@ class NetworkSync {
             log.error("NetworkSync error: ${e.message}", e)
             return ScvmmErrorTranslator.toResultMap(e)
         }
-        return [success: true]
+        return itemFailures.result()
     }
 
     private addMissingNetworks(Collection<Map> addList, NetworkType networkType, NetworkSubnetType subnetType, ComputeServer server) {
@@ -146,7 +147,7 @@ class NetworkSync {
                 }
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -179,8 +180,8 @@ class NetworkSync {
                     return morpheusContext.async.networkSubnet.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
             }
-        } catch(e) {
-            throw e
+        } catch (e) {
+            itemFailures.record(e)
         }
     }
 
@@ -217,7 +218,7 @@ class NetworkSync {
             //create networkSubnets
             morpheusContext.async.networkSubnet.create(subnetAdds, network).blockingGet()
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -287,8 +288,8 @@ class NetworkSync {
             if (itemsToUpdate.size() > 0) {
                 morpheusContext.async.networkSubnet.save(itemsToUpdate).blockingGet()
             }
-        } catch(e) {
-            throw e
+        } catch (e) {
+            itemFailures.record(e)
         }
 
     }

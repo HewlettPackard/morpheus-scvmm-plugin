@@ -34,6 +34,7 @@ class RegisteredStorageFileSharesSync {
     private MorpheusContext context
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(RegisteredStorageFileSharesSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('RegisteredStorageFileSharesSync', log)
 
     RegisteredStorageFileSharesSync(Cloud cloud, ComputeServer node, MorpheusContext context) {
         this.cloud = cloud
@@ -90,7 +91,7 @@ class RegisteredStorageFileSharesSync {
             log.error("RegisteredStorageFileSharesSync error: ${e.message}", e)
             return ScvmmErrorTranslator.toResultMap(e)
         }
-        return [success: true]
+        return itemFailures.result()
     }
 
     private addMissingFileShares(Collection<Map> addList, objList, clusters, List<ComputeServer> existingHosts) {
@@ -150,7 +151,7 @@ class RegisteredStorageFileSharesSync {
             }
             syncVolumeForEachHosts(hostToShareMap, objList)
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -221,7 +222,7 @@ class RegisteredStorageFileSharesSync {
             }
             syncVolumeForEachHosts(hostToShareMap, objList)
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -332,7 +333,7 @@ class RegisteredStorageFileSharesSync {
                 }.start()
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 

@@ -32,6 +32,7 @@ class VirtualMachineSync {
     private ScvmmApiService apiService
     private CloudProvider cloudProvider
     private LogInterface log = PrefixedLoggerFactory.getLogger(VirtualMachineSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('VirtualMachineSync', log)
 
     VirtualMachineSync(ComputeServer node, Cloud cloud, MorpheusContext context, CloudProvider cloudProvider) {
         this.node = node
@@ -104,7 +105,7 @@ class VirtualMachineSync {
             log.error("VirtualMachineSync error: ${ex.message}", ex)
             return ScvmmErrorTranslator.toResultMap(ex)
         }
-        return [success: true]
+        return itemFailures.result()
     }
 
     def addMissingVirtualMachines(List addList, Collection<ServicePlan> availablePlans, ServicePlan fallbackPlan, Collection<ResourcePermission> availablePlanPermissions, List hosts, Boolean consoleEnabled, ComputeServerType defaultServerType, Map systemNetworks) {
@@ -159,7 +160,7 @@ class VirtualMachineSync {
                 }
             }
         } catch (ex) {
-            throw ex
+            itemFailures.record(ex)
         }
     }
 
@@ -339,18 +340,18 @@ class VirtualMachineSync {
                                 saves << currentServer
                             }
                         } catch (ex) {
-                            throw ex
+                            itemFailures.record(ex)
                         }
                     }
-                } catch (Exception e) {
-                    throw e
+                } catch (e) {
+                    itemFailures.record(e)
                 }
             }
             if (saves) {
                 context.async.computeServer.bulkSave(saves).blockingGet()
             }
-        } catch (Exception e) {
-            throw e
+        } catch (e) {
+            itemFailures.record(e)
         }
     }
 
@@ -474,7 +475,7 @@ class VirtualMachineSync {
                 changes = true
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
         return changes
     }
@@ -732,7 +733,7 @@ class VirtualMachineSync {
                 }
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
         return changed
     }

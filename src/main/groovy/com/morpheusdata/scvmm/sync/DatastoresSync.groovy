@@ -31,6 +31,7 @@ class DatastoresSync {
     private MorpheusContext context
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(DatastoresSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('DatastoresSync', log)
 
     DatastoresSync(ComputeServer node, Cloud cloud, MorpheusContext context) {
         this.node = node
@@ -115,7 +116,7 @@ class DatastoresSync {
             log.error("DatastoresSync error: ${ex.message}", ex)
             return ScvmmErrorTranslator.toResultMap(ex)
         }
-        return [success: true]
+        return itemFailures.result()
     }
 
     private removeMissingDatastores(List<DatastoreIdentityProjection> removeList) {
@@ -123,7 +124,7 @@ class DatastoresSync {
         try {
             context.services.cloud.datastore.bulkRemove(removeList)
         } catch (ex) {
-            throw ex
+            itemFailures.record(ex)
         }
     }
 
@@ -181,7 +182,7 @@ class DatastoresSync {
                 }
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -220,7 +221,7 @@ class DatastoresSync {
                 }
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -345,7 +346,7 @@ class DatastoresSync {
             }
 
         } catch (ex) {
-            throw ex
+            itemFailures.record(ex)
         }
     }
 

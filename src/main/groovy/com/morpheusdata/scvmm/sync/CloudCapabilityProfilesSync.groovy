@@ -16,6 +16,7 @@ class CloudCapabilityProfilesSync {
     private Cloud cloud
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(CloudCapabilityProfilesSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('CloudCapabilityProfilesSync', log)
 
     CloudCapabilityProfilesSync(MorpheusContext morpheusContext, Cloud cloud) {
         this.cloud = cloud
@@ -55,6 +56,6 @@ class CloudCapabilityProfilesSync {
             log.error("CloudCapabilityProfilesSync error: ${e.message}", e)
             return ScvmmErrorTranslator.toResultMap(e)
         }
-        return [success: true]
+        return itemFailures.result()
     }
 }

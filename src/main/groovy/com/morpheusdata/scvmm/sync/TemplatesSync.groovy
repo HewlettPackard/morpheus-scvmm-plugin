@@ -28,6 +28,7 @@ class TemplatesSync {
     private ScvmmApiService apiService
     private CloudProvider cloudProvider
     private LogInterface log = PrefixedLoggerFactory.getLogger(TemplatesSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('TemplatesSync', log)
 
     TemplatesSync(Cloud cloud, ComputeServer node, MorpheusContext context, CloudProvider cloudProvider) {
         this.cloud = cloud
@@ -85,7 +86,7 @@ class TemplatesSync {
             }.start()
         }
         // exceptions from listTemplates propagate to the caller, which records the worker failure
-        return [success: true]
+        return itemFailures.result()
     }
 
     protected removeMissingVirtualImages(List<VirtualImageLocationIdentityProjection> removeList) {
@@ -93,7 +94,7 @@ class TemplatesSync {
             log.debug("removeMissingVirtualImageLocations: ${cloud} ${removeList.size()}")
             context.async.virtualImage.location.remove(removeList).blockingGet()
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -207,7 +208,7 @@ class TemplatesSync {
                 context.async.virtualImage.save(imagesToUpdate, cloud).blockingGet()
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -245,7 +246,7 @@ class TemplatesSync {
                 return context.async.virtualImage.listById(updateItems?.collect { it.existingItem.id } as List<Long>)
             }.start()
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -363,7 +364,7 @@ class TemplatesSync {
                 context.async.virtualImage.save(imagesToUpdate, cloud).blockingGet()
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -428,7 +429,7 @@ class TemplatesSync {
                 }
             }
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -458,7 +459,7 @@ class TemplatesSync {
                 removeMissingStorageVolumes(removeItems, addLocation, changes)
             }.start()
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
         return changes
     }

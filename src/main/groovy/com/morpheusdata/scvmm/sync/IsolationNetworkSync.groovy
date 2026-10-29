@@ -22,6 +22,7 @@ class IsolationNetworkSync {
     private Cloud cloud
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(IsolationNetworkSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('IsolationNetworkSync', log)
 
     IsolationNetworkSync(MorpheusContext morpheusContext, Cloud cloud, ScvmmApiService apiService) {
         this.cloud = cloud
@@ -78,7 +79,7 @@ class IsolationNetworkSync {
             log.error("IsolationNetworkSync error: ${e.message}", e)
             return ScvmmErrorTranslator.toResultMap(e)
         }
-        return [success: true]
+        return itemFailures.result()
     }
 
     private addMissingNetworks(Collection<Map> addList, NetworkType networkType, ComputeServer server) {
@@ -110,7 +111,7 @@ class IsolationNetworkSync {
             //create networks
             morpheusContext.async.cloud.network.create(networkAdds).blockingGet()
         } catch (e) {
-            throw e
+            itemFailures.record(e)
         }
     }
 
@@ -140,8 +141,8 @@ class IsolationNetworkSync {
             if (itemsToUpdate.size() > 0) {
                 morpheusContext.async.cloud.network.save(itemsToUpdate).blockingGet()
             }
-        } catch(e) {
-            throw e
+        } catch (e) {
+            itemFailures.record(e)
         }
     }
 }
