@@ -10,6 +10,7 @@ import com.morpheusdata.model.ComputeCapacityInfo
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.ComputeServerType
 import com.morpheusdata.model.OsType
+import com.morpheusdata.scvmm.support.VmmPayloads
 import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Single
 import spock.lang.Specification
@@ -37,12 +38,12 @@ class HostSyncSpec extends Specification {
 		ComputeServerType serverType = new ComputeServerType(id: 10L, code: 'scvmmHypervisor')
 		cloudService.findComputeServerTypeByCode('scvmmHypervisor') >> Maybe.just(serverType)
 		ComputeServer createdServer
-		Map cloudItem = new JsonHostMap(hostStats(
+		Map cloudItem = VmmPayloads.host(
 			computerName: 'scvmm-host',
 			name: 'scvmm-host.example.test',
 			cpuCount: '4',
 			coresPerCpu: '8'
-		))
+		)
 		def addMissingHosts = HostSync.declaredMethods.find { it.name == 'addMissingHosts' }
 		addMissingHosts.accessible = true
 
@@ -68,7 +69,7 @@ class HostSyncSpec extends Specification {
 		ComputeServer server = serverWithCapacity(maxSockets: null, serverOs: new OsType(code: 'windows'))
 		def updateMatchedHosts = HostSync.declaredMethods.find { it.name == 'updateMatchedHosts' }
 		updateMatchedHosts.accessible = true
-		def updateItem = new SyncTask.UpdateItem(existingItem: server, masterItem: hostStats(cpuCount: '2'))
+		def updateItem = new SyncTask.UpdateItem(existingItem: server, masterItem: VmmPayloads.host(cpuCount: '2'))
 
 		when:
 		updateMatchedHosts.invoke(sync, [updateItem], [])
@@ -83,7 +84,7 @@ class HostSyncSpec extends Specification {
 		ComputeServer server = Spy(serverWithCapacity(maxSockets: 2L))
 
 		when:
-		hostSync.updateHostStats(server, hostStats(cpuCount: '2'))
+		hostSync.updateHostStats(server, VmmPayloads.host(cpuCount: '2'))
 
 		then:
 		server.maxSockets == 2L
@@ -109,29 +110,5 @@ class HostSyncSpec extends Specification {
 			)
 		] + overrides
 		new ComputeServer(values)
-	}
-
-	private static Map hostStats(Map overrides) {
-		[
-			id             : 'host-id',
-			cpuCount       : '2',
-			coresPerCpu    : '4',
-			totalMemory    : '0',
-			availableMemory: '0',
-			totalStorage   : '0',
-			usedStorage    : '0',
-			hyperVState    : 'Unknown'
-		] + overrides
-	}
-
-	private static class JsonHostMap extends LinkedHashMap {
-
-		JsonHostMap(Map values) {
-			super(values)
-		}
-
-		Object encodeAsJSON() {
-			return this
-		}
 	}
 }

@@ -37,6 +37,8 @@ class ScvmmApiService {
         out = executeCommand(command, opts)
     }
 
+    protected void pause(long ms) { sleep(ms) }
+
     def generateCommandString(command, Integer depth = 3) {
         // FormatEnumeration causes lists to show ALL items
         // width value prevents wrapping
@@ -1749,7 +1751,7 @@ foreach (\$network in \$networks) {
             def pending = true
             def attempts = 0
             while (pending) {
-                sleep(1000l * 5l)
+                pause(1000l * 5l)
                 def serverDetail = getServerDetails(opts, vmId)
                 if (serverDetail.success == true) {
                     // There isn't a state on the VM to tell us it is created.. but, if the disk size matches
@@ -1793,7 +1795,7 @@ foreach (\$network in \$networks) {
             def pending = true
             def attempts = 0
             while (pending) {
-                sleep(1000l * 5l)
+                pause(1000l * 5l)
                 log.debug "waitForJobToComplete: ${jobId}"
                 def getJobResults = getJob(opts, jobId)
                 if (getJobResults.success == true && getJobResults.jobDetail) {
@@ -1853,7 +1855,7 @@ Status=\$job.Status.toString()
             def serverId = opts.server.id
             def waitForIp = opts.waitForIp
             while (pending) {
-                sleep(1000l * 5l)
+                pause(1000l * 5l)
                 log.debug "checkServerReady: ${vmId}"
                 ComputeServer server = morpheusContext.services.computeServer.get(serverId)
                 opts.server = server
@@ -2014,7 +2016,7 @@ if(\$VM) {
             rtn.success = out.success
             if (!rtn.success) {
                 attempts++
-                sleep(5000)
+                pause(5000)
             }
         }
 
