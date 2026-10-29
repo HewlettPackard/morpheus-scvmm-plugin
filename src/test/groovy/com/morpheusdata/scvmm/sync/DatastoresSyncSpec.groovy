@@ -6,6 +6,26 @@ import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.CloudPool
 import com.morpheusdata.model.ComputeServer
+import com.morpheusdata.core.MorpheusAsyncServices
+import com.morpheusdata.core.MorpheusServices
+import com.morpheusdata.core.MorpheusStorageVolumeService
+import com.morpheusdata.core.cloud.MorpheusCloudService
+import com.morpheusdata.core.cloud.MorpheusDatastoreService
+import com.morpheusdata.core.data.DataQuery
+import com.morpheusdata.core.synchronous.MorpheusSynchronousStorageVolumeService
+import com.morpheusdata.core.synchronous.MorpheusSynchronousStorageVolumeTypeService
+import com.morpheusdata.core.synchronous.cloud.MorpheusSynchronousCloudPoolService
+import com.morpheusdata.core.synchronous.cloud.MorpheusSynchronousCloudService
+import com.morpheusdata.core.synchronous.cloud.MorpheusSynchronousDatastoreService
+import com.morpheusdata.core.synchronous.compute.MorpheusSynchronousComputeServerService
+import com.morpheusdata.model.Datastore
+import com.morpheusdata.model.StorageVolume
+import com.morpheusdata.model.StorageVolumeType
+import com.morpheusdata.model.projection.DatastoreIdentityProjection
+import com.morpheusdata.scvmm.ScvmmApiService
+import com.morpheusdata.scvmm.support.VmmPayloads
+import io.reactivex.rxjava3.core.Observable
+import io.reactivex.rxjava3.core.Single
 import spock.lang.Specification
 import spock.lang.Subject
 import spock.lang.Unroll
@@ -239,5 +259,152 @@ class DatastoresSyncSpec extends Specification {
 
     private List<ComputeServer> allHosts() {
         [hostA1, hostA2, hostB1, standaloneHost]
+    }
+
+    // ---------------------------------------------------------------- execute wiring
+
+    MorpheusServices services = Mock()
+    MorpheusAsyncServices asyncServices = Mock()
+    MorpheusSynchronousCloudService syncCloud = Mock()
+    MorpheusCloudService asyncCloud = Mock()
+    MorpheusSynchronousCloudPoolService poolService = Mock()
+    MorpheusSynchronousDatastoreService datastoreService = Mock()
+    MorpheusDatastoreService asyncDatastoreService = Mock()
+    MorpheusSynchronousComputeServerService computeServerService = Mock()
+    MorpheusSynchronousStorageVolumeService storageVolumeService = Mock()
+    MorpheusSynchronousStorageVolumeTypeService volumeTypeService = Mock()
+    MorpheusStorageVolumeService asyncStorageVolumeService = Mock()
+    ScvmmApiService apiService = Mock()
+
+    private void wire(def target) {
+        context.services >> services
+        context.async >> asyncServices
+        services.cloud >> syncCloud
+        asyncServices.cloud >> asyncCloud
+        syncCloud.pool >> poolService
+        syncCloud.datastore >> datastoreService
+        asyncCloud.datastore >> asyncDatastoreService
+        services.computeServer >> computeServerService
+        services.storageVolume >> storageVolumeService
+        storageVolumeService.storageVolumeType >> volumeTypeService
+        asyncServices.storageVolume >> asyncStorageVolumeService
+        target.@apiService = apiService
+    }
+
+    StorageVolumeType dsVolumeType = new StorageVolumeType(id: 7L, code: 'scvmm-datastore')
+
+    private ComputeServer hostWithVolumes(String hostname, CloudPool pool, List<StorageVolume> volumes) {
+        def server = host(hostname, pool)
+        server.volumes = volumes
+        server
+    }
+
+    def "execute adds in-scope volumes once per partition and creates the host volume"() {
+        given:
+        wire(sync)
+        def h = hostWithVolumes('HYPERV-A1.lab.local', clusterA, [])
+        poolService.list(_ as DataQuery) >> [clusterA]
+        volumeTypeService.find(_ as DataQuery) >> dsVolumeType
+        computeServerService.list(_ as DataQuery) >> [h]
+        apiService.listDatastores(_) >> [success: true, datastores: [
+            VmmPayloads.datastore(id: 'v1', name: 'D:\\', vmHost: 'HYPERV-A1.lab.local', partitionUniqueID: 'p1', size: null, capacity: 100L, freeSpace: null),
+            VmmPayloads.datastore(id: 'v1b', name: 'D:\\', vmHost: 'hyperv-a1.lab.local', partitionUniqueID: 'p1'),
+            VmmPayloads.datastore(id: 'v2', name: 'E:\\', vmHost: 'OTHER-HOST', partitionUniqueID: 'p2')]]
+        asyncDatastoreService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
+        List<Datastore> created = []
+        StorageVolume volume
+
+        when:
+        sync.execute()
+
+        then:
+        1 * asyncDatastoreService.create(_ as Datastore) >> { Datastore d -> d.id = 50L; created << d; Single.just(d) }
+        1 * asyncStorageVolumeService.create(_ as List, h) >> { List l, ComputeServer s -> volume = l[0]; Single.just(true) }
+        created*.externalId == ['p1']
+        created[0].name == 'HYPERV-A1 : D:\\'
+        created[0].storageSize == 100L
+        created[0].freeSpace == 0L
+        created[0].category == 'scvmm.datastore.1'
+        created[0].assignedZonePools*.id == [clusterA.id]
+        volume.externalId == 'p1'
+        volume.internalId == 'v1'
+        volume.maxStorage == 100L
+        volume.usedStorage == 100L
+        volume.type.is(dsVolumeType)
+        volume.datastore.id == 50L
+    }
+
+    def "execute updates a changed datastore and its existing host volume, and removes vanished ones"() {
+        given:
+        wire(sync)
+        def existingVolume = new StorageVolume(id: 3L, externalId: 'p1', internalId: 'old', maxStorage: 1L, name: 'D:\\')
+        def h = hostWithVolumes('HYPERV-A1.lab.local', clusterA, [existingVolume])
+        poolService.list(_ as DataQuery) >> [clusterA]
+        computeServerService.list(_ as DataQuery) >> [h]
+        apiService.listDatastores(_) >> [success: true, datastores: [VmmPayloads.datastore(id: 'v1', name: 'D:\\', vmHost: 'HYPERV-A1.lab.local',
+                partitionUniqueID: 'p1', size: 200L, freeSpace: 50L, mountPoints: ['D:\\'])]]
+        def ds = new Datastore(id: 50L, externalId: 'p1', name: 'old', freeSpace: 1L, storageSize: 1L, online: false)
+        def gone = new DatastoreIdentityProjection(id: 51L, externalId: 'gone')
+        asyncDatastoreService.listIdentityProjections(_ as DataQuery) >> Observable.just(new DatastoreIdentityProjection(id: 50L, externalId: 'p1'), gone)
+        asyncDatastoreService.listById([50L]) >> Observable.just(ds)
+
+        when:
+        sync.execute()
+
+        then:
+        1 * asyncDatastoreService.save(ds) >> Single.just(ds)
+        1 * asyncStorageVolumeService.save(existingVolume) >> Single.just(existingVolume)
+        1 * datastoreService.bulkRemove([gone])
+        ds.name == 'HYPERV-A1 : D:\\'
+        ds.storageSize == 200L
+        ds.freeSpace == 50L
+        ds.online
+        existingVolume.internalId == 'v1'
+        existingVolume.maxStorage == 200L
+        existingVolume.usedStorage == 150L
+        existingVolume.volumePath == 'D:\\'
+    }
+
+    def "execute does nothing when listDatastores #why"() {
+        given:
+        wire(sync)
+        poolService.list(_ as DataQuery) >> []
+        apiService.listDatastores(_) >> result
+
+        when:
+        sync.execute()
+
+        then:
+        0 * asyncDatastoreService._
+        0 * datastoreService._
+
+        where:
+        why        | result
+        'fails'    | [success: false, datastores: []]
+        'is empty' | [success: true, datastores: []]
+    }
+
+    def "getDataStoreExternalId prefers the partition id, then the CSV storage volume id, then name|host"() {
+        expect:
+        sync.getDataStoreExternalId(item).toString() == expected
+
+        where:
+        item                                                                                   || expected
+        [partitionUniqueID: 'p1', storageVolumeID: 'sv', isClusteredSharedVolume: true]        || 'p1'
+        [storageVolumeID: 'sv', isClusteredSharedVolume: true, name: 'V1', vmHost: 'h']       || 'sv'
+        [storageVolumeID: 'sv', isClusteredSharedVolume: false, name: 'C:\\', vmHost: 'h1']   || 'C:\\|h1'
+        [name: null, vmHost: null]                                                              || 'null|null'
+    }
+
+    def "getName prefixes CSVs with the cluster and host volumes with the host"() {
+        expect:
+        sync.getName(item, pool, server)?.toString() == expected
+
+        where:
+        item                                          | pool      | server                       || expected
+        [name: 'Volume1', isClusteredSharedVolume: true]  | cluster(10L, 'cluster-a', []) | host('HYPERV-A1.lab.local', null) || 'cluster-a : Volume1'
+        [name: 'Volume1', isClusteredSharedVolume: true]  | null | host('HYPERV-A1.lab.local', null) || 'HYPERV-A1 : Volume1'
+        [name: 'C:\\', isClusteredSharedVolume: false]    | cluster(10L, 'cluster-a', []) | host('HYPERV-A1.lab.local', null) || 'HYPERV-A1 : C:\\'
+        [name: 'C:\\', isClusteredSharedVolume: false]    | null      | null                     || 'C:\\'
     }
 }

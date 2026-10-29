@@ -6,6 +6,28 @@ import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.CloudPool
 import com.morpheusdata.model.ComputeServer
+import com.morpheusdata.core.MorpheusAsyncServices
+import com.morpheusdata.core.MorpheusServices
+import com.morpheusdata.core.MorpheusStorageVolumeService
+import com.morpheusdata.core.cloud.MorpheusCloudService
+import com.morpheusdata.core.cloud.MorpheusDatastoreService
+import com.morpheusdata.core.data.DataQuery
+import com.morpheusdata.core.synchronous.MorpheusSynchronousStorageVolumeService
+import com.morpheusdata.core.synchronous.MorpheusSynchronousStorageVolumeTypeService
+import com.morpheusdata.core.synchronous.cloud.MorpheusSynchronousCloudPoolService
+import com.morpheusdata.core.synchronous.cloud.MorpheusSynchronousCloudService
+import com.morpheusdata.core.synchronous.cloud.MorpheusSynchronousDatastoreService
+import com.morpheusdata.core.synchronous.compute.MorpheusSynchronousComputeServerService
+import com.morpheusdata.model.Datastore
+import com.morpheusdata.model.StorageVolume
+import com.morpheusdata.model.StorageVolumeType
+import com.morpheusdata.model.projection.DatastoreIdentity
+import com.morpheusdata.model.ComputeServerType
+import io.reactivex.rxjava3.core.Maybe
+import com.morpheusdata.scvmm.ScvmmApiService
+import com.morpheusdata.scvmm.support.VmmPayloads
+import io.reactivex.rxjava3.core.Observable
+import io.reactivex.rxjava3.core.Single
 import spock.lang.Specification
 import spock.lang.Subject
 
@@ -112,5 +134,115 @@ class RegisteredStorageFileSharesSyncSpec extends Specification {
         RegisteredStorageFileSharesSync.externalTypeFor([ClusterAssociations: [[ClusterID: null]]]) == RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE
         RegisteredStorageFileSharesSync.externalTypeFor([:]) == RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE
         RegisteredStorageFileSharesSync.externalTypeFor(null) == RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE
+    }
+
+    // ---------------------------------------------------------------- execute wiring
+
+    MorpheusServices services = Mock()
+    MorpheusAsyncServices asyncServices = Mock()
+    MorpheusSynchronousCloudService syncCloud = Mock()
+    MorpheusCloudService asyncCloud = Mock()
+    MorpheusSynchronousCloudPoolService poolService = Mock()
+    MorpheusSynchronousDatastoreService datastoreService = Mock()
+    MorpheusDatastoreService asyncDatastoreService = Mock()
+    MorpheusSynchronousComputeServerService computeServerService = Mock()
+    MorpheusSynchronousStorageVolumeService storageVolumeService = Mock()
+    MorpheusSynchronousStorageVolumeTypeService volumeTypeService = Mock()
+    MorpheusStorageVolumeService asyncStorageVolumeService = Mock()
+    ScvmmApiService apiService = Mock()
+
+    private void wire(def target) {
+        context.services >> services
+        context.async >> asyncServices
+        services.cloud >> syncCloud
+        asyncServices.cloud >> asyncCloud
+        syncCloud.pool >> poolService
+        syncCloud.datastore >> datastoreService
+        asyncCloud.datastore >> asyncDatastoreService
+        services.computeServer >> computeServerService
+        services.storageVolume >> storageVolumeService
+        storageVolumeService.storageVolumeType >> volumeTypeService
+        asyncServices.storageVolume >> asyncStorageVolumeService
+        target.@apiService = apiService
+    }
+
+    StorageVolumeType shareVolumeType = new StorageVolumeType(id: 8L, code: 'scvmm-registered-file-share-datastore')
+
+    private void common(List shares, List<ComputeServer> dbHosts) {
+        wire(sync)
+        poolService.list(_ as DataQuery) >> clusters
+        asyncCloud.findComputeServerTypeByCode(_) >> Maybe.just(new ComputeServerType())
+        computeServerService.list(_ as DataQuery) >> dbHosts
+        volumeTypeService.find(_ as DataQuery) >> shareVolumeType
+        apiService.listRegisteredFileShares(_) >> [success: true, datastores: shares]
+    }
+
+    def "execute creates the share datastore and a volume on each associated host"() {
+        given:
+        def h = new ComputeServer(id: 30L, externalId: 'host-a-guid', volumes: [])
+        common([VmmPayloads.fileShare(Capacity: 100L, FreeSpace: null, HostAssociations: [[HostID: 'host-a-guid']])], [h])
+        computeServerService.get(30L) >> h
+        asyncDatastoreService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
+        def persisted = new Datastore(id: 60L, externalId: 'share-1', name: 'share-1', storageSize: 100L, freeSpace: 0L)
+        datastoreService.list(_ as DataQuery) >> [persisted]
+        List<Datastore> created
+        StorageVolume volume
+        def asyncComputeServers = Mock(com.morpheusdata.core.MorpheusComputeServerService)
+        asyncServices.computeServer >> asyncComputeServers
+
+        when:
+        sync.execute()
+
+        then:
+        1 * asyncDatastoreService.bulkCreate(_ as List) >> { args -> created = args[0]; Single.just(true) }
+        1 * asyncStorageVolumeService.create(_ as List, h) >> { List l, ComputeServer s -> volume = l[0]; Single.just(true) }
+        1 * asyncComputeServers.save(h) >> Single.just(h)
+        created[0].externalId == 'share-1'
+        created[0].storageSize == 100L
+        created[0].freeSpace == 0L
+        created[0].category == 'scvmm.registered.file.share.datastore.1'
+        created[0].externalType == RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE
+        volume.externalId == 'share-1'
+        volume.volumePath == '\\\\fs\\share-1'
+        volume.datastore.is(persisted)
+        volume.type.is(shareVolumeType)
+    }
+
+    def "execute saves changed share size/free space and removes shares VMM no longer reports"() {
+        given:
+        common([VmmPayloads.fileShare(Capacity: 200L, FreeSpace: 20L)], [])
+        def ds = new Datastore(id: 60L, externalId: 'share-1', name: 'share-1', storageSize: 100L, freeSpace: 10L, online: true,
+                externalType: RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE, assignedZonePools: [])
+        def gone = new DatastoreIdentity(id: 61L, externalId: 'gone')
+        asyncDatastoreService.listIdentityProjections(_ as DataQuery) >> Observable.just(new DatastoreIdentity(id: 60L, externalId: 'share-1'), gone)
+        asyncDatastoreService.listById([60L]) >> Observable.just(ds)
+        datastoreService.list(_ as DataQuery) >> []
+
+        when:
+        sync.execute()
+
+        then:
+        1 * asyncDatastoreService.bulkSave([ds]) >> Single.just(true)
+        1 * asyncDatastoreService.remove([gone]) >> Single.just(true)
+        ds.storageSize == 200L
+        ds.freeSpace == 20L
+    }
+
+    def "execute does nothing when listRegisteredFileShares #why"() {
+        given:
+        wire(sync)
+        poolService.list(_ as DataQuery) >> []
+        apiService.listRegisteredFileShares(_) >> result
+
+        when:
+        sync.execute()
+
+        then:
+        0 * asyncDatastoreService._
+
+        where:
+        why        | result
+        'fails'    | [success: false, datastores: []]
+        'is empty' | [success: true, datastores: []]
     }
 }
