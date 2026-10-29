@@ -3,7 +3,16 @@
 package com.morpheusdata.scvmm.helper
 
 import com.morpheusdata.core.MorpheusContext
+import com.morpheusdata.core.MorpheusAsyncServices
 import com.morpheusdata.core.MorpheusServices
+import com.morpheusdata.core.cloud.MorpheusCloudService
+import com.morpheusdata.core.data.DataQuery
+import com.morpheusdata.core.network.MorpheusNetworkPoolServerService
+import com.morpheusdata.core.network.MorpheusNetworkPoolService
+import com.morpheusdata.core.network.MorpheusNetworkService
+import com.morpheusdata.model.projection.NetworkPoolIdentityProjection
+import io.reactivex.rxjava3.core.Observable
+import io.reactivex.rxjava3.core.Single
 import com.morpheusdata.core.synchronous.network.MorpheusSynchronousNetworkPoolServerService
 import com.morpheusdata.core.synchronous.network.MorpheusSynchronousNetworkService
 import com.morpheusdata.model.Account
@@ -97,5 +106,92 @@ class NetworkPoolServerHelperSpec extends Specification {
         !NetworkPoolServerHelper.bindPool(pool, null)
         !NetworkPoolServerHelper.bindPool(pool, new NetworkPoolServer())
         pool.poolServer == null
+    }
+
+    // --- removePoolServer ---
+
+    MorpheusAsyncServices asyncServices = Mock(MorpheusAsyncServices)
+    MorpheusCloudService asyncCloudService = Mock(MorpheusCloudService)
+    MorpheusNetworkService asyncCloudNetworkService = Mock(MorpheusNetworkService)
+    MorpheusNetworkPoolService asyncPoolService = Mock(MorpheusNetworkPoolService)
+    MorpheusNetworkService asyncNetworkService = Mock(MorpheusNetworkService)
+    MorpheusNetworkPoolServerService asyncPoolServerService = Mock(MorpheusNetworkPoolServerService)
+
+    private void wireAsync() {
+        context.getAsync() >> asyncServices
+        asyncServices.getCloud() >> asyncCloudService
+        asyncCloudService.getNetwork() >> asyncCloudNetworkService
+        asyncCloudNetworkService.getPool() >> asyncPoolService
+        asyncServices.getNetwork() >> asyncNetworkService
+        asyncNetworkService.getPoolServer() >> asyncPoolServerService
+    }
+
+    def "removePoolServer removes the cloud's SCVMM pools and then the hidden server"() {
+        given:
+        wireAsync()
+        def poolServer = new NetworkPoolServer(id: 3L, internalId: 'scvmm-ipam.7')
+        def pools = [new NetworkPoolIdentityProjection(id: 21L), new NetworkPoolIdentityProjection(id: 22L)]
+        DataQuery captured
+
+        when:
+        helper.removePoolServer(cloud)
+
+        then:
+        1 * poolServerService.find(_) >> poolServer
+        1 * asyncPoolService.listIdentityProjections(_ as DataQuery) >> { DataQuery q -> captured = q; Observable.fromIterable(pools) }
+
+        then:
+        1 * asyncPoolService.remove(3L, pools) >> Single.just(true)
+
+        then:
+        1 * asyncPoolServerService.remove([poolServer]) >> Single.just(true)
+
+        and:
+        captured.filters.find { it.name == 'account.id' }.value == 1L
+        captured.filters.find { it.name == 'category' }.value == 'scvmm.ipPool.7'
+    }
+
+    def "removePoolServer removes only the server when the cloud has no SCVMM pools"() {
+        given:
+        wireAsync()
+        def poolServer = new NetworkPoolServer(id: 3L)
+
+        when:
+        helper.removePoolServer(cloud)
+
+        then:
+        1 * poolServerService.find(_) >> poolServer
+        1 * asyncPoolService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
+        0 * asyncPoolService.remove(*_)
+        1 * asyncPoolServerService.remove([poolServer]) >> Single.just(true)
+    }
+
+    def "removePoolServer is a no-op when the cloud has no hidden server"() {
+        given:
+        wireAsync()
+
+        when:
+        helper.removePoolServer(cloud)
+
+        then:
+        1 * poolServerService.find(_) >> null
+        0 * asyncPoolService._
+        0 * asyncPoolServerService._
+    }
+
+    def "removePoolServer propagates a pool removal failure and leaves the server in place"() {
+        given:
+        wireAsync()
+        poolServerService.find(_) >> new NetworkPoolServer(id: 3L)
+        asyncPoolService.listIdentityProjections(_ as DataQuery) >> Observable.just(new NetworkPoolIdentityProjection(id: 21L))
+        asyncPoolService.remove(*_) >> Single.error(new IllegalStateException('pool in use'))
+
+        when:
+        helper.removePoolServer(cloud)
+
+        then:
+        def e = thrown(IllegalStateException)
+        e.message == 'pool in use'
+        0 * asyncPoolServerService.remove(_)
     }
 }
