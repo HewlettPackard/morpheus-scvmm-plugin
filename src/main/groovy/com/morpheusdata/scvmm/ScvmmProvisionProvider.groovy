@@ -666,6 +666,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         Cloud cloud = server.cloud
 		def scvmmOpts = [:]
 		def cloneAgentViaCloudInit = false
+		List<String> volumeWarnings = []
         try {
             def containerConfig = workload.getConfigMap()
 			WorkloadType workloadType = context.services.workloadType.get(workload.workloadType.id)
@@ -975,6 +976,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 								}
                             }
                         }
+						volumeWarnings = removeFailedVolumes(server, createResults, scvmmOpts)
 						server = context.services.computeServer.get(server.id)
 						server.externalId = createResults.server.id
 						server.internalId = createResults.server.VMId
@@ -1036,6 +1038,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
 
 			if (provisionResponse.success) {
+				reportVolumeWarnings(workloadRequest.process, volumeWarnings)
 				def status = provisionResponse.skipNetworkWait ? 'waiting for server status' : 'waiting for network'
 				context.process.startProcessStep(workloadRequest.process,
 						new ProcessEvent(type: ProcessEvent.ProcessType.provisionNetwork), status).blockingGet()
@@ -1053,6 +1056,51 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		}
 		return rtn
     }
+
+	// A data disk SCVMM couldn't add is not fatal: the VM is usable, so its Morpheus volume is dropped (the guest will
+	// never see it) and the reason is returned for the customer instead of failing the whole provision.
+	protected List<String> removeFailedVolumes(ComputeServer server, Map createResults, Map scvmmOpts) {
+		def warnings = []
+		createResults.failedDisks?.each { Map failed ->
+			def reason = failed.error?.toString()?.replaceAll(/[.\s]+$/, '') ?: 'unknown error'
+			def sizeGb = ((failed.diskSize ?: 0L) as Long).intdiv(ComputeUtility.ONE_GIGABYTE)
+			def volume = failed.volumeId != null ? server.volumes?.find { it.id?.toString() == failed.volumeId.toString() } : null
+			def removed = false
+			if (volume) {
+				try {
+					removed = context.async.storageVolume.remove([volume], server, true).blockingGet()
+				} catch (e) {
+					log.error("Unable to remove volume ${volume.id} after its disk failed to attach: ${e.message}", e)
+				}
+			}
+			if (removed) {
+				if (scvmmOpts.maxTotalStorage) {
+					scvmmOpts.maxTotalStorage = scvmmOpts.maxTotalStorage - (volume.maxStorage ?: 0L)
+				}
+				warnings << "Volume '${volume.name}' (${sizeGb} GB) could not be added to the VM: ${reason}. It has been removed from this instance; add it again with Reconfigure once the issue is resolved.".toString()
+			} else {
+				warnings << "A ${sizeGb} GB volume could not be added to the VM: ${reason}. If it is still listed under Storage it is not attached to the VM; remove it and add it again with Reconfigure once the issue is resolved.".toString()
+			}
+		}
+		warnings.addAll(createResults.diskWarnings ?: [])
+		warnings.each { log.warn("runWorkload: ${it}") }
+		warnings
+	}
+
+	// Core shows a successful provision's returned message nowhere, so warnings go into the instance History as a
+	// completed "volumes" step whose output carries the reason.
+	protected void reportVolumeWarnings(com.morpheusdata.model.Process process, List<String> warnings) {
+		if (!warnings || !process) {
+			return
+		}
+		def text = warnings.collect { "WARNING: ${it}" }.join('\n')
+		try {
+			context.process.startProcessStep(process, new ProcessEvent(type: ProcessEvent.ProcessType.provisionVolumes, message: text), 'adding volumes').blockingGet()
+			context.process.endProcessStep(process, com.morpheusdata.core.MorpheusProcessService.STATUS_COMPLETE, text).blockingGet()
+		} catch (e) {
+			log.error("Unable to record volume warnings in the instance history: ${e.message}", e)
+		}
+	}
 
 	private cloneParentCleanup(Map<String, Object> scvmmOpts, ServiceResponse rtn) {
 		if (scvmmOpts.cloneVMId && scvmmOpts.cloneContainerId) {
@@ -1151,7 +1199,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             def diskCounter = diskExternalIdMappings.size()
 			// These new volumes will be added after the VM is created.
 			nonRootAdditionalVolumes?.eachWithIndex { StorageVolume sv, index ->
-				additionalTemplateDisks << [idx: index + 1, diskCounter: diskCounter, diskSize: sv.maxStorage, busNumber: busNumber]
+				additionalTemplateDisks << [idx: index + 1, diskCounter: diskCounter, diskSize: sv.maxStorage, busNumber: busNumber, volumeId: (sv.id != null && sv.id > 0) ? sv.id : null]
 				diskCounter++
 
             }

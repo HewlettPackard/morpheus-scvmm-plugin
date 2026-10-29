@@ -128,7 +128,7 @@ class ScvmmProvisionProviderCloneAdditionalDisksSpec extends Specification {
         def disks = provider.additionalTemplateDisksConfig(w, scvmmOpts)
 
         then:
-        disks == [[idx: 1, diskCounter: 1, diskSize: 5 * GB, busNumber: '0']]
+        disks == [[idx: 1, diskCounter: 1, diskSize: 5 * GB, busNumber: '0', volumeId: 102L]]
     }
 
     def "non-clone synced template that already has the data disks adds nothing"() {

@@ -144,7 +144,8 @@ class ScvmmApiService {
     def createServer(opts) {
         log.debug("createServer: ${opts}")
 
-        def rtn = [success: false]
+        // failedDisks: requested data disks SCVMM could not add; diskWarnings: other non-fatal disk problems for the customer
+        def rtn = [success: false, failedDisks: [], diskWarnings: []]
         try {
             def createCommands
             def launchCommand
@@ -236,6 +237,9 @@ class ScvmmApiService {
                         resolved.removeVhdIds.each { vhdId ->
                             def removeResult = removeDisk(opts, vhdId)
                             log.info("createServer - removed clone copy of a source disk dropped in the clone request (VHD ${vhdId}): ${removeResult?.success}")
+                            if (removeResult?.success != true) {
+                                rtn.diskWarnings << "A disk removed from the clone request (VHD ${vhdId}) is still attached to the VM: ${cleanPowerShellError(removeResult?.error) ?: 'SCVMM did not confirm the removal'}. Remove it from the VM in SCVMM."
+                            }
                         }
                     } else {
                         log.warn("createServer - unable to list source VM ${opts.cloneVMId} disks; mapping clone disks by position")
@@ -258,11 +262,19 @@ class ScvmmApiService {
                         // Now the Powershell automatically discovers next available bus/lun
                         def result = createAndAttachDisk(opts, diskSpec)
                         log.debug("createServer - add disk result ${result}")
-                        if (cloneDriveVolumeIds != null && diskConfig.volumeId != null && result?.disk?.ID) {
+                        if (result?.success != true) {
+                            log.warn("createServer - unable to add ${diskSpec.sizeMb} MB disk: ${result?.errOut}")
+                            rtn.failedDisks << [volumeId: diskConfig.volumeId, diskSize: diskConfig.diskSize, error: result?.errOut ?: 'unknown error']
+                        } else if (cloneDriveVolumeIds != null && diskConfig.volumeId != null && result.disk?.ID) {
                             cloneDriveVolumeIds[result.disk.ID] = diskConfig.volumeId
                         }
                     }
                     log.debug "createServer - finished with adding additionalDisks: ${opts.additionalTemplateDisks}"
+                } else {
+                    def reason = "unable to read the new VM's disks from SCVMM${vmDisk.error ? ': ' + cleanPowerShellError(vmDisk.error) : ''}"
+                    opts.additionalTemplateDisks?.each { diskConfig ->
+                        rtn.failedDisks << [volumeId: diskConfig.volumeId, diskSize: diskConfig.diskSize, error: reason]
+                    }
                 }
 
                 // Special stuff for cloned VMs
@@ -274,8 +286,9 @@ class ScvmmApiService {
                         rtn.cloneBaseResults = [cloudInitIsoPath: importAndMountIso(opts.cloneBaseOpts.cloudConfigBytes, opts.cloneBaseOpts.diskFolder, opts.cloneBaseOpts.imageFolderName, opts.cloneBaseOpts.clonedScvmmOpts)]
                     }
                 }
-                // Fetch the disks to create a mapping
-                def disks = [osDisk: [externalId: ''], dataDisks: opts.dataDisks?.collect { [id: it.id] }, diskMetaData: [:]]
+                // Fetch the disks to create a mapping; volumes whose disk could not be added have no drive to map
+                def failedVolumeIds = rtn.failedDisks*.volumeId.findAll { it != null }*.toString() as Set
+                def disks = [osDisk: [externalId: ''], dataDisks: opts.dataDisks?.findAll { !(it.id?.toString() in failedVolumeIds) }?.collect { [id: it.id] }, diskMetaData: [:]]
                 def diskDrives = listVirtualDiskDrives(opts, opts.externalId)
                 def bookDiskIndex = findBootDiskIndex(diskDrives)
                 //add property VhdLocation to diskMetaData property Location - this will set the StorageVolume.internalId
@@ -1736,10 +1749,21 @@ foreach (\$network in \$networks) {
                 .replace("<%vhdpath%>",diskSpec.vhdPath ?: "")
         //Execute
         def out = wrapExecuteCommand(generateCommandString(addDiskCmd), opts)
-        if(out.success && returnDiskDrives) {
-            def listResults = listVirtualDiskDrives(opts, opts.externalId, diskSpec.vhdName)
-            return [success: listResults.success, disk: listResults.disks.first()]
+        if (!out.success) {
+            return [success: false, errOut: cleanPowerShellError(out.error) ?: 'Failed to run the add-disk command on SCVMM']
         }
+        def report = out.data instanceof List ? out.data[0] : out.data
+        if (report?.success != true) {
+            return [success: false, errOut: report?.errOut ?: 'SCVMM did not confirm the disk was added']
+        }
+        if (returnDiskDrives) {
+            def listResults = listVirtualDiskDrives(opts, opts.externalId, diskSpec.vhdName)
+            if (!listResults.success || !listResults.disks) {
+                return [success: false, errOut: "Disk ${diskSpec.vhdName} was added but could not be found on the VM"]
+            }
+            return [success: true, disk: listResults.disks.first()]
+        }
+        return [success: true]
     }
 
     def getDiskName(index, platform = 'linux') {
