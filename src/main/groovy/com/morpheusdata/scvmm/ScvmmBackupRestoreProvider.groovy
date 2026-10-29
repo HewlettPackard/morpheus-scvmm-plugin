@@ -120,7 +120,7 @@ class ScvmmBackupRestoreProvider implements BackupRestoreProvider {
 		log.info("restoreBackup {}", backupResult)
 		ServiceResponse rtn = ServiceResponse.prepare(new BackupRestoreResponse(backupRestore))
 		try {
-			ScvmmProvisionProvider provisionProvider = new ScvmmProvisionProvider(plugin, morpheusContext)
+			ScvmmProvisionProvider provisionProvider = buildProvisionProvider()
 			def config = backupResult.getConfigMap()
 			def snapshotId = config.snapshotId
 			def vmId = config.vmId
@@ -133,10 +133,10 @@ class ScvmmBackupRestoreProvider implements BackupRestoreProvider {
 				//execute restore
 				def restoreResults = apiService.restoreServer(restoreOpts, vmId, snapshotId)
 				log.debug("restoreResults: ${restoreResults}")
-				sleep(30000)
+				pause(30000)
 				// argh.. why!?  need to restart the server in order for the agent to call back home for some reason
 				provisionProvider.stopWorkload(workload)
-				sleep(30000)
+				pause(30000)
 				provisionProvider.startWorkload(workload)
 				rtn.data.backupRestore.status = BackupResult.Status.SUCCEEDED
 				rtn.data.updates = true
@@ -150,6 +150,10 @@ class ScvmmBackupRestoreProvider implements BackupRestoreProvider {
 		}
 		return rtn
 	}
+
+	protected ScvmmProvisionProvider buildProvisionProvider() { new ScvmmProvisionProvider(plugin, morpheusContext) }
+
+	protected void pause(long ms) { sleep(ms) }
 
 	/**
 	 * Periodically check for any updates to an in-progress restore. This method will be executed every 60 seconds for
