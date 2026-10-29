@@ -138,7 +138,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 	def scvmmCloud(params) {
 		def cloud = setupCloudConfig(params)
 		def apiConfig = getApiConfig(cloud)
-		def results = []
+		def results = [:]
 		if(apiConfig.sshUsername && apiConfig.sshPassword) {
 			results = safeList('clouds') { apiService.listClouds(apiConfig) }
 		}
@@ -157,7 +157,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 		log.debug("scvmmHostGroup: ${ScvmmCommandSanitizer.redactOpts(params instanceof Map ? params : [:])}")
 		def cloud = setupCloudConfig(params)
 		def apiConfig = getApiConfig(cloud)
-		def results = []
+		def results = [:]
 		if(apiConfig.sshUsername && apiConfig.sshPassword) {
 			results = safeList('host groups') { apiService.listHostGroups(apiConfig) }
 		}
@@ -176,7 +176,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 		log.debug("scvmmCluster: ${ScvmmCommandSanitizer.redactOpts(params instanceof Map ? params : [:])}")
 		def cloud = setupCloudConfig(params)
 		def apiConfig = getApiConfig(cloud)
-		def results = []
+		def results = [:]
 		if(apiConfig.sshUsername && apiConfig.sshPassword) {
 			results = safeList('clusters') { apiService.listClusters(apiConfig) }
 		}
@@ -195,7 +195,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 		log.debug("scvmmLibraryShares: ${ScvmmCommandSanitizer.redactOpts(params instanceof Map ? params : [:])}")
 		def cloud = setupCloudConfig(params)
 		def apiConfig = getApiConfig(cloud)
-		def results = []
+		def results = [:]
 		if(apiConfig.sshUsername && apiConfig.sshPassword) {
 			results = safeList('library shares') { apiService.listLibraryShares(apiConfig) }
 		}

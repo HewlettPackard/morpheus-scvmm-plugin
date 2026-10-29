@@ -92,8 +92,11 @@ class ScvmmKnownErrors {
             new KnownError('vmm.ip-already-released', Category.VMM,
                     /Unable to find the specified allocated IP address/,
                     'The IP address is no longer allocated in the SCVMM static IP pool.'),
+            new KnownError('vmm.ip-already-allocated', Category.VMM,
+                    /(IP address .* is already allocated|Error ID:\s*13668\b)/,
+                    'The requested IP address is already allocated in the SCVMM static IP pool. Choose a different address or release the existing allocation.'),
             new KnownError('vmm.ip-pool-exhausted', Category.VMM,
-                    /(no (more )?(IP )?addresses? (are )?available|IP address pool.*(exhausted|full)|Grant-SCIPAddress.*(failed|error))/,
+                    /(no (more )?(IP )?addresses? (are )?available|IP address pool.*(exhausted|full))/,
                     'The SCVMM static IP pool has no available addresses.'),
             new KnownError('vmm.differencing-disk', Category.VMM,
                     /Cannot Resize a Differencing Disk/,
@@ -106,24 +109,32 @@ class ScvmmKnownErrors {
                     'A path referenced by the operation does not exist on the SCVMM host. Verify the Working Path, Disk Path and Library Share settings.'),
     ])
 
-    static KnownError match(String text) {
+    /**
+     * Matches a known signature in text or a throwable cause chain. A single entry point keeps Groovy's dynamic
+     * dispatch unambiguous when a caller passes a null error.
+     */
+    static KnownError match(Object value) {
+        if (value instanceof Throwable) {
+            return matchThrowable((Throwable) value)
+        }
+        return matchText(value?.toString())
+    }
+
+    private static KnownError matchText(String text) {
         if (!text) {
             return null
         }
         KNOWN_ERRORS.find { it.matches(text) }
     }
 
-    static KnownError match(Throwable t) {
-        if (t == null) {
-            return null
-        }
+    private static KnownError matchThrowable(Throwable t) {
         Throwable current = t
         int depth = 0
         while (current != null && depth < 8) {
             if (current instanceof ScvmmTimeoutException || current instanceof ScvmmResponseParseException) {
                 return null
             }
-            KnownError hit = match(textOf(current))
+            KnownError hit = matchText(textOf(current))
             if (hit) {
                 return hit
             }
@@ -134,7 +145,7 @@ class ScvmmKnownErrors {
     }
 
     static boolean isConnectionError(String text) {
-        match(text)?.category == Category.CONNECTION
+        matchText(text)?.category == Category.CONNECTION
     }
 
     private static String textOf(Throwable t) {

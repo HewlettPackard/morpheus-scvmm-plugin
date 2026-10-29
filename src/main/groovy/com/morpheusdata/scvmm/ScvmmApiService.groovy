@@ -1216,8 +1216,8 @@ foreach (\$network in \$networks) {
 	\$report += \$data
 }
 \$report """)
-                out = wrapExecuteCommand(command, opts)
-                log.debug("get of networks: ${out}")
+                // The VM network probe is optional: logical networks already prove VMM is answering.
+                out = wrapExecuteCommand(command, opts, false)
                 if (out.success && out.exitCode == '0') {
                     if (out.data) {
                         log.debug("list logical networks: ${out}")
