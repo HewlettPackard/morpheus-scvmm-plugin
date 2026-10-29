@@ -96,33 +96,43 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         }
     }
 
-    def "createAndAttachDisk returns null (not success=false) when the attach fails or drives are not requested"() {
+    def "createAndAttachDisk returns success false with a reason when the attach is not confirmed"() {
         given:
         respond([:], result)
 
-        expect: 'pinned: not success:false'
-        svc.createAndAttachDisk(opts, [sizeMb: 1024], returnDrives) == null
+        expect:
+        svc.createAndAttachDisk(opts, [sizeMb: 1024], returnDrives) == expected
 
         where:
-        result                 | returnDrives
-        TaskResults.raw('', 1) | true
-        TaskResults.raw('')    | false
+        result                 | returnDrives || expected
+        TaskResults.raw('', 1) | true         || [success: false, errOut: 'Failed to run the add-disk command on SCVMM']
+        TaskResults.raw('')    | false        || [success: false, errOut: 'SCVMM did not confirm the disk was added']
     }
 
-    def "createAndAttachDisk throws #exception when the drive lookup returns #why"() {
+    def "createAndAttachDisk returns SCVMM's reason when the add-disk job fails, without looking up the drive"() {
         given:
-        respond(['Get-SCVirtualDiskDrive -VM $VM': result], TaskResults.raw(''))
+        respond(['New-SCVirtualDiskDrive @addDiskParams': TaskResults.json([success: false, errOut: 'There is not enough space on the disk.'])])
 
         when:
-        svc.createAndAttachDisk(opts, [vhdName: 'data-1', sizeMb: 1024])
+        def rtn = svc.createAndAttachDisk(opts, [vhdName: 'data-1', sizeMb: 1024])
 
         then:
-        thrown(exception)
+        rtn == [success: false, errOut: 'There is not enough space on the disk.']
+        scripts.size() == 1
+    }
+
+    def "createAndAttachDisk returns success false when the added drive can't be found (#why)"() {
+        given:
+        respond(['New-SCVirtualDiskDrive @addDiskParams': TaskResults.json([success: true, vhdId: 'vhd-1']),
+                 'Get-SCVirtualDiskDrive -VM $VM'       : result])
+
+        expect:
+        svc.createAndAttachDisk(opts, [vhdName: 'data-1', sizeMb: 1024]) == [success: false, errOut: 'Disk data-1 was added but could not be found on the VM']
 
         where:
-        why            | result               || exception
-        'an empty list' | TaskResults.raw('[]') || NoSuchElementException
-        'empty stdout'  | TaskResults.raw('')   || MissingMethodException
+        why             | result
+        'an empty list' | TaskResults.raw('[]')
+        'empty stdout'  | TaskResults.raw('')
     }
 
     // ================================================================ listVirtualDiskDrives / removeDisk

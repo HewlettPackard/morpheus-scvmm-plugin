@@ -1752,7 +1752,7 @@ foreach (\$network in \$networks) {
         if (!out.success) {
             return [success: false, errOut: cleanPowerShellError(out.error) ?: 'Failed to run the add-disk command on SCVMM']
         }
-        def report = out.data instanceof List ? out.data[0] : out.data
+        def report = out.data instanceof List ? out.data[0] : (out.data instanceof Map ? out.data : null)
         if (report?.success != true) {
             return [success: false, errOut: report?.errOut ?: 'SCVMM did not confirm the disk was added']
         }
