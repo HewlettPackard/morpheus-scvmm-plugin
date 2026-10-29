@@ -4,6 +4,7 @@ package com.morpheusdata.scvmm
 
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.model.ComputeServer
+import com.morpheusdata.model.Instance
 import com.morpheusdata.model.StorageVolume
 import com.morpheusdata.model.Workload
 import groovy.json.JsonOutput
@@ -139,6 +140,85 @@ class ScvmmProvisionProviderCloneAdditionalDisksSpec extends Specification {
 
         expect:
         provider.additionalTemplateDisksConfig(w, scvmmOpts) == []
+    }
+
+    private static List<StorageVolume> cloneVolumes(List<List> specs) {
+        // [configIndex, id, root, size, externalId?]
+        specs.collect { s ->
+            new StorageVolume(id: s[1], rootVolume: s[2], maxStorage: s[3], uniqueId: "morpheus-vol-5-20-${s[0]}", externalId: s.size() > 4 ? s[4] : null)
+        }
+    }
+
+    private static Workload sourceWorkload(List<StorageVolume> volumes) {
+        def server = new ComputeServer(id: 9L)
+        server.volumes = volumes
+        new Workload(id: 19L, server: server)
+    }
+
+    private static Workload cloneWorkload(List<Map> configVolumes, List<StorageVolume> serverVolumes) {
+        def w = workload(configVolumes, serverVolumes)
+        w.instance = new Instance(id: 5L)
+        w
+    }
+
+    // Instance A: root + data-1 (10 GB, source volume 502, disk ext-d1). Sizes: data-2 20 GB, data-3 30 GB.
+    private static Workload instanceA() {
+        sourceWorkload([vol(501, true, 40 * GB), new StorageVolume(id: 502L, rootVolume: false, maxStorage: 10 * GB, externalId: 'ext-d1')])
+    }
+
+    def "clone plan: regular wizard flow keeps data-1 and adds data-2"() {
+        given:
+        def w = cloneWorkload(
+                [[id: 501, rootVolume: true], [id: 502, rootVolume: false], [id: -1, rootVolume: false]],
+                cloneVolumes([[0, 601L, true, 40 * GB], [1, 602L, false, 10 * GB], [2, 603L, false, 20 * GB]]))
+
+        when:
+        def plan = provider.buildCloneDiskPlan(w, instanceA())
+
+        then:
+        plan.inherited == [[volumeId: 602L, sourceExternalId: 'ext-d1']]
+        plan.added == [[volumeId: 603L, diskSize: 20 * GB]]
+        plan.removedSourceExternalIds == []
+        ScvmmProvisionProvider.cloneDiskPlanAttachList(plan, 1) == [[idx: 1, diskCounter: 2, diskSize: 20 * GB, busNumber: '0', volumeId: 603L]]
+    }
+
+    def "clone plan: data-1 deleted in the wizard and data-2 added removes data-1's copy"() {
+        given:
+        def w = cloneWorkload(
+                [[id: 501, rootVolume: true], [id: -1, rootVolume: false]],
+                cloneVolumes([[0, 601L, true, 40 * GB], [1, 602L, false, 20 * GB]]))
+
+        when:
+        def plan = provider.buildCloneDiskPlan(w, instanceA())
+
+        then:
+        plan.inherited == []
+        plan.added == [[volumeId: 602L, diskSize: 20 * GB]]
+        plan.removedSourceExternalIds == ['ext-d1']
+    }
+
+    def "clone plan: API payload without ids, data-2 listed before data-1, uses each volume's own size"() {
+        given: 'every entry is id -1, so nothing is inherited; data-1 is re-created at its requested size'
+        def w = cloneWorkload(
+                [[id: -1, rootVolume: true], [id: -1, rootVolume: false], [id: -1, rootVolume: false]],
+                cloneVolumes([[0, 601L, true, 40 * GB], [1, 602L, false, 20 * GB], [2, 603L, false, 10 * GB]]))
+
+        when:
+        def plan = provider.buildCloneDiskPlan(w, instanceA())
+
+        then:
+        plan.added == [[volumeId: 602L, diskSize: 20 * GB], [volumeId: 603L, diskSize: 10 * GB]]
+        plan.removedSourceExternalIds == ['ext-d1']
+    }
+
+    def "clone plan is null when a clone volume can't be located by uniqueId"() {
+        given:
+        def w = cloneWorkload(
+                [[id: 501, rootVolume: true], [id: -1, rootVolume: false]],
+                [vol(601, true, 40 * GB), vol(602, false, 20 * GB)])
+
+        expect:
+        provider.buildCloneDiskPlan(w, instanceA()) == null
     }
 
     private static List getContainerDataDisks(Workload w) {

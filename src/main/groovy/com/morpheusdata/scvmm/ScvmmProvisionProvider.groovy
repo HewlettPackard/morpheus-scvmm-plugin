@@ -812,7 +812,14 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     // The clone script copies only the source's disks; volumes added in the wizard are attached afterwards
                     def sourceDataDiskCount = getContainerDataDiskList(cloneContainer)?.size() ?: 0
                     scvmmOpts.expectedCreatedDiskCount = 1 + sourceDataDiskCount
-                    scvmmOpts.additionalTemplateDisks = additionalTemplateDisksConfig(workload, scvmmOpts, sourceDataDiskCount)
+                    def cloneDiskPlan = buildCloneDiskPlan(workload, cloneContainer)
+                    if (cloneDiskPlan) {
+                        scvmmOpts.cloneDiskPlan = cloneDiskPlan
+                        scvmmOpts.additionalTemplateDisks = cloneDiskPlanAttachList(cloneDiskPlan, sourceDataDiskCount)
+                        log.info("clone: ${cloneDiskPlan.inherited.size()} inherited, ${cloneDiskPlan.added.size()} new and ${cloneDiskPlan.removedSourceExternalIds.size()} removed data volume(s)")
+                    } else {
+                        scvmmOpts.additionalTemplateDisks = additionalTemplateDisksConfig(workload, scvmmOpts, sourceDataDiskCount)
+                    }
                     log.info("clone: ${scvmmOpts.additionalTemplateDisks.size()} volume(s) to attach after cloning (source data disks: ${sourceDataDiskCount})")
                 } else if (scvmmOpts.templateId && scvmmOpts.isSyncdImage) {
                     // Determine if any additional data disks were added to the template
@@ -1152,6 +1159,57 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
         log.debug "returning additionalTemplateDisks ${additionalTemplateDisks}"
         additionalTemplateDisks
+    }
+
+    // Classifies each clone data volume by identity rather than position. Core names the StorageVolume built from
+    // config volumes[i] "morpheus-vol-<instanceId>-<workloadId>-<i>"; a config entry carrying a source data volume's
+    // id is inherited (SCVMM's clone already has a copy), anything else is new. Source data volumes the request no
+    // longer references were removed in the wizard. Returns null if a clone volume can't be located, so the caller
+    // falls back to the count-based behaviour.
+    protected Map buildCloneDiskPlan(Workload workload, Workload sourceWorkload) {
+        def configs = workload.configs
+        if (configs instanceof String) {
+            configs = new JsonSlurper().parseText(configs)
+        }
+        List configVolumes = configs?.volumes ?: []
+        def cloneVolumes = workload.server?.volumes ?: []
+        def sourceDataVolumes = getContainerDataDiskList(sourceWorkload) ?: []
+        def uniqueIdPrefix = "morpheus-vol-${workload.instance?.id}-${workload.id}-"
+        def inherited = []
+        def added = []
+        for (int i = 0; i < configVolumes.size(); i++) {
+            def configVolume = configVolumes[i]
+            if (configVolume.rootVolume) {
+                continue
+            }
+            def cloneVolume = cloneVolumes.find { it.uniqueId == "${uniqueIdPrefix}${i}".toString() }
+            if (!cloneVolume) {
+                log.warn("clone: no volume with uniqueId ${uniqueIdPrefix}${i}; mapping clone disks by count")
+                return null
+            }
+            def configId = configVolume.id?.toString()?.isLong() ? configVolume.id.toString().toLong() : null
+            def sourceVolume = (configId != null && configId > 0) ? sourceDataVolumes.find { it.id == configId } : null
+            if (sourceVolume) {
+                inherited << [volumeId: cloneVolume.id, sourceExternalId: sourceVolume.externalId]
+            } else {
+                added << [volumeId: cloneVolume.id, diskSize: cloneVolume.maxStorage]
+            }
+        }
+        def keptSourceExternalIds = inherited*.sourceExternalId as Set
+        def removedSourceVolumes = sourceDataVolumes.findAll { !(it.externalId in keptSourceExternalIds) }
+        removedSourceVolumes.findAll { !it.externalId }.each {
+            log.warn("clone: removed source volume ${it.id} has no externalId; its copy stays on the clone")
+        }
+        [inherited: inherited, added: added, removedSourceExternalIds: removedSourceVolumes*.externalId.findAll()]
+    }
+
+    protected static List<Map> cloneDiskPlanAttachList(Map cloneDiskPlan, int sourceDataDiskCount) {
+        def diskCounter = 1 + sourceDataDiskCount
+        def rtn = []
+        cloneDiskPlan.added.eachWithIndex { Map vol, int index ->
+            rtn << [idx: index + 1, diskCounter: diskCounter++, diskSize: vol.diskSize, busNumber: '0', volumeId: vol.volumeId]
+        }
+        rtn
     }
 
     // The clone copies exactly the source's disks; the wizard's id:-1 volumes are the ones to attach afterwards.

@@ -55,4 +55,50 @@ class ScvmmApiServiceCloneDiskCountSpec extends Specification {
         apiService.assignDataDiskExternalId(dataDisks, -1, 'disk-a')
         dataDisks[0].externalId == 'disk-a'
     }
+
+    private static Map drive(String id, String vhdId, String busType, int bus, int lun) {
+        [ID: id, VhdID: vhdId, BusType: busType, Bus: bus, Lun: lun]
+    }
+
+    def "resolveCloneInheritedDisks maps an inherited drive by the source drive's slot, whatever SCVMM lists first"() {
+        given: 'source data-1 is SCSI 0:1; the clone lists its copy before the root'
+        def sourceDrives = [drive('src-root', 'src-root-vhd', 'IDE', 0, 0), drive('src-d1', 'src-d1-vhd', 'SCSI', 0, 1)]
+        def cloneDrives = [drive('cl-d1', 'cl-d1-vhd', 'SCSI', 0, 1), drive('cl-root', 'cl-root-vhd', 'IDE', 0, 0)]
+        def plan = [inherited: [[volumeId: 602L, sourceExternalId: sourceExternalId]], added: [], removedSourceExternalIds: []]
+
+        when:
+        def resolved = apiService.resolveCloneInheritedDisks(sourceDrives, cloneDrives, plan)
+
+        then:
+        resolved.driveVolumeIds == ['cl-d1': 602L]
+        resolved.removeVhdIds == []
+
+        where: 'source volume externalId may be the drive ID or the VHD ID'
+        sourceExternalId << ['src-d1', 'src-d1-vhd']
+    }
+
+    def "resolveCloneInheritedDisks returns the clone copy of a source disk removed in the wizard"() {
+        given:
+        def sourceDrives = [drive('src-root', 'src-root-vhd', 'IDE', 0, 0), drive('src-d1', 'src-d1-vhd', 'SCSI', 0, 1)]
+        def cloneDrives = [drive('cl-root', 'cl-root-vhd', 'IDE', 0, 0), drive('cl-d1', 'cl-d1-vhd', 'SCSI', 0, 1)]
+
+        when:
+        def resolved = apiService.resolveCloneInheritedDisks(sourceDrives, cloneDrives,
+                [inherited: [], added: [[volumeId: 602L, diskSize: 1L]], removedSourceExternalIds: ['src-d1']])
+
+        then:
+        resolved.removeVhdIds == ['cl-d1-vhd']
+        resolved.driveVolumeIds == [:]
+    }
+
+    def "assignDataDiskExternalIdByVolume maps by volume id and leaves unknown drives unmapped"() {
+        given:
+        def dataDisks = [[id: 602L], [id: 603L]]
+
+        expect:
+        apiService.assignDataDiskExternalIdByVolume(dataDisks, 603L, 'new-disk')
+        dataDisks[1].externalId == 'new-disk'
+        !apiService.assignDataDiskExternalIdByVolume(dataDisks, null, 'stray-disk')
+        dataDisks[0].externalId == null
+    }
 }
