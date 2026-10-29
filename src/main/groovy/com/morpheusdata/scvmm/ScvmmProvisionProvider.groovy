@@ -699,9 +699,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             def maxStorage = getContainerRootSize(workload)
             def maxMemory = workload.maxMemory ?: workload.instance.plan.maxMemory
             setDynamicMemory(scvmmOpts, workload.instance.plan)
+            Workload cloneContainer = null
             try {
                 if (opts.cloneContainerId) {
-                    Workload cloneContainer = context.services.workload.get(opts.cloneContainerId.toLong())
+                    cloneContainer = context.services.workload.get(opts.cloneContainerId.toLong())
                     if (!cloneContainer?.server) {
                         provisionResponse.setError("Unable to locate source workload ${opts.cloneContainerId} for clone")
                         return new ServiceResponse(success: false, msg: provisionResponse.message, error: provisionResponse.message, data: provisionResponse)
@@ -807,7 +808,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         provisionResponse.success = false
                     }
                 }
-                if (scvmmOpts.templateId && scvmmOpts.isSyncdImage) {
+                if (cloneContainer) {
+                    // The clone script copies only the source's disks; volumes added in the wizard are attached afterwards
+                    def sourceDataDiskCount = getContainerDataDiskList(cloneContainer)?.size() ?: 0
+                    scvmmOpts.additionalTemplateDisks = additionalTemplateDisksConfig(workload, scvmmOpts, sourceDataDiskCount)
+                    log.info("clone: ${scvmmOpts.additionalTemplateDisks.size()} volume(s) to attach after cloning (source data disks: ${sourceDataDiskCount})")
+                } else if (scvmmOpts.templateId && scvmmOpts.isSyncdImage) {
                     // Determine if any additional data disks were added to the template
                     scvmmOpts.additionalTemplateDisks = additionalTemplateDisksConfig(workload, scvmmOpts)
                     log.debug "scvmmOpts.additionalTemplateDisks ${scvmmOpts.additionalTemplateDisks}"
@@ -1105,7 +1111,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		return [count: nonRootCount, volumes: storageVolumes]
 	}
 
-    def additionalTemplateDisksConfig(Workload workload, scvmmOpts) {
+    def additionalTemplateDisksConfig(Workload workload, scvmmOpts, Integer cloneSourceDataDiskCount = null) {
         // Determine what additional disks need to be added after provisioning
         def additionalTemplateDisks = []
 		def totalDataVolsAndNewVols = getUserAddedVolumes(workload)
@@ -1113,6 +1119,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		def userAddedVolumes = totalDataVolsAndNewVols.volumes
         def dataDisks = getContainerDataDiskList(workload)
         log.debug "dataDisks: ${dataDisks} ${dataDisks?.size()}"
+
+		if (cloneSourceDataDiskCount != null) {
+			return cloneAdditionalDisksConfig(dataDisks ?: [], userAddedVolumes, cloneSourceDataDiskCount)
+		}
 
 		// if totalDataVols == getUserAddedVolumes its a new vm creation
 		// else its a clone and we only want to add the new volumes
@@ -1126,7 +1136,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		}
 
 		// scvmmOpts.diskExternalIdMappings will usually contain the virtualImage disk externalId
-        def diskExternalIdMappings = scvmmOpts.diskExternalIdMappings
+        def diskExternalIdMappings = scvmmOpts.diskExternalIdMappings ?: []
         def additionalDisksRequired = dataDisks?.size() + 1 > diskExternalIdMappings?.size()
         def busNumber = '0'
         if (additionalDisksRequired) {
@@ -1141,6 +1151,22 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
         log.debug "returning additionalTemplateDisks ${additionalTemplateDisks}"
         additionalTemplateDisks
+    }
+
+    // Clone copies exactly the source's disks, so the clone's data disks beyond the source's count are new.
+    protected List<Map> cloneAdditionalDisksConfig(List dataDisks, List userAddedVolumes, int sourceDataDiskCount) {
+        def newCount = Math.max(dataDisks.size() - sourceDataDiskCount, 0)
+        def newVolumes = userAddedVolumes
+        if (userAddedVolumes.size() != newCount) {
+            log.warn("clone: ${userAddedVolumes.size()} new volume(s) in config but ${dataDisks.size()} data disk(s) vs ${sourceDataDiskCount} on source; using the last ${newCount} data disk(s)")
+            newVolumes = newCount ? dataDisks.drop(dataDisks.size() - newCount) : []
+        }
+        def diskCounter = 1 + sourceDataDiskCount
+        def rtn = []
+        newVolumes.eachWithIndex { sv, index ->
+            rtn << [idx: index + 1, diskCounter: diskCounter++, diskSize: sv.maxStorage, busNumber: '0']
+        }
+        rtn
     }
 
     private constructCloudInitOptions(Workload container, WorkloadRequest workloadRequest, installAgent, platform, VirtualImage virtualImage, networkConfig, licenses, scvmmOpts, Map cloudConfigSource = null) {
