@@ -395,4 +395,210 @@ class ScvmmApiServiceBuildCreateServerCommandsSpec extends Specification {
         cmds[updateIdx + 1].contains('Exit 28')
         createIdx > updateIdx + 1
     }
+
+    // ---------------------------------------------------------------- clone / generation / disks / sysprep
+
+    private static final long GB = 1024L * 1024L * 1024L
+
+    private List<String> build(Map networkConfig, Map overrides = [:]) {
+        lines(apiService.buildCreateServerCommands(baseOpts(networkConfig, overrides)))
+    }
+
+    private static Map staticPrimary() {
+        [primaryInterface: [network: [externalId: PRIMARY_NET], doStatic: true, ipAddress: '10.0.0.10', vlanId: 0]]
+    }
+
+    def "clone reconfigures the source adapter with #mode addressing"() {
+        when:
+        def cmds = build(networkConfig, [cloneVMId: 'source-vm'])
+
+        then:
+        cmds.findAll { it.startsWith('Set-SCVirtualNetworkAdapter ') }.every { it.contains(ipConfig) }
+        cmds.count { it.startsWith('Set-SCVirtualNetworkAdapter ') } == 2
+
+        where:
+        mode      | networkConfig    || ipConfig
+        'static'  | staticPrimary()  || '-IPv4AddressType Static -IPv4Address "10.0.0.10"'
+        'dynamic' | dynamicPrimary() || '-IPv4AddressType Dynamic'
+    }
+
+    def "clone to a host group places the copy on the host and volume path"() {
+        when:
+        def cmds = build(dynamicPrimary(), [cloneVMId: 'source-vm'])
+        def create = cmds.find { it.startsWith('$createdVm = New-SCVirtualMachine -VM $VM') }
+
+        then:
+        cmds.contains('$vmHost = Get-SCVMHost -ID "host-1"')
+        create.contains('-VMHost $vmHost -Path "C:\\VMs"')
+        create.contains('-UseDiffDiskOptimization')
+        !create.contains('-Cloud')
+        !cmds.any { it.contains('New-SCVMTemplate') || it.contains('New-SCVirtualDiskDrive') }
+    }
+
+    def "clone to an SCVMM cloud with a host targets the cloud"() {
+        when:
+        def create = build(dynamicPrimary(), [cloneVMId: 'source-vm', zone: [regionCode: 'cloud-guid']])
+                .find { it.startsWith('$createdVm = New-SCVirtualMachine -VM $VM') }
+
+        then:
+        create.contains('-Cloud $cloud')
+        !create.contains('-VMHost')
+    }
+
+    def "clone without a host always passes -Cloud, twice when deploying to a cloud and with an unset \$cloud otherwise"() {
+        // Pinned as-is: the no-host clone branch hard-codes "-Cloud $cloud" in addition to the conditional one.
+        when:
+        def cmds = build(dynamicPrimary(), [cloneVMId: 'source-vm', hostExternalId: null, zone: [regionCode: regionCode]])
+        def create = cmds.find { it.startsWith('$createdVm = New-SCVirtualMachine -VM $VM') }
+
+        then:
+        create.count('-Cloud $cloud') == count
+        cmds.any { it.startsWith('$cloud = Get-SCCloud') } == (regionCode != null)
+
+        where:
+        regionCode   || count
+        null         || 1
+        'cloud-guid' || 2
+    }
+
+    def "generation #generation creates the boot disk on #bus and the profile as generation #number"() {
+        when:
+        def cmds = build(dynamicPrimary(), [scvmmGeneration: generation])
+
+        then:
+        cmds.any { it.contains('New-SCHardwareProfile') && it.contains("-Generation ${number}") }
+        cmds.any { it.contains('New-SCVirtualDiskDrive') && it.contains("${bus} -Bus 0 -LUN 0") && it.contains('-VolumeType BootAndSystem') }
+        cmds.any { it.contains('New-SCVMTemplate') && it.contains("-Generation ${number}") }
+
+        where:
+        generation    || bus     | number
+        null          || '-IDE'  | '1'
+        'generation1' || '-IDE'  | '1'
+        'generation2' || '-SCSI' | '2'
+    }
+
+    def "a template deployment copies Secure Boot and hardware settings from the SCVMM template"() {
+        when:
+        def cmds = build(dynamicPrimary(), [isTemplate: true, templateId: 'tpl-1', scvmmGeneration: 'generation2'])
+
+        then:
+        cmds[0] == '$template = Get-SCVMTemplate -VMMServer localhost | where {$_.ID -eq "tpl-1"}'
+        cmds.any { it.contains('-SecureBootEnabled $template.SecureBootEnabled') }
+        cmds.any { it.contains('-SecureBootTemplate $template.SecureBootTemplate') }
+        cmds.any { it.startsWith('$MACAddressTypeSetting = ') }
+        !cmds.any { it.contains('Get-SCVirtualHardDisk') || it.contains('New-SCVMTemplate') }
+        cmds.any { it.startsWith('$createdVm = New-SCVirtualMachine') && it.contains('-HardwareProfile $HardwareProfile') }
+    }
+
+    def "each data disk gets its own SCSI drive on bus 0 with its size and path"() {
+        given:
+        def disks = [[maxStorage: 10L * GB, volumePath: 'D:\\data'], [maxStorage: 20L * GB, volumePath: null]]
+
+        when:
+        def drives = build(dynamicPrimary(), [dataDisks: disks]).findAll { it.contains('New-SCVirtualDiskDrive') && it.contains('-VolumeType None') }
+
+        then:
+        drives.size() == 2
+        drives[0].contains('-SCSI -Bus 0 -LUN 0') && drives[0].contains('-VirtualHardDiskSizeMB 10240') && drives[0].contains('-Path "D:\\data"')
+        drives[1].contains('-SCSI -Bus 0 -LUN 1') && drives[1].contains('-VirtualHardDiskSizeMB 20480') && !drives[1].contains('-Path')
+        drives.every { it.contains('-Dynamic') && it =~ /-FileName "data\d-[0-9a-f-]{36}\.vhd"/ }
+    }
+
+    def "a synced image attaches its additional disks from the mapped VHDs without a size"() {
+        when:
+        def cmds = build(dynamicPrimary(), [isSyncdImage: true, dataDisks: [[maxStorage: 10L * GB]],
+                                            diskExternalIdMappings: [[externalId: 'boot-vhd'], [externalId: 'data-vhd-1']]])
+        def drive = cmds.find { it.contains('-VolumeType None') }
+
+        then:
+        cmds.contains('$VirtualHardDisk0 = Get-SCVirtualHardDisk -VMMServer localhost -ID "data-vhd-1"')
+        drive.contains('-VirtualHardDisk $VirtualHardDisk0')
+        !drive.contains('-VirtualHardDiskSizeMB')
+    }
+
+    def "a Windows sysprep build customises the OS with answer file, computer name and licence"() {
+        when:
+        def cmds = build(dynamicPrimary(), [isSysprep: true, OSName: 'Windows Server 2019 Datacenter', unattendPath: '\\\\lib\\unattend.xml',
+                                            hostname: 'web01', license: [fullName: 'Ops', productKey: 'AAAAA-BBBBB', orgName: 'HPE']])
+        def create = cmds.find { it.startsWith('$createdVm = New-SCVirtualMachine') }
+
+        then:
+        cmds.contains('$OS = Get-SCOperatingSystem -VMMServer localhost | where {$_.Name -eq "Windows Server 2019 Datacenter"}')
+        cmds.any { it.contains('New-SCVMTemplate') && it.contains('-OperatingSystem $OS') }
+        cmds.any { it.startsWith('$AnswerFile = Get-SCScript') && it.contains('"\\\\lib\\unattend.xml"') }
+        create.contains('-AnswerFile $AnswerFile')
+        create.endsWith('-ComputerName "web01" -FullName "Ops" -ProductKey "AAAAA-BBBBB" -OrganizationName "HPE"')
+    }
+
+    def "a non-sysprep (Linux) build has no OS customisation even with a hostname"() {
+        when:
+        def cmds = build(dynamicPrimary(), [hostname: 'web01', license: [fullName: 'Ops']])
+
+        then:
+        cmds.any { it.contains('New-SCVMTemplate') && it.contains('-NoCustomization') }
+        !cmds.any { it.contains('-ComputerName') || it.contains('Get-SCOperatingSystem') || it.contains('AnswerFile') }
+    }
+
+    def "a pool-backed primary NIC whose interface is DHCP is not bound to the pool (JD-1 gate)"() {
+        given:
+        def networkConfig = [doStatic: true, primaryInterface: [network: [externalId: PRIMARY_NET], poolType: 'scvmm', doStatic: false,
+                                                                ipAddress: '10.0.0.10', networkPool: [externalId: PRIMARY_POOL], vlanId: 0]]
+
+        when:
+        def cmds = build(networkConfig)
+
+        then:
+        !cmds.any { it.contains('Set-SCVirtualNetworkAdapterConfiguration') || it.contains('-IPv4Address ') }
+        adapterCommands(cmds).every { it.contains('-IPv4AddressType Dynamic') }
+        cmds.contains('$MACAddressType = "Dynamic"')
+    }
+
+    def "dynamic memory bounds are applied to the hardware profile only when both are given"() {
+        when:
+        def cmds = build(dynamicPrimary(), [minDynamicMemory: min, maxDynamicMemory: max])
+
+        then:
+        cmds.count { it.contains('Set-SCHardwareProfile') && it.contains('DynamicMemory') } == expected
+
+        where:
+        min      | max      || expected
+        1L * GB  | 8L * GB  || 2
+        1L * GB  | null     || 0
+        null     | null     || 0
+    }
+
+    def "a VLAN tagged primary NIC enables the VLAN on the adapter"() {
+        when:
+        def cmds = build([primaryInterface: [network: [externalId: PRIMARY_NET + '-100'], vlanId: 100]])
+
+        then:
+        adapterCommands(cmds).every { it.contains('-VLanEnabled $true -VLanID 100') }
+        cmds.contains('$VMNetwork = Get-SCVMNetwork -VMMServer localhost -ID "' + PRIMARY_NET + '"')
+    }
+
+    def "a capability profile is looked up and attached to the hardware profile"() {
+        when:
+        def cmds = build(dynamicPrimary(), [scvmmCapabilityProfile: ' Hyper-V '])
+
+        then:
+        cmds.contains('$CapabilityProfile = Get-SCCapabilityProfile -VMMServer localhost | where {$_.Name -eq "Hyper-V"}')
+        cmds.any { it.contains('New-SCHardwareProfile') && it.contains('-CapabilityProfile $CapabilityProfile') }
+    }
+
+    def "without a host or a cloud no New-SCVirtualMachine command is emitted"() {
+        when:
+        def cmds = build(dynamicPrimary(), [hostExternalId: null])
+
+        then:
+        !cmds.any { it.contains('New-SCVirtualMachine') }
+        cmds.last() == '$createdVm | Select ID, ObjectType'
+    }
+
+    def "buildCreateServerCommands throws when the primary interface has no network"() {
+        when:
+        apiService.buildCreateServerCommands(baseOpts([primaryInterface: [:]]))
+
+        then:
+        thrown(NullPointerException)
+    }
 }

@@ -14,6 +14,16 @@ import com.morpheusdata.scvmm.support.VmmPayloads
 import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Single
 import spock.lang.Specification
+import com.morpheusdata.core.MorpheusServices
+import com.morpheusdata.core.data.DataQuery
+import com.morpheusdata.core.synchronous.MorpheusSynchronousOsTypeService
+import com.morpheusdata.core.synchronous.cloud.MorpheusSynchronousCloudPoolService
+import com.morpheusdata.core.synchronous.cloud.MorpheusSynchronousCloudService
+import com.morpheusdata.core.synchronous.compute.MorpheusSynchronousComputeServerService
+import com.morpheusdata.model.CloudPool
+import com.morpheusdata.model.projection.ComputeServerIdentityProjection
+import com.morpheusdata.scvmm.ScvmmApiService
+import io.reactivex.rxjava3.core.Observable
 
 class HostSyncSpec extends Specification {
 
@@ -110,5 +120,182 @@ class HostSyncSpec extends Specification {
 			)
 		] + overrides
 		new ComputeServer(values)
+	}
+
+	// ---------------------------------------------------------------- execute / remove / stats / JD-6
+
+	MorpheusServices services = Mock()
+	MorpheusSynchronousCloudService syncCloudService = Mock()
+	MorpheusSynchronousCloudPoolService poolService = Mock()
+	MorpheusSynchronousComputeServerService syncComputeServerService = Mock()
+	MorpheusSynchronousOsTypeService osTypeService = Mock()
+	ScvmmApiService apiService = Mock()
+
+	private HostSync wired(Cloud cloud = new Cloud(id: 1L)) {
+		context.services >> services
+		services.cloud >> syncCloudService
+		syncCloudService.pool >> poolService
+		services.computeServer >> syncComputeServerService
+		services.osType >> osTypeService
+		apiService.isHostInHostGroup(_, _) >> { String a, String b -> new ScvmmApiService(context).isHostInHostGroup(a, b) }
+		apiService.extractWindowsServerVersion(_ as String) >> { String os -> new ScvmmApiService(context).extractWindowsServerVersion(os) }
+		def sync = new HostSync(cloud, null, context)
+		sync.@apiService = apiService
+		sync
+	}
+
+	def "execute adds hosts inside the cloud's host group, skips others and removes vanished hosts"() {
+		given:
+		def cloud = new Cloud(id: 1L)
+		cloud.setConfigProperty('hostGroup', 'All Hosts\\a')
+		def sync = wired(cloud)
+		apiService.listHosts(_) >> [success: true, hosts: [
+			VmmPayloads.host(id: 'h-in', computerName: 'in', hostGroup: 'All Hosts\\a\\rack1'),
+			VmmPayloads.host(id: 'h-out', computerName: 'out', hostGroup: 'All Hosts\\b')]]
+		poolService.list(_ as DataQuery) >> []
+		def gone = new ComputeServerIdentityProjection(id: 9L, externalId: 'h-gone')
+		computeServerService.listIdentityProjections(_ as DataQuery) >> Observable.just(gone)
+		cloudService.findComputeServerTypeByCode('scvmmHypervisor') >> Maybe.just(new ComputeServerType(code: 'scvmmHypervisor'))
+		syncComputeServerService.list(_ as DataQuery) >> []
+		List<ComputeServer> created = []
+
+		when:
+		sync.execute()
+
+		then:
+		1 * computeServerService.create(_ as ComputeServer) >> { ComputeServer s -> created << s; Single.just(s) }
+		1 * computeServerService.bulkRemove([gone]) >> Single.just(true)
+		created*.externalId == ['h-in']
+		created[0].category == 'scvmm.host.1'
+	}
+
+	def "execute only syncs hosts of a synced cluster when the cloud is scoped to a cluster"() {
+		given:
+		def cloud = new Cloud(id: 1L)
+		cloud.setConfigProperty('cluster', 'cluster-1')
+		def sync = wired(cloud)
+		apiService.listHosts(_) >> [success: true, hosts: [VmmPayloads.host(id: 'h1', cluster: 'c1'), VmmPayloads.host(id: 'h2', cluster: 'other')]]
+		poolService.list(_ as DataQuery) >> [new CloudPool(id: 5L, internalId: 'c1')]
+		computeServerService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
+		cloudService.findComputeServerTypeByCode(_) >> Maybe.just(new ComputeServerType())
+		List<ComputeServer> created = []
+
+		when:
+		sync.execute()
+
+		then:
+		1 * computeServerService.create(_ as ComputeServer) >> { ComputeServer s -> created << s; Single.just(s) }
+		created*.externalId == ['h1']
+		created[0].resourcePool.id == 5L
+	}
+
+	def "execute does nothing when listHosts #why"() {
+		given:
+		def sync = wired()
+		apiService.listHosts(_) >> result
+
+		when:
+		sync.execute()
+
+		then:
+		0 * computeServerService._
+
+		where:
+		why        | result
+		'fails'    | [success: false, hosts: []]
+		'is empty' | [success: true, hosts: []]
+	}
+
+	def "removeMissingHosts detaches child servers before removing the hosts"() {
+		given:
+		def sync = wired()
+		def child = new ComputeServer(id: 20L, parentServer: new ComputeServer(id: 9L))
+		def gone = new ComputeServerIdentityProjection(id: 9L)
+
+		when:
+		sync.removeMissingHosts([gone])
+
+		then:
+		1 * syncComputeServerService.list(_ as DataQuery) >> [child]
+		1 * computeServerService.bulkSave([child]) >> Single.just(true)
+		1 * computeServerService.bulkRemove([gone]) >> Single.just(true)
+		child.parentServer == null
+	}
+
+	def "getHypervisorOs returns the known OsType or a transient one for '#name'"() {
+		given:
+		def sync = wired()
+		osTypeService.find(_ as DataQuery) >> found
+
+		expect:
+		sync.getHypervisorOs(name).code == code
+
+		where:
+		name                                       | found                                    || code
+		'Microsoft Windows Server 2019 Datacenter' | new OsType(code: 'windows.server.2019')  || 'windows.server.2019'
+		'Microsoft Windows Server 2016 Standard'   | null                                     || 'windows.server.2016'
+		null                                       | null                                     || 'windows.server.2012'
+	}
+
+	def "updateMatchedHosts saves and refreshes stats when the host moved cluster"() {
+		given:
+		def sync = Spy(wired()) { getHypervisorOs(_) >> new OsType(code: 'windows') }
+		def server = serverWithCapacity(maxSockets: 2L, serverOs: new OsType(code: 'windows'))
+		def cluster = new CloudPool(id: 5L, internalId: 'c1')
+		def updateMatchedHosts = HostSync.declaredMethods.find { it.name == 'updateMatchedHosts' }
+		updateMatchedHosts.accessible = true
+
+		when:
+		updateMatchedHosts.invoke(sync, [new SyncTask.UpdateItem(existingItem: server, masterItem: VmmPayloads.host(cpuCount: '2', cluster: 'c1'))], [cluster])
+
+		then:
+		2 * computeServerService.save(server) >> Single.just(server)
+		server.resourcePool.is(cluster)
+	}
+
+	def "updateMatchedHosts does not save a host whose cluster, OS and sockets are unchanged"() {
+		given:
+		def sync = Spy(wired()) { getHypervisorOs(_) >> new OsType(code: 'windows') }
+		def server = serverWithCapacity(maxSockets: 2L, serverOs: new OsType(code: 'windows'))
+		def updateMatchedHosts = HostSync.declaredMethods.find { it.name == 'updateMatchedHosts' }
+		updateMatchedHosts.accessible = true
+
+		when:
+		updateMatchedHosts.invoke(sync, [new SyncTask.UpdateItem(existingItem: server, masterItem: VmmPayloads.host(cpuCount: '2', totalMemory: '999'))], [])
+
+		then: 'stats (e.g. memory) are only refreshed on a cluster/OS change'
+		0 * computeServerService.save(_)
+		server.maxMemory == 0L
+	}
+
+	def "updateHostStats maps hyperVState #state to powerState #power"() {
+		given:
+		def server = serverWithCapacity([:])
+
+		when:
+		hostSync.updateHostStats(server, VmmPayloads.host(hyperVState: state, totalMemory: '8589934592', availableMemory: '1024'))
+
+		then:
+		1 * computeServerService.save(server) >> Single.just(server)
+		server.powerState == power
+		server.maxMemory == 8589934592L
+		server.usedMemory == 8589934592L - 1024L * 1024L * 1024L
+
+		where:
+		state     || power
+		'Running' || ComputeServer.PowerState.on
+		'Stopped' || ComputeServer.PowerState.off
+		'Paused'  || ComputeServer.PowerState.unknown
+	}
+
+	def "updateHostStats never lowers maxMemory"() {
+		given:
+		def server = serverWithCapacity(maxMemory: 16L)
+
+		when:
+		hostSync.updateHostStats(server, VmmPayloads.host(totalMemory: '8'))
+
+		then:
+		server.maxMemory == 16L
 	}
 }
