@@ -17,6 +17,7 @@ import com.morpheusdata.model.CloudPool
 import com.morpheusdata.model.ComputeCapacityInfo
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.Datastore
+import com.morpheusdata.model.StorageVolume
 import com.morpheusdata.scvmm.sync.DatastoresSync
 import com.morpheusdata.scvmm.sync.RegisteredStorageFileSharesSync
 import spock.lang.Specification
@@ -314,6 +315,117 @@ class ScvmmProvisionProviderDatastoreSpec extends Specification {
         def e = thrown(Exception)
         e.message.contains('HYPERV-A')
         e.message.contains('HYPERV-B')
+    }
+
+    // ----------------------------------------------------------------------------------------------------------
+    // getHostAndDatastore – host / datastore resolution
+    // ----------------------------------------------------------------------------------------------------------
+
+    def "a cloud-scoped zone with nothing selected deploys to the cloud without any lookups"() {
+        given:
+        cloud.regionCode = 'cloud-1'
+
+        when:
+        def result = provider.getHostAndDatastore(cloud, account, clusterId, hostId, null, datastoreOption, 10L, null, 8L)
+
+        then:
+        0 * datastoreService.list(_)
+        0 * computeServerService.get(_)
+        0 * computeServerService.list(_)
+        result == [null, null, null, false]
+
+        where:
+        clusterId | hostId | datastoreOption
+        null      | null   | 'auto'
+        'null'    | ' '    | null
+    }
+
+    def "a cloud-scoped zone returns no host or datastore instead of failing when nothing has capacity"() {
+        given:
+        cloud.regionCode = 'cloud-1'
+        poolService.find(_) >> clusterA
+        datastoreService.list(_) >> []
+
+        when:
+        def result = provider.getHostAndDatastore(cloud, account, clusterA.id, null, null, 'auto', 10L, null, 8L)
+
+        then:
+        result == [null, null, null, false]
+    }
+
+    def "an explicit host is used as-is and auto datastores are limited to that host's volumes"() {
+        given:
+        def host = hostWithMemory('HYPERV-B', 1L)
+        host.id = 7L
+        def onHost = datastore(4L, 'HYPERV-B : D:\\', 100L, [])
+        def hostVolume = new StorageVolume(datastore: onHost)
+        DataQuery datastoreQuery
+
+        when:
+        def (node, picked, volumePath, highlyAvailable) = provider.getHostAndDatastore(cloud, account, null, '7', null, 'auto', 10L, null, 64L * 1024 * 1024 * 1024)
+
+        then:
+        1 * computeServerService.get(7L) >> host
+        1 * computeServerService.list({ filterValue(it, 'hostId') == 7L }) >> [new ComputeServer(volumes: [hostVolume])]
+        1 * datastoreService.list(_) >> { DataQuery q -> datastoreQuery = q; [onHost] }
+        node.is(host)
+        picked.is(onHost)
+        highlyAvailable == false
+        datastoreQuery.filters.find { it.name == 'id' }?.value == [4L]
+    }
+
+    def "an explicit datastore skips the datastore query and auto-picks the host with the most free memory"() {
+        given:
+        def ds = datastore(1L, 'D1', 500L, [])
+        def small = hostWithMemory('SMALL', 9L)
+        def big = hostWithMemory('BIG', 32L)
+        def full = hostWithMemory('FULL', 4L)
+
+        when:
+        def (node, picked, volumePath, highlyAvailable) = provider.getHostAndDatastore(cloud, account, null, null, ds, null, 10L, null, 8L * 1024 * 1024 * 1024)
+
+        then:
+        0 * datastoreService.list(_)
+        1 * computeServerService.list({ filterValue(it, 'volumes.datastore.id') == 1L }) >> [small, full, big]
+        node.is(big)
+        picked.is(ds)
+    }
+
+    def "no host with enough free memory fails for a non cloud-scoped zone"() {
+        given:
+        computeServerService.list(_) >> [hostWithMemory('FULL', 4L)]
+
+        when:
+        provider.getHostAndDatastore(cloud, account, null, null, datastore(1L, 'D1', 500L, []), null, 10L, null, 8L * 1024 * 1024 * 1024)
+
+        then:
+        def e = thrown(Exception)
+        e.message == 'Unable to obtain datastore and host for options selected'
+    }
+
+    def "a null maxMemory treats every powered-on host as eligible"() {
+        given:
+        def host = hostWithMemory('ANY', 1L)
+        computeServerService.list(_) >> [host]
+
+        when:
+        def (node, picked, volumePath, highlyAvailable) = provider.getHostAndDatastore(cloud, account, null, null, datastore(1L, 'D1', 500L, []), null, 10L, null, null)
+
+        then:
+        node.is(host)
+    }
+
+    def "the volume path comes from an existing volume on the chosen datastore"() {
+        given:
+        def ds = datastore(1L, 'D1', 500L, [])
+        computeServerService.list(_) >> [hostWithMemory('HYPERV-A', 64L)]
+
+        when:
+        def (node, picked, volumePath, highlyAvailable) = provider.getHostAndDatastore(cloud, account, null, null, ds, null, 10L, null, 8L)
+
+        then:
+        1 * storageVolumeService.find({ filterValue(it, 'datastore.id') == 1L }) >> new StorageVolume(volumePath: 'C:\\ClusterStorage\\Volume1')
+        volumePath == 'C:\\ClusterStorage\\Volume1'
     }
 
     // ----------------------------------------------------------------------------------------------------------
