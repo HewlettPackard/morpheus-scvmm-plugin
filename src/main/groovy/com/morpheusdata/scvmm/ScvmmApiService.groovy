@@ -2944,7 +2944,9 @@ For (\$i=0; \$i -le 10; \$i++) {
             commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.HAVMPriority))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -HAVMPriority \$template.HAVMPriority}"
 
             commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.ReplicationGroup))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -ReplicationGroup \$template.ReplicationGroup}"
-            commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.SecureBootEnabled))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -SecureBootEnabled \$template.SecureBootEnabled}"
+            if (generationNumber == '2') {
+                commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.SecureBootEnabled))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -SecureBootEnabled \$template.SecureBootEnabled}"
+            }
             commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.NumLock))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -NumLock \$template.NumLock}"
             commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.Owner))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -Owner \$template.Owner}"
             commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.UserRole))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -UserRole \$template.UserRole}"
@@ -2973,7 +2975,9 @@ For (\$i=0; \$i -le 10; \$i++) {
             commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.ProtectionProvider))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -ProtectionProvider \$template.ProtectionProvider}"
             commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.BootOrder))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -BootOrder \$template.BootOrder}"
             commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.FirstBootDevice)) -and @('CD','PXE','SCSI') -contains \$template.FirstBootDevice) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -FirstBootDevice \$template.FirstBootDevice; Write-Output \"FirstBootDevice set successfully to: \$(\$template.FirstBootDevice)\" }"
-            commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.SecureBootTemplate))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -SecureBootTemplate \$template.SecureBootTemplate}"
+            if (generationNumber == '2') {
+                commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.SecureBootTemplate))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -SecureBootTemplate \$template.SecureBootTemplate}"
+            }
             commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.CPUType))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -CPUType \$template.CPUType}"
             commands << "if( \$NumaIsolationRequired -eq \$True) {"
             commands << "\$ignore = If (-not ([string]::IsNullOrEmpty(\$template.CPUPerVirtualNumaNodeMaximum))) { Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -CPUPerVirtualNumaNodeMaximum \$template.CPUPerVirtualNumaNodeMaximum}"
@@ -2985,6 +2989,10 @@ For (\$i=0; \$i -le 10; \$i++) {
         } else {
             commands << "\$ignore = New-SCHardwareProfile -VMMServer localhost -Name \"$hardwareProfileName\" -Description \"Morpheus created profile\" -CPUCount ${maxCores} -MemoryMB ${memoryMB} -DynamicMemoryEnabled \$false -MemoryWeight 5000 -VirtualVideoAdapterEnabled \$false -CPUExpectedUtilizationPercent 20 -DiskIops 0 -CPUMaximumPercent 100 -CPUReserve 0 -NumaIsolationRequired \$false -NetworkUtilizationMbps 0 -CPURelativeWeight 100 -HighlyAvailable ${highlyAvailable ? '\$true' : '\$false'} -DRProtectionRequired \$false -CPULimitFunctionality \$false -CPULimitForMigration \$false -CheckpointType Production ${scvmmCapabilityProfile ? '-CapabilityProfile \$CapabilityProfile' : ''} -Generation $generationNumber -JobGroup $hardwareGuid"
             commands << "\$HardwareProfile = Get-SCHardwareProfile -VMMServer localhost | where {\$_.Name -eq \"$hardwareProfileName\"}"
+            if (generationNumber == '2' && !cloneVMId) {
+                commands << "\$ignore = Set-SCHardwareProfile -HardwareProfile \$HardwareProfile -SecureBootEnabled ${opts.secureBoot == true ? '\$true' : '\$false'} -SecureBootTemplate ${opts.secureBootTemplate}"
+                commands << "if (-not \$?) { Write-Error \"Failed to configure Secure Boot on hardware profile\"; Exit 29 }"
+            }
         }
 
         if (minDynamicMemoryMB && maxDynamicMemoryMB) {
