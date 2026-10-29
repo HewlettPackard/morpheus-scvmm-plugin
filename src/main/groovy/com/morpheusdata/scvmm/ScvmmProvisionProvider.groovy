@@ -811,6 +811,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 if (cloneContainer) {
                     // The clone script copies only the source's disks; volumes added in the wizard are attached afterwards
                     def sourceDataDiskCount = getContainerDataDiskList(cloneContainer)?.size() ?: 0
+                    scvmmOpts.expectedCreatedDiskCount = 1 + sourceDataDiskCount
                     scvmmOpts.additionalTemplateDisks = additionalTemplateDisksConfig(workload, scvmmOpts, sourceDataDiskCount)
                     log.info("clone: ${scvmmOpts.additionalTemplateDisks.size()} volume(s) to attach after cloning (source data disks: ${sourceDataDiskCount})")
                 } else if (scvmmOpts.templateId && scvmmOpts.isSyncdImage) {
@@ -1153,17 +1154,16 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         additionalTemplateDisks
     }
 
-    // Clone copies exactly the source's disks, so the clone's data disks beyond the source's count are new.
+    // The clone copies exactly the source's disks; the wizard's id:-1 volumes are the ones to attach afterwards.
+    // Volume ids carry no clone-origin, so a count mismatch is only logged rather than resolved by position.
     protected List<Map> cloneAdditionalDisksConfig(List dataDisks, List userAddedVolumes, int sourceDataDiskCount) {
-        def newCount = Math.max(dataDisks.size() - sourceDataDiskCount, 0)
-        def newVolumes = userAddedVolumes
-        if (userAddedVolumes.size() != newCount) {
-            log.warn("clone: ${userAddedVolumes.size()} new volume(s) in config but ${dataDisks.size()} data disk(s) vs ${sourceDataDiskCount} on source; using the last ${newCount} data disk(s)")
-            newVolumes = newCount ? dataDisks.drop(dataDisks.size() - newCount) : []
+        def expectedNewCount = Math.max(dataDisks.size() - sourceDataDiskCount, 0)
+        if (userAddedVolumes.size() != expectedNewCount) {
+            log.warn("clone: attaching ${userAddedVolumes.size()} new volume(s) from config, but the clone has ${dataDisks.size()} data disk(s) vs ${sourceDataDiskCount} on the source; source volumes removed or re-sent as new in the clone request are not reflected on the cloned VM")
         }
         def diskCounter = 1 + sourceDataDiskCount
         def rtn = []
-        newVolumes.eachWithIndex { sv, index ->
+        userAddedVolumes.eachWithIndex { sv, index ->
             rtn << [idx: index + 1, diskCounter: diskCounter++, diskSize: sv.maxStorage, busNumber: '0']
         }
         rtn

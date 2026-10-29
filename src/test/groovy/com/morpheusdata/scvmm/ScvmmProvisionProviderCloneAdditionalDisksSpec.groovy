@@ -75,8 +75,35 @@ class ScvmmProvisionProviderCloneAdditionalDisksSpec extends Specification {
         provider.additionalTemplateDisksConfig(w, [diskExternalIdMappings: null], 1) == []
     }
 
-    def "clone falls back to the trailing data disks when config ids don't identify the new volumes"() {
-        given: 'every config volume carries id -1, which would otherwise re-add the source data disk'
+    def "clone attaches the config's new volume at its requested size even when it is listed before an inherited one"() {
+        given: 'API payload lists the new 10 GB volume first, so its StorageVolume id is lower than the inherited 50 GB one'
+        def w = workload(
+                [[id: 1, rootVolume: true, maxStorage: 40 * GB], [id: -1, rootVolume: false, maxStorage: 10 * GB],
+                 [id: 2, rootVolume: false, maxStorage: 50 * GB]],
+                [vol(101, true, 40 * GB), vol(102, false, 10 * GB), vol(103, false, 50 * GB)])
+
+        when:
+        def disks = provider.additionalTemplateDisksConfig(w, [:], 1)
+
+        then: 'the size comes from the id:-1 entry, not from the trailing data disk'
+        disks*.diskSize == [10 * GB]
+    }
+
+    def "clone where an inherited volume was removed in the wizard still attaches the new volume"() {
+        given: 'source has one 50 GB data disk; the wizard removes it and adds a 5 GB volume'
+        def w = workload(
+                [[id: 1, rootVolume: true, maxStorage: 40 * GB], [id: -1, rootVolume: false, maxStorage: 5 * GB]],
+                [vol(101, true, 40 * GB), vol(102, false, 5 * GB)])
+
+        when:
+        def disks = provider.additionalTemplateDisksConfig(w, [:], 1)
+
+        then: 'counts disagree (0 expected new) but the requested volume is attached, after the source disk'
+        disks == [[idx: 1, diskCounter: 2, diskSize: 5 * GB, busNumber: '0']]
+    }
+
+    def "clone attaches every id:-1 config volume when more are sent than the disk counts imply"() {
+        given: 'every config volume carries id -1 (e.g. an API caller omitted ids)'
         def w = workload(
                 [[id: -1, rootVolume: true, maxStorage: 20 * GB], [id: -1, rootVolume: false, maxStorage: 10 * GB],
                  [id: -1, rootVolume: false, maxStorage: 5 * GB]],
@@ -85,8 +112,8 @@ class ScvmmProvisionProviderCloneAdditionalDisksSpec extends Specification {
         when:
         def disks = provider.additionalTemplateDisksConfig(w, [:], 1)
 
-        then:
-        disks*.diskSize == [5 * GB]
+        then: 'no positional guess; config is used as sent'
+        disks*.diskSize == [10 * GB, 5 * GB]
     }
 
     def "non-clone synced template path is unchanged"() {

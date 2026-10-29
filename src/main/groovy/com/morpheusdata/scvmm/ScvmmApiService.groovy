@@ -266,7 +266,7 @@ class ScvmmApiService {
                         disks.osDisk.externalId = disk.ID
                         disks.diskMetaData[disk.ID] = [HostVolumeId: disk.HostVolumeId, FileShareId: disk.FileShareId, VhdID: disk.VhdID, Location: disk.VhdLocation, PartitionUniqueId: disk.PartitionUniqueId]
                     } else {
-                        disks.dataDisks[diskIndex - 1].externalId = disk.ID
+                        assignDataDiskExternalId(disks.dataDisks, diskIndex - 1, disk.ID)
                         disks.diskMetaData[disk.ID] = [HostVolumeId: disk.HostVolumeId, FileShareId: disk.FileShareId, dataDisk: true, VhdID: disk.VhdID, Location: disk.VhdLocation, PartitionUniqueId: disk.PartitionUniqueId]
                     }
 
@@ -1744,6 +1744,28 @@ foreach (\$network in \$networks) {
         return wrapExecuteCommand(generateCommandString(cmd), opts)
     }
 
+    // SCVMM can report more drives than Morpheus has data volumes (e.g. a clone keeps a source disk the user
+    // removed in the wizard); the VM already exists here, so skip the extra drive rather than fail.
+    protected boolean assignDataDiskExternalId(List dataDisks, int dataIndex, diskId) {
+        def size = dataDisks?.size() ?: 0
+        // negative indexes keep the existing Groovy list semantics (boot disk not reported first)
+        def dataDisk = (dataIndex < size && dataIndex >= -size) ? dataDisks[dataIndex] : null
+        if (dataDisk == null) {
+            log.warn("createServer - SCVMM disk ${diskId} has no matching Morpheus data volume (index ${dataIndex}, ${size} data volume(s)); leaving it unmapped")
+            return false
+        }
+        dataDisk.externalId = diskId
+        return true
+    }
+
+    // A clone always starts with exactly the source's disks, so runWorkload sets expectedCreatedDiskCount for clones.
+    protected static int expectedCreatedDiskCount(opts) {
+        if (opts.expectedCreatedDiskCount != null) {
+            return opts.expectedCreatedDiskCount as int
+        }
+        return 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))
+    }
+
     def checkServerCreated(opts, vmId) {
         log.debug "checkServerCreated: ${vmId}"
         def rtn = [success: false]
@@ -1759,7 +1781,7 @@ foreach (\$network in \$networks) {
                     log.debug "serverStatus: ${serverDetail.server?.Status}, opts.dataDisks: ${opts.dataDisks?.size()}, additionalTemplateDisks: ${opts.additionalTemplateDisks?.size()}"
 
                      if (serverDetail.server?.Status != 'UnderCreation' &&
-                             serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
+                             serverDetail.server?.VirtualDiskDrives?.size() == expectedCreatedDiskCount(opts)) {
                         // additionalTemplateDisks are created after VM creation
                         // data disks are created and attached after vm creation
 
