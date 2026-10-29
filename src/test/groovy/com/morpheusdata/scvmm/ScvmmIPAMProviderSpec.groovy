@@ -3,6 +3,12 @@
 package com.morpheusdata.scvmm
 
 import com.morpheusdata.core.MorpheusContext
+import com.morpheusdata.core.MorpheusServices
+import com.morpheusdata.core.data.DataQuery
+import com.morpheusdata.core.synchronous.cloud.MorpheusSynchronousCloudService
+import com.morpheusdata.core.synchronous.compute.MorpheusSynchronousComputeServerService
+import com.morpheusdata.model.Cloud
+import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.NetworkPool
 import com.morpheusdata.model.NetworkPoolIp
 import com.morpheusdata.model.NetworkPoolServer
@@ -214,5 +220,104 @@ class ScvmmIPAMProviderSpec extends Specification {
         new NetworkPool(poolServer: new NetworkPoolServer(internalId: 'scvmm-ipam.11'))   | null                                            | 11L
         new NetworkPool()                                                                 | new NetworkPoolServer(internalId: 'other.9')    | null
         new NetworkPool()                                                                 | null                                            | null
+    }
+
+    // --- controller resolution ---
+
+    MorpheusServices services = Mock(MorpheusServices)
+    MorpheusSynchronousCloudService cloudService = Mock(MorpheusSynchronousCloudService)
+    MorpheusSynchronousComputeServerService computeServerService = Mock(MorpheusSynchronousComputeServerService)
+
+    private void wireServices() {
+        context.getServices() >> services
+        services.getCloud() >> cloudService
+        services.getComputeServer() >> computeServerService
+    }
+
+    private static Cloud cloudWith(Map config) {
+        def cloud = new Cloud(id: 5L)
+        config.each { k, v -> cloud.setConfigProperty(k as String, v) }
+        cloud
+    }
+
+    def "getScvmmController returns the shared controller when the cloud references one"() {
+        given:
+        wireServices()
+        def shared = new ComputeServer(id: 77L)
+
+        when:
+        def result = provider.getScvmmController(cloudWith(sharedController: '77'))
+
+        then:
+        1 * computeServerService.get(77L) >> shared
+        0 * computeServerService.find(_)
+        result.is(shared)
+    }
+
+    def "getScvmmController falls back to the cloud's own controller when #reason"() {
+        given:
+        wireServices()
+        def own = new ComputeServer(id: 3L)
+        DataQuery captured
+
+        when:
+        def result = provider.getScvmmController(cloudWith(config))
+
+        then:
+        getCalls * computeServerService.get(_) >> null
+        1 * computeServerService.find(_) >> { DataQuery q -> captured = q; own }
+        result.is(own)
+        captured.filters.find { it.name == 'zone.id' }.value == 5L
+        captured.filters.find { it.name == 'computeServerType.code' }.value == 'scvmmController'
+        captured.joins == ['computeServerType']
+
+        where:
+        reason                               | config                    | getCalls
+        'no shared controller is configured' | [:]                       | 0
+        'the shared controller is missing'   | [sharedController: '77'] | 1
+    }
+
+    def "getScvmmController returns null when the cloud has no controller"() {
+        given:
+        wireServices()
+        computeServerService.find(_) >> null
+
+        expect:
+        provider.getScvmmController(cloudWith([:])) == null
+    }
+
+    def "getScvmmOpts builds zone+hypervisor opts from the pool's cloud and its shared controller"() {
+        given:
+        wireServices()
+        def cloud = cloudWith(sharedController: '77')
+        def shared = new ComputeServer(id: 77L)
+
+        when:
+        def result = provider.getScvmmOpts(new NetworkPool(refType: 'ComputeZone', refId: '5'), null)
+
+        then:
+        1 * cloudService.get(5L) >> cloud
+        1 * computeServerService.get(77L) >> shared
+        1 * apiService.getScvmmZoneAndHypervisorOpts(context, cloud, shared) >> SCVMM_OPTS
+        result == SCVMM_OPTS
+    }
+
+    def "getScvmmOpts returns null when #reason"() {
+        given:
+        wireServices()
+        cloudService.get(5L) >> cloud
+        computeServerService.find(_) >> null
+
+        when:
+        def result = provider.getScvmmOpts(new NetworkPool(refType: 'ComputeZone', refId: '5'), null)
+
+        then:
+        result == null
+        0 * apiService.getScvmmZoneAndHypervisorOpts(*_)
+
+        where:
+        reason                          | cloud
+        'the cloud no longer exists'    | null
+        'the cloud has no controller'   | new Cloud(id: 5L)
     }
 }
