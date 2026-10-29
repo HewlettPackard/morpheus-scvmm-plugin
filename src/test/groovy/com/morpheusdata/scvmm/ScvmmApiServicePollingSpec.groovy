@@ -141,6 +141,7 @@ class ScvmmApiServicePollingSpec extends Specification {
     static class NoSleepApi extends ScvmmApiService {
         int polls
         NoSleepApi(MorpheusContext context) { super(context) }
-        void sleep(long milliseconds) { polls++ }
+        @Override
+        protected void pause(long milliseconds) { polls++ }
     }
 }

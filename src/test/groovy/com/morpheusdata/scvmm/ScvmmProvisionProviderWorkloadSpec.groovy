@@ -425,7 +425,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         'startServer'   || 'externalId not found'
     }
 
-    def "#method returns #expectedMsg when the SCVMM call throws"() {
+    def "#method returns '#expectedMsg' when the SCVMM call throws"() {
         when:
         def rtn = provider."$method"(powerTarget(method))
 
@@ -436,10 +436,10 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
 
         where:
         method          | apiCall       || expectedMsg
-        'stopWorkload'  | 'stopServer'  || 'winrm down'
-        'startWorkload' | 'startServer' || 'winrm down'
-        'stopServer'    | 'stopServer'  || 'winrm down'
-        'startServer'   | 'startServer' || null
+        'stopWorkload'  | 'stopServer'  || 'Error stopping vm-1: winrm down'
+        'startWorkload' | 'startServer' || 'Error starting vm-1: winrm down'
+        'stopServer'    | 'stopServer'  || 'Error stopping vm-1: winrm down'
+        'startServer'   | 'startServer' || 'Error starting vm-1: winrm down'
     }
 
     def "restartWorkload stops then starts the VM"() {
@@ -498,7 +498,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         rtn.msg == 'vm not found'
     }
 
-    def "removeWorkload returns the exception message when deleteServer throws"() {
+    def "removeWorkload returns the translated exception message with context when deleteServer throws"() {
         given:
         server.externalId = 'vm-ext-1'
         apiService.deleteServer(*_) >> { throw new IllegalStateException('access denied') }
@@ -508,7 +508,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
 
         then:
         !rtn.success
-        rtn.msg == 'access denied'
+        rtn.msg == 'Error removing vm-1: SCVMM denied access to the requested resource. Verify the account has permission to the VM, host, library share and filesystem path used by the operation.'
     }
 
     def "destroyInstance removes each distinct VM once and skips workloads without a VM"() {
@@ -683,7 +683,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         rtn.msg == 'Error in creating the volume'
     }
 
-    def "deleting a volume removes the disk and then the storage volume (#removed)"() {
+    def "deleting a volume removes the disk and then the storage volume"() {
         given:
         resizable()
         def data = Domain.volume(id: 62L, externalId: 'vhd-2', rootVolume: false)
@@ -692,12 +692,29 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         def rtn = provider.resizeServer(server, resizeRequest(volumesDelete: [data]), [volumes: true])
 
         then:
-        1 * apiService.removeDisk(_, 'vhd-2') >> [success: removed]
-        (removed ? 1 : 0) * asyncStorageVolumeService.remove([data], server, true) >> Single.just(true)
+        1 * apiService.removeDisk(_, 'vhd-2') >> [success: true]
+        1 * asyncStorageVolumeService.remove([data], server, true) >> Single.just(true)
         rtn.success
+    }
+
+    def "a failed disk removal fails the resize and keeps the storage volume (#why)"() {
+        given:
+        resizable()
+        def data = Domain.volume(id: 62L, externalId: 'vhd-2', rootVolume: false)
+
+        when:
+        def rtn = provider.resizeServer(server, resizeRequest(volumesDelete: [data]), [volumes: true])
+
+        then:
+        1 * apiService.removeDisk(_, 'vhd-2') >> removeResult
+        0 * asyncStorageVolumeService.remove(*_)
+        !rtn.success
+        rtn.msg == (removeResult.msg ?: "Error removing volume ${data.name}".toString())
 
         where:
-        removed << [true, false]
+        why                       | removeResult
+        'no message from SCVMM'   | [success: false]
+        'SCVMM explains why'      | [success: false, error: 'in use', msg: 'SCVMM reports the object is in use by another job.']
     }
 
     def "volume changes are ignored unless opts.volumes is set"() {
@@ -724,7 +741,8 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         then:
         !rtn.success
         server.status == 'provisioned'
-        server.statusMessage == 'Unable to resize server: VMM timeout'
+        server.statusMessage == 'Unable to resize server: The connection to the SCVMM host timed out. Verify the host is online and reachable from the Morpheus appliance.'
+        rtn.msg == server.statusMessage
     }
 
     private Workload cloneParent(boolean cloudInit) {

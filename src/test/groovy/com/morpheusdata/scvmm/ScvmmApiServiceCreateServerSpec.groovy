@@ -4,6 +4,7 @@ package com.morpheusdata.scvmm
 
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
+import com.morpheusdata.scvmm.error.ScvmmCommandException
 import com.morpheusdata.scvmm.support.SpecFixtures
 import com.morpheusdata.scvmm.support.Domain
 import com.morpheusdata.scvmm.support.PsStub
@@ -30,7 +31,8 @@ class ScvmmApiServiceCreateServerSpec extends ScvmmSpec {
         svc = Spy(SpecFixtures.LoggingApiService, constructorArgs: [context])
         svc.pause(_) >> null
         psResponses = [('New-SCVirtualMachine'): TaskResults.ok([[ID: 'vm-new', ObjectType: 1]])]
-        svc.wrapExecuteCommand(_ as String, _ as Map) >> { String cmd, Map o -> PsStub.capture(scripts, psResponses).call(cmd, o) }
+        // *_ also intercepts the 3-arg best-effort calls (template/profile cleanup uses failOnError=false)
+        svc.wrapExecuteCommand(*_) >> { args -> PsStub.capture(scripts, psResponses).call(args[0] as String, args[1] as Map) }
         svc.buildCreateServerCommands(_) >> [launchCommand: LAUNCH, hardwareProfileName: 'hw-tmp', templateName: 'tpl-tmp']
         svc.listVirtualDiskDrives(_, _) >> [success: true, disks: [
                 [ID: 'dd-0', VolumeType: 'BootAndSystem', VhdID: 'vhd-0', HostVolumeId: 'hv-0', FileShareId: null, VhdLocation: 'C:\\0.vhdx', PartitionUniqueId: 'p0'],
@@ -194,8 +196,8 @@ class ScvmmApiServiceCreateServerSpec extends ScvmmSpec {
     }
 
     def "createServer maps a #gen compatibility error from the launch to a friendly errorMsg"() {
-        given:
-        psResponses[('New-SCVirtualMachine')] = TaskResults.fail(vmmError)
+        given: 'a failed launch makes wrapExecuteCommand throw'
+        psResponses[('New-SCVirtualMachine')] = { String cmd -> throw ScvmmCommandException.fromOutput(cmd, vmmError, '1') }
 
         when:
         def rtn = svc.createServer(baseOpts())
@@ -205,12 +207,14 @@ class ScvmmApiServiceCreateServerSpec extends ScvmmSpec {
         0 * computeServerService.save(_)
         rtn.success == false
         rtn.errorMsg == expected
+        rtn.error.contains(vmmError)
+        rtn.errorDetails.errorType == 'ScvmmCommandException'
 
         where:
         gen      | vmmError                                                            | expected
         'Gen2'   | 'Error (13206) ... the template which includes generation 2 ...'    | 'The virtual hard disk selected is not compatible with the template which include generation 2 virtual machine functionality.'
         'Gen1'   | 'Error (13206) ... the template which includes generation 1 ...'    | 'The virtual hard disk selected is not compatible with the template which include generation 1 virtual machine functionality.'
-        'other'  | 'Error (801) host not found'                                        | 'Error in launching VM: Error (801) host not found'
+        'other'  | 'Error (801) host not found'                                        | 'SCVMM reported an error: Error (801) host not found'
     }
 
     def "createServer fails without saving when the launch returns #why"() {
@@ -224,29 +228,38 @@ class ScvmmApiServiceCreateServerSpec extends ScvmmSpec {
         0 * computeServerService.save(_)
         0 * svc.checkServerCreated(*_)
         rtn.success == false
-        rtn.errorMsg.startsWith("Failed to create VM with command: ${LAUNCH}")
+        rtn.errorMsg == 'SCVMM did not create the virtual machine. Check the Jobs view in the VMM console for details.'
+        rtn.error == "SCVMM did not return a virtual machine object after New-SCVirtualMachine (returned ${count} object(s))"
+        rtn.errorDetails.errorType == 'ScvmmException'
 
         where:
-        why                    | data
-        'no data'              | null
-        'an empty list'        | []
-        'a non-VM object'      | [[ID: 'job-1', ObjectType: 9]]
-        'more than one object' | [[ID: 'a', ObjectType: 1], [ID: 'b', ObjectType: 1]]
+        why                    | data                                                    || count
+        'no data'              | null                                                    || 0
+        'an empty list'        | []                                                      || 0
+        'a non-VM object'      | [[ID: 'job-1', ObjectType: 9]]                          || 1
+        'more than one object' | [[ID: 'a', ObjectType: 1], [ID: 'b', ObjectType: 1]]   || 2
     }
 
-    def "createServer returns success false with no errorMsg and no server when checkServerCreated fails"() {
+    def "createServer returns success false with the created VM reference and #source errorMsg when checkServerCreated fails"() {
         when:
         def rtn = svc.createServer(baseOpts())
 
         then:
-        1 * svc.checkServerCreated(_, 'vm-new') >> [success: false]
+        1 * svc.checkServerCreated(_, 'vm-new') >> created
         0 * svc.listVirtualDiskDrives(*_)
-        rtn == [success: false]
+        rtn.success == false
+        rtn.server == [name: 'vm-1', id: 'vm-new', externalId: 'vm-new']
+        rtn.errorMsg == expected
         server.externalId == 'vm-new'
         scripts.count { it.contains('Remove-SCHardwareProfile') } == 2
+
+        where:
+        source      | created                                                     || expected
+        'a default' | [success: false]                                            || 'Virtual machine vm-new did not finish creating in SCVMM'
+        'its'       | [success: false, timedOut: true, msg: 'Timed out waiting']  || 'Timed out waiting'
     }
 
-    def "createServer returns the server map but success false when getServerDetails fails"() {
+    def "createServer returns the server map but success false with an errorMsg when getServerDetails fails"() {
         given:
         svc.checkServerCreated(_, _) >> [success: true]
 
@@ -258,10 +271,10 @@ class ScvmmApiServiceCreateServerSpec extends ScvmmSpec {
         rtn.success == false
         rtn.server.id == 'vm-new'
         rtn.server.VMId == null
-        !rtn.errorMsg
+        rtn.errorMsg == 'Unable to read details of the new virtual machine vm-new from SCVMM'
     }
 
-    def "createServer catches an exception from the PowerShell boundary and returns its message"() {
+    def "createServer catches an exception from the PowerShell boundary and returns its translated message"() {
         given:
         psResponses[('New-SCVirtualMachine')] = { String cmd -> throw new IllegalStateException('winrm timeout') }
 
@@ -270,6 +283,8 @@ class ScvmmApiServiceCreateServerSpec extends ScvmmSpec {
 
         then:
         rtn.success == false
-        rtn.errorMsg == 'winrm timeout'
+        rtn.errorMsg.startsWith('The connection to the SCVMM host timed out')
+        rtn.error == 'winrm timeout'
+        rtn.errorDetails.errorCode == 'winrm.timeout'
     }
 }

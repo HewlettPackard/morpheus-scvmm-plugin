@@ -8,7 +8,8 @@ import com.morpheusdata.scvmm.support.Domain
 import com.morpheusdata.scvmm.support.PsStub
 import com.morpheusdata.scvmm.support.TaskResults
 import com.morpheusdata.scvmm.support.VmmPayloads
-import groovy.json.JsonException
+import com.morpheusdata.scvmm.error.ScvmmCommandException
+import com.morpheusdata.scvmm.error.ScvmmResponseParseException
 import io.reactivex.rxjava3.core.Single
 import spock.lang.Subject
 import spock.lang.Timeout
@@ -92,26 +93,38 @@ class ScvmmApiServiceListingsSpec extends Specification {
         'array'        | '[{"a":1}]'
     }
 
-    def "wrapExecuteCommand leaves empty or null stdout untouched (#stdout) and keeps success from the exit code"() {
+    def "wrapExecuteCommand leaves empty or null stdout untouched (#stdout) and keeps success from the exit code (failOnError=#failOnError)"() {
         given:
         respondAll({ String cmd -> new TaskResult(success: exit == 0, exitCode: "$exit", data: stdout) })
 
         when:
-        def out = svc.wrapExecuteCommand('x', opts)
+        def out = svc.wrapExecuteCommand('x', opts, failOnError)
 
         then: 'the raw value is kept (not normalised to [])'
         out.data == stdout
         out.success == (exit == 0)
 
-        where:
-        stdout | exit
-        ''     | 0
-        null   | 0
-        ''     | 1
+        where: 'a failing command is only returned (not thrown) when the caller tolerates failure'
+        stdout | exit | failOnError
+        ''     | 0    | true
+        null   | 0    | true
+        ''     | 1    | false
     }
 
-    def "wrapExecuteCommand throws JsonException on #shape stdout instead of returning success=false"() {
-        // Pinned: no success:false / cleanPowerShellError mapping; callers without try/catch propagate it.
+    def "wrapExecuteCommand throws ScvmmCommandException for a non-zero exit code when failOnError is left at its default"() {
+        given:
+        respondAll({ String cmd -> new TaskResult(success: false, exitCode: '1', data: '') })
+
+        when:
+        svc.wrapExecuteCommand('x', opts)
+
+        then:
+        def e = thrown(ScvmmCommandException)
+        e.exitCode == '1'
+    }
+
+    def "wrapExecuteCommand throws ScvmmResponseParseException on #shape stdout instead of returning success=false"() {
+        // Callers without try/catch propagate it; the raw parser exception is replaced by a sanitized cause.
         given:
         respondAll({ String cmd -> TaskResults.raw(stdout) })
 
@@ -119,7 +132,8 @@ class ScvmmApiServiceListingsSpec extends Specification {
         svc.wrapExecuteCommand('x', opts)
 
         then:
-        thrown(JsonException)
+        def e = thrown(ScvmmResponseParseException)
+        e.cause instanceof IllegalArgumentException
 
         where:
         shape    | stdout
@@ -180,7 +194,7 @@ class ScvmmApiServiceListingsSpec extends Specification {
         rtn.server == null
     }
 
-    def "getServerDetails returns success=false without error when #why"() {
+    def "getServerDetails returns success=false with a translated error when #why"() {
         given:
         respondAll(result)
 
@@ -189,12 +203,17 @@ class ScvmmApiServiceListingsSpec extends Specification {
 
         then:
         !rtn.success
-        rtn.error == null
+        rtn.server == null
+        rtn.errorType == errorType
+        rtn.msg
+        rtn.error
+        rtn.error != 'VM_NOT_FOUND'
+        !rtn.connectionFailure
 
         where:
-        why                              | result
-        'the command fails'              | TaskResults.raw('', 1)
-        'stdout is not JSON (caught)'    | { String c -> TaskResults.raw('Access is denied') }
+        why                              | result                                              || errorType
+        'the command fails'              | TaskResults.raw('', 1)                              || 'ScvmmCommandException'
+        'stdout is not JSON (caught)'    | { String c -> TaskResults.raw('Access is denied') } || 'ScvmmResponseParseException'
     }
 
     // ================================================================ extractWindowsServerVersion / getScvmmServerInfo
@@ -267,20 +286,20 @@ class ScvmmApiServiceListingsSpec extends Specification {
         scripts.collect { (it =~ /Select-Object -Skip (\d+) -First 50/)[0][1] as int } == [0, 50, 100, 150]
     }
 
-    def "listVirtualMachines keeps the pages read before a failing page and still reports success"() {
+    def "listVirtualMachines fails the whole listing when a later page fails instead of returning a partial list"() {
+        // A partial list reported as success would make VirtualMachineSync delete the VMs on the unread pages.
         given:
         respondAll([TaskResults.json(page(50)), TaskResults.raw('', 1)])
 
         when:
-        def rtn = svc.listVirtualMachines(opts + [zoneConfig: [:]])
+        svc.listVirtualMachines(opts + [zoneConfig: [:]])
 
-        then: 'pinned: the partial list is returned as success'
-        rtn.success
-        rtn.virtualMachines.size() == 50
+        then:
+        thrown(ScvmmCommandException)
         scripts.size() == 2
     }
 
-    def "listVirtualMachines propagates JsonException when a page returns non-JSON stdout"() {
+    def "listVirtualMachines propagates ScvmmResponseParseException when a page returns non-JSON stdout"() {
         given:
         respondAll([TaskResults.json(page(50)), { String c -> TaskResults.raw('WinRM error') }])
 
@@ -288,15 +307,19 @@ class ScvmmApiServiceListingsSpec extends Specification {
         svc.listVirtualMachines(opts + [zoneConfig: [:]])
 
         then:
-        thrown(JsonException)
+        thrown(ScvmmResponseParseException)
     }
 
-    def "listVirtualMachines reports success=false and no VMs when the first page fails"() {
+    def "listVirtualMachines propagates ScvmmCommandException when the first page fails"() {
         given:
         respondAll(TaskResults.raw('', 1))
 
-        expect:
-        svc.listVirtualMachines(opts + [zoneConfig: [:]]) == [success: false, virtualMachines: []]
+        when:
+        svc.listVirtualMachines(opts + [zoneConfig: [:]])
+
+        then:
+        thrown(ScvmmCommandException)
+        scripts.size() == 1
     }
 
     def "listVirtualMachines reports success with no VMs for an empty first page"() {
@@ -364,7 +387,6 @@ class ScvmmApiServiceListingsSpec extends Specification {
         where:
         why            | result                  || expected
         'empty page'   | empty()                 || [success: true, hosts: []]
-        'failure'      | TaskResults.raw('', 1)  || [success: false, hosts: []]
     }
 
     def "listDatastores scopes volumes to the cloud's clusters when the zone has a regionCode"() {
@@ -405,12 +427,15 @@ class ScvmmApiServiceListingsSpec extends Specification {
         scripts[0].contains("\$hostGroupPath = ''")
     }
 
-    def "listDatastores reports success=false when the first page fails"() {
+    def "listDatastores propagates ScvmmCommandException when the first page fails"() {
         given:
         respondAll(TaskResults.raw('', 1))
 
-        expect:
-        svc.listDatastores(opts) == [success: false, datastores: []]
+        when:
+        svc.listDatastores(opts)
+
+        then:
+        thrown(ScvmmCommandException)
     }
 
     def "listRegisteredFileShares pages file shares and returns them under 'datastores'"() {
@@ -436,7 +461,6 @@ class ScvmmApiServiceListingsSpec extends Specification {
         where:
         why          | result                 || expected
         'empty page' | empty()                || [success: true, datastores: []]
-        'failure'    | TaskResults.raw('', 1) || [success: false, datastores: []]
     }
 
     // ================================================================ clusters / host groups
@@ -473,7 +497,6 @@ class ScvmmApiServiceListingsSpec extends Specification {
         where:
         why            | result                  || expected
         'empty stdout' | empty()                 || [success: true, clusters: '']
-        'failure'      | TaskResults.raw('', 1)  || [success: false, clusters: []]
     }
 
     def "listHostGroups without a regionCode returns every host group"() {
@@ -505,12 +528,16 @@ class ScvmmApiServiceListingsSpec extends Specification {
         rtn.hostGroups*.id == ['a', 'a1']
     }
 
-    def "listHostGroups with a regionCode returns success=false when the cloud lookup fails"() {
+    def "listHostGroups with a regionCode propagates ScvmmCommandException when the cloud lookup fails"() {
         given:
         respondAll(TaskResults.raw('', 1))
 
-        expect:
-        svc.listHostGroups(opts + [zone: Domain.cloud(regionCode: 'cloud-1')]) == [success: false, hostGroups: []]
+        when:
+        svc.listHostGroups(opts + [zone: Domain.cloud(regionCode: 'cloud-1')])
+
+        then:
+        thrown(ScvmmCommandException)
+        scripts.size() == 1
     }
 
     // ================================================================ templates / clouds / capability profiles / shares
@@ -550,20 +577,14 @@ class ScvmmApiServiceListingsSpec extends Specification {
         where:
         why            | result                 || expected
         'empty stdout' | empty()                || [success: true, templates: []]
-        'failure'      | TaskResults.raw('', 1) || [success: false, templates: []]
     }
 
-    def "listClouds returns clouds; failure leaves success=false"() {
+    def "listClouds returns clouds"() {
         given:
-        respondAll(result)
+        respondAll(TaskResults.json([[ID: 'c1', Name: 'Cloud 1']]))
 
         expect:
-        svc.listClouds(opts) == expected
-
-        where:
-        result                                             || expected
-        TaskResults.json([[ID: 'c1', Name: 'Cloud 1']])   || [success: true, clouds: [[ID: 'c1', Name: 'Cloud 1']]]
-        TaskResults.raw('', 1)                             || [success: false, clouds: []]
+        svc.listClouds(opts) == [success: true, clouds: [[ID: 'c1', Name: 'Cloud 1']]]
     }
 
     def "getCapabilityProfiles returns the profiles, or null profiles with success for an empty payload"() {
@@ -577,7 +598,6 @@ class ScvmmApiServiceListingsSpec extends Specification {
         result                                                || expected
         TaskResults.json([VmmPayloads.capabilityProfile()])  || [success: true, capabilityProfiles: [[ID: 'cap-1', Name: 'Hyper-V']]]
         empty()                                               || [success: true, capabilityProfiles: null]
-        TaskResults.raw('', 1)                                || [success: false, capabilityProfiles: null]
     }
 
     def "getCloud looks the zone's regionCode up and returns the first match"() {
@@ -595,20 +615,38 @@ class ScvmmApiServiceListingsSpec extends Specification {
         result                                                      || expected
         TaskResults.json([ID: 'cloud-1', CapabilityProfiles: []])  || [success: true, cloud: [ID: 'cloud-1', CapabilityProfiles: []]]
         empty()                                                     || [success: true, cloud: null]
-        TaskResults.raw('', 1)                                      || [success: false, cloud: null]
     }
 
-    def "listLibraryShares returns the shares; failure leaves success=false"() {
+    def "listLibraryShares returns the shares"() {
         given:
-        respondAll(result)
+        respondAll(TaskResults.json([[ID: 's1', Name: 'MSSCVMMLibrary', Path: '\\\\lib\\MSSCVMMLibrary']]))
 
         expect:
-        svc.listLibraryShares(opts) == expected
+        svc.listLibraryShares(opts) == [success: true, libraryShares: [[ID: 's1', Name: 'MSSCVMMLibrary', Path: '\\\\lib\\MSSCVMMLibrary']]]
+    }
+
+    def "#method propagates ScvmmCommandException when the command fails (callers translate it)"() {
+        given:
+        respondAll(TaskResults.raw('', 1))
+
+        when:
+        svc."$method"(opts + extraOpts)
+
+        then:
+        def e = thrown(ScvmmCommandException)
+        e.exitCode == '1'
+        scripts.size() == 1
 
         where:
-        result                                                       || expected
-        TaskResults.json([[ID: 's1', Name: 'MSSCVMMLibrary', Path: '\\\\lib\\MSSCVMMLibrary']]) || [success: true, libraryShares: [[ID: 's1', Name: 'MSSCVMMLibrary', Path: '\\\\lib\\MSSCVMMLibrary']]]
-        TaskResults.raw('', 1)                                       || [success: false, libraryShares: []]
+        method                     | extraOpts
+        'listHosts'                | [:]
+        'listRegisteredFileShares' | [:]
+        'listClusters'             | [:]
+        'listTemplates'            | [:]
+        'listClouds'               | [:]
+        'getCapabilityProfiles'    | [:]
+        'getCloud'                 | [zone: Domain.cloud(regionCode: 'cloud-1')]
+        'listLibraryShares'        | [:]
     }
 
     // ================================================================ listAllNetworks
@@ -662,7 +700,9 @@ class ScvmmApiServiceListingsSpec extends Specification {
 
         then:
         !rtn.success
-        rtn.msg == 'Error fetching all networks list from SCVMM Host'
+        rtn.msg.startsWith('Error fetching all networks list from SCVMM Host: ')
+        rtn.msg.contains('non-JSON')
+        rtn.errorType == 'ScvmmResponseParseException'
     }
 
     // ================================================================ listNetworkIPPools
@@ -738,7 +778,9 @@ class ScvmmApiServiceListingsSpec extends Specification {
 
         then:
         !rtn.success
-        rtn.msg == 'Error syncing ip pools list from SCVMM Host'
+        rtn.msg.startsWith('Error syncing ip pools list from SCVMM Host: ')
+        rtn.msg.contains('non-JSON')
+        rtn.errorType == 'ScvmmResponseParseException'
     }
 
     // ================================================================ reserveIPAddress parsing
@@ -755,15 +797,16 @@ class ScvmmApiServiceListingsSpec extends Specification {
         rtn.ipAddress == [ID: 'ip-1', Address: '10.0.0.5']
     }
 
-    def "reserveIPAddress reports success with an empty ipAddress for an empty payload"() {
+    def "reserveIPAddress reports failure with a pool-exhausted message for an empty payload"() {
         given:
         respondAll(empty())
 
-        expect: 'pinned: not success:false'
-        svc.reserveIPAddress(opts, 'pool-1') == [success: true, ipAddress: []]
+        expect: 'an empty grant is not a usable reservation'
+        svc.reserveIPAddress(opts, 'pool-1') == [success: false, ipAddress: [],
+                msg: 'SCVMM did not grant an IP address from pool pool-1; the pool may be exhausted']
     }
 
-    def "reserveIPAddress reports success=false without the VMM message for an 'already allocated' failure"() {
+    def "reserveIPAddress reports success=false with a translated message and the VMM error for an 'already allocated' failure"() {
         given:
         respondAll({ String c -> new TaskResult(success: false, exitCode: '1', data: '',
                 error: 'Grant-SCIPAddress : The IP address 10.0.0.5 is already allocated. (Error ID: 13668)') })
@@ -773,10 +816,15 @@ class ScvmmApiServiceListingsSpec extends Specification {
 
         then:
         !rtn.success
-        rtn.msg == null
+        rtn.msg.startsWith('Error reserving an IP address from SCVMM: ')
+        rtn.error.contains('The IP address 10.0.0.5 is already allocated')
+        rtn.errorType == 'ScvmmCommandException'
+        rtn.errorCode == 'vmm.ip-already-allocated'
+        rtn.msg.contains('already allocated')
+        !rtn.msg.contains('no available addresses')
     }
 
-    def "reserveIPAddress catches a parse error and reports a generic message"() {
+    def "reserveIPAddress catches a parse error and reports a contextual message"() {
         given:
         respondAll({ String c -> TaskResults.raw('Grant-SCIPAddress : error 13668') })
 
@@ -785,6 +833,8 @@ class ScvmmApiServiceListingsSpec extends Specification {
 
         then:
         !rtn.success
-        rtn.msg == 'Error reserving an IP address from SCVMM'
+        rtn.msg.startsWith('Error reserving an IP address from SCVMM: ')
+        rtn.msg.contains('non-JSON')
+        rtn.errorType == 'ScvmmResponseParseException'
     }
 }

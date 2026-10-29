@@ -4,6 +4,7 @@ package com.morpheusdata.scvmm
 
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.model.TaskResult
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
 import com.morpheusdata.scvmm.support.Domain
 import com.morpheusdata.scvmm.support.PsStub
 import com.morpheusdata.scvmm.support.TaskResults
@@ -154,28 +155,29 @@ class ScvmmApiServiceNetworkListSpec extends Specification {
         def rtn = svc.listNetworks(opts)
 
         then:
-        rtn == [success: false, networks: []]
+        !rtn.success
+        rtn.networks == []
+        rtn.msg.startsWith(msg)
         scripts.size() == 1
 
         where:
-        label           | result
-        'an error'      | TaskResults.fail('Access denied')
-        'no data'       | TaskResults.json([])
-        'empty output'  | TaskResults.raw('')
-        'exit code 1'   | TaskResults.json(logicals('logical-1'), 1)
+        label           | result                                      || msg
+        'an error'      | TaskResults.fail('Access denied')           || 'Error syncing networks list from SCVMM Host: SCVMM denied access'
+        'no data'       | TaskResults.json([])                        || 'SCVMM returned no logical networks for the cloud (Get-SCLogicalNetwork)'
+        'empty output'  | TaskResults.raw('')                         || 'SCVMM returned no logical networks for the cloud (Get-SCLogicalNetwork)'
+        'exit code 1'   | TaskResults.json(logicals('logical-1'), 1)  || 'Error syncing networks list from SCVMM Host: SCVMM reported an error'
     }
 
-    def "listNetworks returns success=false with a message when the command throws"() {
+    def "listNetworks rethrows ScvmmConnectionException when the WinRM call throws (so the refresh can mark the cloud offline)"() {
         given:
         context.executeWindowsCommand(*_) >> { throw new RuntimeException('winrm timeout') }
 
         when:
-        def rtn = svc.listNetworks(opts)
+        svc.listNetworks(opts)
 
         then:
-        rtn.success == false
-        rtn.networks == []
-        rtn.msg == 'Error syncing networks list from SCVMM Host'
+        def e = thrown(ScvmmConnectionException)
+        e.message.contains('winrm timeout')
     }
 
     // ---------------------------------------------------------------- listNoIsolationVLans
@@ -216,8 +218,14 @@ class ScvmmApiServiceNetworkListSpec extends Specification {
         given:
         respond([(LOGICAL): TaskResults.fail('Access denied')])
 
-        expect:
-        svc.listNoIsolationVLans(opts) == [success: false, networks: []]
+        when:
+        def rtn = svc.listNoIsolationVLans(opts)
+
+        then:
+        !rtn.success
+        rtn.networks == []
+        rtn.msg.startsWith('Error syncing isolation networks list from SCVMM Host: SCVMM denied access')
+        rtn.errorType == 'ScvmmCommandException'
         scripts.size() == 1
     }
 
@@ -229,24 +237,33 @@ class ScvmmApiServiceNetworkListSpec extends Specification {
         svc.listNoIsolationVLans(opts) == [success: true, networks: []]
     }
 
-    def "listNoIsolationVLans returns success with what it has when a page fails"() {
+    def "listNoIsolationVLans fails instead of reporting a partial list as success when a page fails"() {
+        // a partial list fed to the sync would delete the VLANs on the unread pages
         given:
-        respond([(DEFINITIONS): TaskResults.fail('timeout'), (LOGICAL): TaskResults.json(logicals('logical-1'))])
-
-        expect:
-        svc.listNoIsolationVLans(opts) == [success: true, networks: []]
-    }
-
-    def "listNoIsolationVLans returns success=false with a message when the command throws"() {
-        given:
-        context.executeWindowsCommand(*_) >> { throw new RuntimeException('winrm timeout') }
+        def vlans = [VmmPayloads.vlan(ID: 'net-1-100', LogicalNetworkID: 'ln-1', VLanID: 100)]
+        respond([(DEFINITIONS): [TaskResults.json(vlans), TaskResults.fail('Get-SCLogicalNetworkDefinition : query failed')],
+                 (LOGICAL)    : TaskResults.json(logicals('logical-1'))])
 
         when:
         def rtn = svc.listNoIsolationVLans(opts)
 
         then:
-        rtn.success == false
-        rtn.msg == 'Error syncing isolation networks list from SCVMM Host'
+        !rtn.success
+        rtn.msg.startsWith('Error syncing isolation networks list from SCVMM Host: ')
+        rtn.msg.contains('query failed')
+        rtn.errorType == 'ScvmmCommandException'
+    }
+
+    def "listNoIsolationVLans rethrows ScvmmConnectionException when the WinRM call throws"() {
+        given:
+        context.executeWindowsCommand(*_) >> { throw new RuntimeException('winrm timeout') }
+
+        when:
+        svc.listNoIsolationVLans(opts)
+
+        then:
+        def e = thrown(ScvmmConnectionException)
+        e.message.contains('winrm timeout')
     }
 
     // ---------------------------------------------------------------- listAllNetworks
@@ -284,31 +301,37 @@ class ScvmmApiServiceNetworkListSpec extends Specification {
         where:
         label            | result
         'returns null'   | empty()
-        'exits non-zero' | TaskResults.fail('timeout')
+        'exits non-zero' | TaskResults.fail('Get-SCVMNetwork : query failed')
     }
 
     def "listAllNetworks fails when the logical network lookup #label"() {
         given:
         respond([(LOGICAL): result])
 
-        expect:
-        svc.listAllNetworks(opts) == [success: false, networks: []]
-
-        where:
-        label           | result
-        'fails'         | TaskResults.fail('Access denied')
-        'returns no data' | TaskResults.json([])
-    }
-
-    def "listAllNetworks returns success=false with a message when the command throws"() {
-        given:
-        context.executeWindowsCommand(*_) >> { throw new RuntimeException('winrm timeout') }
-
         when:
         def rtn = svc.listAllNetworks(opts)
 
         then:
-        rtn.success == false
-        rtn.msg == 'Error fetching all networks list from SCVMM Host'
+        !rtn.success
+        rtn.networks == []
+        rtn.msg.startsWith(msg)
+        scripts.size() == 1
+
+        where:
+        label             | result                            || msg
+        'fails'           | TaskResults.fail('Access denied') || 'Error fetching all networks list from SCVMM Host: SCVMM denied access'
+        'returns no data' | TaskResults.json([])              || 'SCVMM returned no logical networks (Get-SCLogicalNetwork)'
+    }
+
+    def "listAllNetworks rethrows ScvmmConnectionException when the WinRM call throws"() {
+        given:
+        context.executeWindowsCommand(*_) >> { throw new RuntimeException('winrm timeout') }
+
+        when:
+        svc.listAllNetworks(opts)
+
+        then:
+        def e = thrown(ScvmmConnectionException)
+        e.message.contains('winrm timeout')
     }
 }

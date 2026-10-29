@@ -10,7 +10,8 @@ import spock.lang.Subject
 
 /**
  * checkServerCreated / checkServerReady polling loops. The delay goes through the pause() seam; the loops
- * stop when {@code attempts > 600} / {@code attempts > 300 || notFoundAttempts > 10}, i.e. after 601 / 301 polls.
+ * give up after exactly SERVER_CREATED_MAX_ATTEMPTS (600) / SERVER_READY_MAX_ATTEMPTS (300) polls, or after
+ * SERVER_READY_MAX_NOT_FOUND (10) consecutive VM_NOT_FOUND lookups, reporting {@code timedOut} / a not-found message.
  */
 class ScvmmApiServiceServerWaitSpec extends ScvmmSpec {
 
@@ -96,24 +97,34 @@ class ScvmmApiServiceServerWaitSpec extends ScvmmSpec {
         rtn.success
     }
 
-    def "checkServerCreated stops at the first CreationFailed status without an error message"() {
-        // plan expected an 'error' key; the code returns [success:false] only
+    def "checkServerCreated stops at the first CreationFailed status with a terminal message"() {
+        given:
+        Map failed = disks(1, [Status: 'CreationFailed'])
+
         when:
         def rtn = svc.checkServerCreated([dataDisks: [[:]]], VM_ID)
 
         then:
-        1 * svc.getServerDetails(_, _) >> disks(1, [Status: 'CreationFailed'])
-        rtn == [success: false]
+        1 * svc.getServerDetails(_, _) >> failed
+        !rtn.success
+        rtn.server.is(failed.server)
+        rtn.msg.startsWith("SCVMM reports virtual machine ${VM_ID}")
+        rtn.msg.contains('CreationFailed')
+        !rtn.timedOut
     }
 
-    def "checkServerCreated gives up after 601 polls when getServerDetails never succeeds"() {
+    def "checkServerCreated gives up after SERVER_CREATED_MAX_ATTEMPTS (600) polls when getServerDetails never succeeds"() {
         when:
         def rtn = svc.checkServerCreated([:], VM_ID)
 
         then:
-        601 * svc.getServerDetails(_, _) >> [success: false, server: null, error: null]
-        601 * svc.pause(5000L) >> null
-        rtn == [success: false]
+        600 * svc.getServerDetails(_, _) >> [success: false, server: null, error: null]
+        600 * svc.pause(5000L) >> null
+        !rtn.success
+        rtn.timedOut
+        rtn.errorType == 'ScvmmTimeoutException'
+        rtn.msg.startsWith("Timed out waiting for virtual machine ${VM_ID}")
+        rtn.msg.contains('(600 attempts)')
     }
 
     def "checkServerCreated treats a successful lookup with no server payload as not ready"() {
@@ -133,7 +144,9 @@ class ScvmmApiServiceServerWaitSpec extends ScvmmSpec {
         then:
         1 * svc.getServerDetails(_, _) >> { throw new RuntimeException('winrm timeout') }
         noExceptionThrown()
-        rtn == [success: false]
+        !rtn.success
+        rtn.msg.startsWith('The connection to the SCVMM host timed out')
+        rtn.connectionFailure
     }
 
     // ---------------------------------------------------------------- checkServerReady
@@ -189,7 +202,7 @@ class ScvmmApiServiceServerWaitSpec extends ScvmmSpec {
         adapters << [[], null]
     }
 
-    def "checkServerReady gives up after 301 polls when waitForIp is true and no IP ever appears"() {
+    def "checkServerReady gives up after SERVER_READY_MAX_ATTEMPTS (300) polls when waitForIp is true and no IP ever appears"() {
         given:
         computeServerService.get(10L) >> server
 
@@ -197,13 +210,16 @@ class ScvmmApiServiceServerWaitSpec extends ScvmmSpec {
         def rtn = svc.checkServerReady([server: server, waitForIp: true], VM_ID)
 
         then:
-        301 * svc.getServerDetails(_, _) >> detail()
-        301 * svc.pause(5000L) >> null
-        rtn == [success: false]
+        300 * svc.getServerDetails(_, _) >> detail()
+        300 * svc.pause(5000L) >> null
+        !rtn.success
+        rtn.timedOut
+        rtn.errorType == 'ScvmmTimeoutException'
+        rtn.msg.contains('to be Running with an IP address')
+        rtn.msg.contains('(300 attempts)')
     }
 
-    def "checkServerReady stops after the 11th VM_NOT_FOUND without an error message"() {
-        // plan expected an 'error' mentioning not found; the code returns [success:false] only
+    def "checkServerReady stops after SERVER_READY_MAX_NOT_FOUND (10) consecutive VM_NOT_FOUND lookups with a not-found message"() {
         given:
         computeServerService.get(10L) >> server
 
@@ -211,24 +227,27 @@ class ScvmmApiServiceServerWaitSpec extends ScvmmSpec {
         def rtn = svc.checkServerReady([server: server, waitForIp: false], VM_ID)
 
         then:
-        11 * svc.getServerDetails(_, _) >> [success: false, server: null, error: 'VM_NOT_FOUND']
-        rtn == [success: false]
+        10 * svc.getServerDetails(_, _) >> [success: false, server: null, error: 'VM_NOT_FOUND']
+        !rtn.success
+        rtn.error == 'VM_NOT_FOUND'
+        rtn.msg.contains("${VM_ID}")
+        rtn.msg.contains('was not found in SCVMM after 10 lookups')
+        !rtn.timedOut
     }
 
-    def "checkServerReady counts VM_NOT_FOUND cumulatively, not consecutively"() {
-        // plan expected a successful lookup to reset the counter; it does not
+    def "checkServerReady counts VM_NOT_FOUND consecutively: a successful lookup resets the counter"() {
         given:
         computeServerService.get(10L) >> server
         def notFound = [success: false, server: null, error: 'VM_NOT_FOUND']
         def stopped = detail(VirtualMachineState: 'Stopped', Status: 'Stopped')
-        def responses = (1..11).collectMany { [notFound, stopped] }
+        def responses = [notFound] * 9 + [stopped] + [notFound] * 9 + [detail()]
 
         when:
         def rtn = svc.checkServerReady([server: server, waitForIp: false], VM_ID)
 
-        then:
-        21 * svc.getServerDetails(_, _) >>> responses
-        rtn.success == false
+        then: '18 misses in total never trip the limit because no run reaches 10'
+        20 * svc.getServerDetails(_, _) >>> responses
+        rtn.success
     }
 
     def "checkServerReady does not count other lookup failures towards the not-found limit"() {
@@ -313,11 +332,13 @@ class ScvmmApiServiceServerWaitSpec extends ScvmmSpec {
 
         then:
         noExceptionThrown()
-        rtn == [success: false]
+        !rtn.success
+        rtn.errorType == errorType
+        rtn.msg == msg
 
         where:
-        reason                          | opts
-        'the server lookup throws'      | [server: Domain.server(id: 10L), waitForIp: false]
-        'opts carries no server'        | [waitForIp: false]
+        reason                          | opts                                                 || errorType                | msg
+        'the server lookup throws'      | [server: Domain.server(id: 10L), waitForIp: false]  || 'IllegalStateException'  | 'db down'
+        'opts carries no server'        | [waitForIp: false]                                   || 'NullPointerException'   | "Cannot get property 'id' on null object"
     }
 }

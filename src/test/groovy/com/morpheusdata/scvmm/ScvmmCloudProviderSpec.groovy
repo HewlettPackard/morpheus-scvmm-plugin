@@ -14,6 +14,7 @@ import com.morpheusdata.model.ComputeServerType
 import com.morpheusdata.model.NetworkPoolServer
 import com.morpheusdata.model.OsType
 import com.morpheusdata.request.ValidateCloudRequest
+import com.morpheusdata.scvmm.error.ScvmmCommandException
 import com.morpheusdata.scvmm.helper.NetworkPoolServerHelper
 import com.morpheusdata.scvmm.support.Domain
 import com.morpheusdata.scvmm.support.ScvmmSpec
@@ -182,74 +183,109 @@ class ScvmmCloudProviderSpec extends ScvmmSpec {
         def response = provider.refresh(cloud)
 
         then:
-        1 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.error, 'controller not found', _ as Date)
+        1 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.error, 'SCVMM controller server not found for this cloud', _ as Date)
         0 * syncs.network.execute()
         0 * syncs.vms.execute(_)
         !response.success
+        response.msg == 'SCVMM controller server not found for this cloud'
     }
 
-    def "refresh marks the cloud and controller in error when checkCommunication fails"() {
+    def "refresh marks the cloud and controller in error with the cause when checkCommunication fails"() {
+        given:
+        controllerFound()
+        GroovySpy(ConnectionUtils, global: true)
+        ConnectionUtils.testHostConnectivity(*_) >> true
+        apiService.listAllNetworks(scvmmOpts) >> [success: false, msg: 'SCVMM returned no logical networks (Get-SCLogicalNetwork)']
+        def syncs = globalSyncMocks()
+        def msg = 'Error connecting to SCVMM controller: SCVMM returned no logical networks (Get-SCLogicalNetwork)'
+
+        when:
+        def response = provider.refresh(cloud)
+
+        then:
+        1 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.error, msg, _ as Date)
+        1 * computeServerService.save(controller)
+        controller.status == 'error'
+        controller.powerState == ComputeServer.PowerState.unknown
+        controller.statusMessage == msg
+        0 * syncs.network.execute()
+        !response.success
+        response.msg == msg
+    }
+
+    def "refresh treats a reachable controller with an empty network inventory (#listResult) as connected and syncs"() {
+        // an empty inventory is not a connection failure
         given:
         controllerFound()
         GroovySpy(ConnectionUtils, global: true)
         ConnectionUtils.testHostConnectivity(*_) >> true
         apiService.listAllNetworks(scvmmOpts) >> listResult
+        GroovyMock(NetworkPoolServerHelper, global: true)
         def syncs = globalSyncMocks()
+        new IpPoolsSync(*_) >> syncs.ipPools
 
         when:
         def response = provider.refresh(cloud)
 
         then:
-        1 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.error, 'error connecting', _ as Date)
-        1 * computeServerService.save(controller)
-        controller.status == 'error'
-        controller.powerState == ComputeServer.PowerState.unknown
-        controller.statusMessage == 'error connecting to controller'
-        0 * syncs.network.execute()
-        !response.success
+        1 * syncs.network.execute()
+        1 * syncs.vms.execute(false)
+        1 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.ok, null, _ as Date)
+        0 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.error, _, _)
+        response.success
 
         where:
-        listResult << [[success: false], [success: true, networks: []], [success: true, networks: null]]
+        listResult << [[success: true, networks: []], [success: true, networks: null]]
     }
 
-    def "refresh marks the cloud in error without syncing when the WinRM port is unreachable"() {
+    def "refresh marks the cloud offline without syncing when the WinRM port is unreachable"() {
         given:
         controllerFound()
         GroovySpy(ConnectionUtils, global: true)
         ConnectionUtils.testHostConnectivity(*_) >> false
         def syncs = globalSyncMocks()
+        def msg = 'SCVMM host scvmm.local is not reachable on port 5985 (WinRM)'
 
         when:
         def response = provider.refresh(cloud)
 
         then:
-        1 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.error, 'error connecting', _ as Date)
+        1 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.offline, msg, _ as Date)
         0 * apiService.listAllNetworks(_)
         0 * syncs.network.execute()
         !response.success
+        response.msg == msg
+        response.data.status == Cloud.Status.offline
+        controller.statusMessage == msg
     }
 
-    def "refresh stops at the first sync that throws and leaves the cloud status at syncing"() {
+    def "refresh isolates a sync that throws, runs the remaining syncs and reports a warning"() {
         given:
         controllerFound()
         GroovySpy(ConnectionUtils, global: true)
         ConnectionUtils.testHostConnectivity(*_) >> true
         apiService.listAllNetworks(_) >> [success: true, networks: [[ID: 'vmnet-1']]]
+        GroovyMock(NetworkPoolServerHelper, global: true)
         def syncs = globalSyncMocks()
+        new IpPoolsSync(*_) >> syncs.ipPools
 
         when:
         def response = provider.refresh(cloud)
 
-        then: 'the exception is swallowed by refresh'
+        then: 'the exception is contained to its worker'
         noExceptionThrown()
         1 * syncs.network.execute()
         1 * syncs.clusters.execute() >> { throw new IllegalStateException('boom') }
-        0 * syncs.isolation.execute()
-        0 * syncs.vms.execute(_)
+        1 * syncs.isolation.execute()
+        1 * syncs.ipPools.execute()
+        1 * syncs.vms.execute(_)
         1 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.syncing, null, _ as Date)
+        1 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.warning, { it.contains('1 of 10') && it.contains('ClustersSync: boom') }, _ as Date)
         0 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.ok, _, _)
         0 * asyncCloudService.updateCloudStatus(cloud, Cloud.Status.error, _, _)
         !response.success
+        response.data.status == Cloud.Status.warning
+        response.data.workers.find { it.name == 'ClustersSync' }.error == 'boom'
     }
 
     def "updateHypervisorStatus re-saves an already provisioned controller on every successful refresh"() {
@@ -342,24 +378,42 @@ class ScvmmCloudProviderSpec extends ScvmmSpec {
 
         then:
         1 * apiService.listClouds({ it.sshHost == 'scvmm.local' && it.sshUsername == 'admin' && it.sshPassword == 'secret' &&
-                it.zoneRoot == 'C:\\work' && it.diskRoot == 'C:\\disks' }) >> [success: true, clouds: []]
+                it.zoneRoot == 'C:\\work' && it.diskRoot == 'C:\\disks' }) >> [success: true, clouds: [[ID: 'c1', Name: 'Cloud 1']]]
         response.success
         response.errors.isEmpty()
         cloud.getConfigProperty('installAgent') == false
     }
 
-    def "validate reports 'Error connecting to scvmm' when listClouds fails"() {
+    def "validate reports that SCVMM returned no clouds when listClouds answers #listResult"() {
         given:
         apiService.getScvmmZoneOpts(context, cloud) >> [:]
         computeServerService.find(_ as DataQuery) >> null
-        apiService.listClouds(_) >> [success: false]
+        apiService.listClouds(_) >> listResult
 
         when:
         def response = provider.validate(cloud, creds())
 
         then:
         !response.success
-        response.msg == 'Error connecting to scvmm'
+        response.msg == 'SCVMM did not return any clouds (Get-SCCloud). Verify the VMM console is installed on the host and the account is a VMM administrator.'
+
+        where:
+        listResult << [[success: false], [success: true, clouds: []], [success: true]]
+    }
+
+    def "validate reports the translated cause when listClouds throws"() {
+        given:
+        apiService.getScvmmZoneOpts(context, cloud) >> [:]
+        computeServerService.find(_ as DataQuery) >> null
+        apiService.listClouds(_) >> { throw ScvmmCommandException.fromOutput('Get-SCCloud', 'Get-SCCloud : You cannot access VMM management server localhost', '1') }
+
+        when:
+        def response = provider.validate(cloud, creds())
+
+        then:
+        !response.success
+        response.msg == 'The SCVMM host cannot reach the VMM management server (localhost). Verify the VMM service is running on the host.'
+        response.data.errorType == 'ScvmmCommandException'
     }
 
     def "validate reports a missing #field before connecting"() {
@@ -409,7 +463,7 @@ class ScvmmCloudProviderSpec extends ScvmmSpec {
         def bare = Domain.cloud(account: account, config: [host: 'scvmm.local'])
         apiService.getScvmmZoneOpts(context, bare) >> [:]
         computeServerService.find(_ as DataQuery) >> null
-        apiService.listClouds(_) >> [success: true]
+        apiService.listClouds(_) >> [success: true, clouds: [[ID: 'c1', Name: 'Cloud 1']]]
 
         when:
         def response = provider.validate(bare, creds())
@@ -458,13 +512,13 @@ class ScvmmCloudProviderSpec extends ScvmmSpec {
         'other.local' | 'scvmm.local' || [success: true]
     }
 
-    def "validate returns 'No zone found' semantics (success=false, no msg) for a null cloud"() {
+    def "validate reports 'No zone found' for a null cloud"() {
         when:
         def response = provider.validate(null, creds())
 
         then:
         !response.success
-        response.msg == null
+        response.msg == 'No zone found'
         0 * apiService._
     }
 
