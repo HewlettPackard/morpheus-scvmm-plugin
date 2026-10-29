@@ -346,7 +346,6 @@ testing {
     }
     test {
         useJUnitPlatform()
-        forkEvery = 1
         testLogging {
             events "failed", "skipped"
             exceptionFormat = 'full'
