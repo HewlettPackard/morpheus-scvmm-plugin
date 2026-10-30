@@ -359,6 +359,118 @@ class VirtualMachineSyncSpec extends ScvmmSpec {
         bulkSaves == [[fine]]
     }
 
+    // ------------------------------------------------------------------ updateMatchedVirtualMachines: NIC changes vs bulkSave
+
+    List<DataQuery> serverQueries = []
+
+    /** First list() is the matched-server load; any later list() is the interface reload before bulkSave. */
+    private void updateWithReload(List<ComputeServer> servers, List<Map> vms, List<ComputeServer> reloaded, Map systemNetworks = [:]) {
+        computeServerService.list(_) >> { DataQuery q -> serverQueries << q; serverQueries.size() == 1 ? servers : reloaded }
+        def items = [servers, vms].transpose().collect { s, vm -> new SyncTask.UpdateItem<ComputeServer, Map>(existingItem: s, masterItem: vm) }
+        sync.updateMatchedVirtualMachines(items, [], null, [host1, host2], false, unmanaged, systemNetworks)
+    }
+
+    private ComputeServerInterface eth0() {
+        Domain.nic(id: 70L, name: 'eth0', externalId: 'nic-1', macAddress: '00:15:5D:00:00:01', vlanId: '0', network: vnet,
+                   dhcp: true, primaryInterface: true, addresses: [])
+    }
+
+    private static Map secondAdapter() {
+        VmmPayloads.vmAdapter(ID: 'nic-2', Name: 'nic-2', SlotId: 1, MacAddress: '00:15:5D:00:00:02', IPv4Addresses: ['10.0.0.20'])
+    }
+
+    def "updateMatchedVirtualMachines saves a changed VM with the re-read interface list after an out-of-band NIC is added"() {
+        given:
+        def nic0 = eth0()
+        def server = matched(interfaces: [nic0])
+        def createdRow = Domain.nic(id: 72L, name: 'eth1', externalId: 'nic-2', macAddress: '00:15:5D:00:00:02', primaryInterface: false)
+        def reloaded = matched(interfaces: [eth0(), createdRow])
+        List<ComputeServerInterface> created
+
+        when:
+        updateWithReload([server], [vm(Name: 'renamed', NetworkAdapters: [VmmPayloads.vmAdapter(), secondAdapter()])], [reloaded], ['vmnet-1': vnet])
+
+        then:
+        1 * interfaceService.create(_, server) >> { args -> created = args[0]; Single.just(true) }
+        0 * interfaceService.remove(*_)
+        created*.externalId == ['nic-2']
+        created[0].name == 'eth1'
+        bulkSaves == [[server]]
+        server.name == 'renamed'
+        server.interfaces*.externalId == ['nic-1', 'nic-2']
+        server.interfaces[1].is(createdRow)
+        serverQueries.size() == 2
+        serverQueries[1].joins.containsAll(['interfaces', 'interfaces.network', 'interfaces.addresses'])
+    }
+
+    def "updateMatchedVirtualMachines saves a changed VM without an interface SCVMM no longer reports"() {
+        given:
+        def nic0 = eth0()
+        def gone = Domain.nic(id: 71L, name: 'eth1', externalId: 'nic-gone', primaryInterface: false)
+        def server = matched(interfaces: [nic0, gone])
+        def reloaded = matched(interfaces: [eth0()])
+
+        when:
+        updateWithReload([server], [vm(Name: 'renamed', NetworkAdapters: [VmmPayloads.vmAdapter()])], [reloaded], ['vmnet-1': vnet])
+
+        then:
+        1 * interfaceService.remove([gone], server) >> Single.just(true)
+        0 * interfaceService.create(*_)
+        bulkSaves == [[server]]
+        server.interfaces*.externalId == ['nic-1']
+    }
+
+    def "updateMatchedVirtualMachines does not save a VM whose only change is a #why NIC"() {
+        given:
+        def gone = Domain.nic(id: 71L, externalId: 'nic-gone', primaryInterface: false)
+        def server = matched(interfaces: why == 'new' ? [eth0()] : [eth0(), gone])
+        def adapters = why == 'new' ? [VmmPayloads.vmAdapter(), secondAdapter()] : [VmmPayloads.vmAdapter()]
+
+        when:
+        updateWithReload([server], [vm(NetworkAdapters: adapters)], [], ['vmnet-1': vnet])
+
+        then:
+        creates * interfaceService.create(_, server) >> Single.just(true)
+        removes * interfaceService.remove(_, server) >> Single.just(true)
+        bulkSaves.isEmpty()
+        serverQueries.size() == 1
+
+        where:
+        why       || creates | removes
+        'new'     || 1       | 0
+        'removed' || 0       | 1
+    }
+
+    def "updateMatchedVirtualMachines neither touches interfaces nor saves when the NICs match SCVMM"() {
+        given:
+        def server = matched(interfaces: [eth0()])
+
+        when:
+        updateWithReload([server], [vm(NetworkAdapters: [VmmPayloads.vmAdapter()])], [], ['vmnet-1': vnet])
+
+        then:
+        0 * interfaceService.create(*_)
+        0 * interfaceService.remove(*_)
+        0 * interfaceService.save(*_)
+        bulkSaves.isEmpty()
+        serverQueries.size() == 1
+    }
+
+    def "updateMatchedVirtualMachines leaves out of the save a VM whose interfaces cannot be re-read and saves the rest"() {
+        given:
+        def nicChanged = matched(id: 10L, interfaces: [eth0()])
+        def other = matched(id: 11L, externalId: 'vm-2')
+
+        when:
+        updateWithReload([nicChanged, other],
+                [vm(Name: 'renamed', NetworkAdapters: [VmmPayloads.vmAdapter(), secondAdapter()]), vm(ID: 'vm-2', Name: 'renamed-2')],
+                [], ['vmnet-1': vnet])
+
+        then:
+        1 * interfaceService.create(_, nicChanged) >> Single.just(true)
+        bulkSaves == [[other]]
+    }
+
     // ------------------------------------------------------------------ syncVolumes
 
     def "syncVolumes updates a matched disk that grew by more than 1 GB and fixes its root flag and name"() {

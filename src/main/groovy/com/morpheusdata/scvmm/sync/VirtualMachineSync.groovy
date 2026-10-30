@@ -167,6 +167,7 @@ class VirtualMachineSync {
                                 'volumes.datastore', 'resourcePool', 'parentServer', 'capacityInfo'])).collectEntries { [(it.id): it] }
 
             List<ComputeServer> saves = []
+            Set<Long> interfacesChangedIds = [] as Set
             for (updateMap in updateList) {
                 ComputeServer currentServer = matchedServers[updateMap.existingItem.id]
                 def masterItem = updateMap.masterItem
@@ -320,9 +321,9 @@ class VirtualMachineSync {
                                 }
                             }
                             if (masterItem.NetworkAdapters != null) {
-                                def interfacesChanged = syncInterfaces(currentServer, masterItem.NetworkAdapters, systemNetworks)
-                                if (interfacesChanged) {
-                                    save = true
+                                // Interface changes are persisted by the interface service; no server save needed for them.
+                                if (syncInterfaces(currentServer, masterItem.NetworkAdapters, systemNetworks)) {
+                                    interfacesChangedIds << currentServer.id
                                 }
                             }
                             else {
@@ -341,11 +342,47 @@ class VirtualMachineSync {
                 }
             }
             if (saves) {
+                saves = refreshInterfaces(saves, interfacesChangedIds)
+            }
+            if (saves) {
                 context.async.computeServer.bulkSave(saves).blockingGet()
             }
         } catch (Exception e) {
             log.error "Error in updating virtual machines: ${e.message}", e
         }
+    }
+
+    /**
+     * bulkSave rebinds {@code interfaces} (core orphan-deletes missing rows), so re-read the list for servers whose
+     * NICs changed this sync; a server that cannot be re-read is skipped this cycle. Returns the servers to save.
+     */
+    protected List<ComputeServer> refreshInterfaces(List<ComputeServer> saves, Set<Long> interfacesChangedIds) {
+        def stale = saves.findAll { it.id in interfacesChangedIds }
+        if (!stale) {
+            return saves
+        }
+        Map<Long, ComputeServer> reloaded = [:]
+        try {
+            reloaded = context.services.computeServer.list(new DataQuery()
+                    .withFilter('id', 'in', stale.collect { it.id })
+                    .withJoins(['interfaces', 'interfaces.network', 'interfaces.addresses']))
+                    ?.collectEntries { [(it.id): it] } ?: [:]
+        } catch (e) {
+            log.error("refreshInterfaces: failed to reload interfaces for servers ${stale*.id}: ${e}", e)
+        }
+        def skipped = []
+        stale.each { server ->
+            def fresh = reloaded[server.id]
+            if (fresh != null) {
+                server.interfaces = fresh.interfaces ?: []
+            } else {
+                skipped << server
+            }
+        }
+        if (skipped) {
+            log.warn("refreshInterfaces: not saving servers ${skipped*.id} this cycle; their interfaces could not be reloaded")
+        }
+        return saves - skipped
     }
 
     private void updateWorkloadAndInstanceStatuses(ComputeServer server, Workload.Status workloadStatus,
