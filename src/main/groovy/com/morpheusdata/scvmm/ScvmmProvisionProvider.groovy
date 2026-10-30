@@ -2264,6 +2264,34 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     }
 
     /**
+     * Resolves the SCVMM cluster id of the resource pool selected for a host (e.g. a Docker cluster host). The pool
+     * already assigned to the server wins, as in runWorkload; otherwise the wizard value from the server config is
+     * used, as in embedded initializeServer: {@code pool-<id>}, a bare morpheus id or the SCVMM cluster id.
+     * Pool groups are only honoured once core has picked a pool onto the server.
+     * @return the SCVMM cluster id, or null when no resource pool was selected
+     */
+    protected String resolveHostClusterId(Cloud cloud, ComputeServer server, Map config) {
+        CloudPool pool = server?.resourcePool
+        if (pool?.externalId) {
+            return pool.externalId
+        }
+        if (pool?.id) {
+            def loaded = findClusterPool(cloud, pool.id)
+            if (loaded?.externalId) {
+                return loaded.externalId
+            }
+        }
+        def value = (config?.resourcePoolId ?: config?.resourcePool)?.toString()?.trim()
+        if (value?.startsWith('pool-')) {
+            value = value.substring('pool-'.length()).trim()
+        }
+        if (!value || value == 'null' || value.startsWith('poolGroup-')) {
+            return null
+        }
+        return findClusterPool(cloud, value)?.externalId
+    }
+
+    /**
      * Datastore scoping moved to assignedZonePools, so the Cluster Shared Volume marker recorded during sync is what
      * determines HA placement. Datastores not yet re-synced fall back to the legacy "has a zonePool" behaviour.
      */
@@ -2315,7 +2343,6 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         ProvisionResponse provisionResponse = new ProvisionResponse()
         try {
             def config = server.getConfigMap()
-            config.resourcePool = ""   // keep it blank else server creation failed
             Cloud cloud = server.cloud
             def account = server.account
             def layout = server.layout
@@ -2328,13 +2355,8 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
             def imageType = config.templateTypeSelect ?: 'default'
             def virtualImage
-            def clusterId
-            if (config.resourcePool) {
-                def pool = server.resourcePool
-                if (pool) {
-                    clusterId = pool.externalId
-                }
-            }
+            def clusterId = resolveHostClusterId(cloud, server, config)
+            log.info("runHost: server.resourcePool: ${server.resourcePool?.id} config.resourcePoolId: ${config.resourcePoolId} config.resourcePool: ${config.resourcePool} -> clusterId: ${clusterId}")
 
             // host, datastore configuration
             ComputeServer node
