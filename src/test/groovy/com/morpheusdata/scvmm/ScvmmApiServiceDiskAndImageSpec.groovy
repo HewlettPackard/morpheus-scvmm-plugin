@@ -11,7 +11,8 @@ import com.morpheusdata.scvmm.support.GrailsCodecs
 import com.morpheusdata.scvmm.support.PsStub
 import com.morpheusdata.scvmm.support.ScvmmSpec
 import com.morpheusdata.scvmm.support.TaskResults
-import groovy.json.JsonException
+import com.morpheusdata.scvmm.error.ScvmmCommandException
+import com.morpheusdata.scvmm.error.ScvmmException
 import io.reactivex.rxjava3.core.Single
 import spock.lang.Subject
 import spock.lang.Timeout
@@ -96,33 +97,45 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         }
     }
 
-    def "createAndAttachDisk returns null (not success=false) when the attach fails or drives are not requested"() {
+    def "createAndAttachDisk reports success=false with a contextual message when the attach command fails"() {
         given:
-        respond([:], result)
+        respond([:], TaskResults.raw('', 1))
 
-        expect: 'pinned: not success:false'
-        svc.createAndAttachDisk(opts, [sizeMb: 1024], returnDrives) == null
+        when:
+        def rtn = svc.createAndAttachDisk(opts, [sizeMb: 1024], true)
 
-        where:
-        result                 | returnDrives
-        TaskResults.raw('', 1) | true
-        TaskResults.raw('')    | false
+        then:
+        !rtn.success
+        rtn.msg.startsWith('Error creating the volume: ')
+        rtn.errorType == 'ScvmmCommandException'
+        scripts.size() == 1
     }
 
-    def "createAndAttachDisk throws #exception when the drive lookup returns #why"() {
+    def "createAndAttachDisk reports success with the script report when drives are not requested"() {
+        given:
+        respond([:], TaskResults.raw(''))
+
+        expect:
+        svc.createAndAttachDisk(opts, [sizeMb: 1024], false) == [success: true, report: null]
+        scripts.size() == 1
+    }
+
+    def "createAndAttachDisk reports success=false when the drive lookup returns #why"() {
         given:
         respond(['Get-SCVirtualDiskDrive -VM $VM': result], TaskResults.raw(''))
 
         when:
-        svc.createAndAttachDisk(opts, [vhdName: 'data-1', sizeMb: 1024])
+        def rtn = svc.createAndAttachDisk(opts, [vhdName: 'data-1', sizeMb: 1024])
 
         then:
-        thrown(exception)
+        !rtn.success
+        rtn.msg == 'Disk data-1 was added but could not be found on VM vm-1'
+        rtn.error == rtn.msg
 
         where:
-        why            | result               || exception
-        'an empty list' | TaskResults.raw('[]') || NoSuchElementException
-        'empty stdout'  | TaskResults.raw('')   || MissingMethodException
+        why             | result
+        'an empty list' | TaskResults.raw('[]')
+        'empty stdout'  | TaskResults.raw('')
     }
 
     // ================================================================ listVirtualDiskDrives / removeDisk
@@ -143,7 +156,17 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         name     | result                                     || expected
         'data-1' | TaskResults.json([[ID: 'd1']])              || [success: true, disks: [[ID: 'd1']]]
         null     | TaskResults.raw('')                         || [success: true, disks: '']
-        null     | TaskResults.raw('', 1)                      || [success: false, disks: []]
+    }
+
+    def "listVirtualDiskDrives propagates ScvmmCommandException when the command fails"() {
+        given:
+        respond([:], TaskResults.raw('', 1))
+
+        when:
+        svc.listVirtualDiskDrives(opts, 'vm-1')
+
+        then:
+        thrown(ScvmmCommandException)
     }
 
     def "removeDisk detaches the drive by VHD id in one job group and returns the raw result"() {
@@ -171,7 +194,7 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         def rtn = spy.resizeDisk(opts, 'vhd-9', 21L * GB + 5)
 
         then:
-        rtn == [success: true]
+        rtn == [success: true, jobId: 'job-1', jobStatus: 'Completed']
         scripts[0].contains('$newSize = 21')
         scripts[0].contains('$diskId = "vhd-9"')
         scripts[0].contains('VirtualHardDiskSizeGB=$newSize')
@@ -183,8 +206,15 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         respond(['Expand-SCVirtualDiskDrive': TaskResults.json([success: true, jobId: 'job-1']),
                  'Get-SCJob'                : TaskResults.json([ID: 'job-1', Status: status])])
 
-        expect:
-        spy.resizeDisk(opts, 'vhd-9', 21L * GB) == [success: false]
+        when:
+        def rtn = spy.resizeDisk(opts, 'vhd-9', 21L * GB)
+
+        then:
+        !rtn.success
+        rtn.jobStatus == status
+        rtn.errorType == 'ScvmmJobFailedException'
+        rtn.msg == "The SCVMM job failed. Check the Jobs view in the VMM console for details."
+        rtn.errOut == rtn.msg
 
         where:
         status << ['Failed']
@@ -197,34 +227,54 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         when:
         def rtn = spy.resizeDisk(opts, 'vhd-9', 21L * GB)
 
-        then: 'shape is {success, jobId, errOut} — callers must read errOut, not msg'
-        rtn == [success: false, jobId: null, errOut: 'Cannot Resize a Differencing Disk or a Disk with Checkpoints']
+        then: 'the raw VMM text stays in errOut/error and msg carries the translated message'
+        rtn == [success: false, jobId: null, errOut: 'Cannot Resize a Differencing Disk or a Disk with Checkpoints',
+                error: 'Cannot Resize a Differencing Disk or a Disk with Checkpoints',
+                msg: 'The disk cannot be resized because it is a differencing disk or has checkpoints. Remove checkpoints and retry.']
         0 * spy.pause(_)
     }
 
     def "resizeDisk reports a synthetic errOut for an empty response"() {
         given:
-        respond([:], result)
+        respond([:], TaskResults.raw(''))
+        def msg = 'resizeDisk - did not receive expected response from SCVMM host when resizing disk vhd-9'
 
         expect:
-        spy.resizeDisk(opts, 'vhd-9', 21L * GB) == [success: false, errOut: 'resizeDisk - did not receive expected response from rpc']
-
-        where:
-        result << [TaskResults.raw(''), TaskResults.raw('', 1)]
+        spy.resizeDisk(opts, 'vhd-9', 21L * GB) == [success: false, errOut: msg, error: msg, msg: msg]
     }
 
-    def "waitForJobToComplete accepts SucceedWithInfo and gives up after 351 polls of a missing job"() {
+    def "resizeDisk reports a contextual errOut when the resize command fails"() {
+        given:
+        respond([:], TaskResults.raw('', 1))
+
+        when:
+        def rtn = spy.resizeDisk(opts, 'vhd-9', 21L * GB)
+
+        then:
+        !rtn.success
+        rtn.msg.startsWith('Error resizing disk vhd-9: ')
+        rtn.errOut == rtn.msg
+        rtn.errorType == 'ScvmmCommandException'
+        0 * spy.pause(_)
+    }
+
+    def "waitForJobToComplete accepts SucceedWithInfo and gives up after JOB_MAX_ATTEMPTS (350) polls of a missing job"() {
         given:
         respond(['Get-SCJob': result])
 
-        expect:
-        spy.waitForJobToComplete(opts, 'job-1') == [success: expected]
+        when:
+        def rtn = spy.waitForJobToComplete(opts, 'job-1')
+
+        then:
+        rtn.success == expected
+        rtn.jobId == 'job-1'
+        (rtn.timedOut == true) == !expected
         scripts.size() == polls
 
         where:
         result                                                    || expected | polls
         TaskResults.json([ID: 'job-1', Status: 'SucceedWithInfo']) || true     | 1
-        TaskResults.raw('', 1)                                     || false    | 351
+        TaskResults.raw('', 1)                                     || false    | ScvmmApiService.JOB_MAX_ATTEMPTS
     }
 
     // ================================================================ updateServer / validateServerConfig
@@ -292,18 +342,23 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         !scripts[0].contains('Set-SCVirtualMachine')
     }
 
-    def "updateServer reports failure for #why"() {
+    def "updateServer reports failure with a translated message for #why"() {
         given:
         respond([:], result)
 
-        expect:
-        svc.updateServer(opts, 'vm-1', [maxCores: 4]) == [success: false]
+        when:
+        def rtn = svc.updateServer(opts, 'vm-1', [maxCores: 4])
+
+        then:
+        !rtn.success
+        rtn.errorType == errorType
+        rtn.msg.contains(msgFragment)
 
         where:
-        why                  | result
-        'a failed command'   | TaskResults.raw('', 1)
-        'a non-zero exit'    | new TaskResult(success: true, exitCode: '2', data: '')
-        'non-JSON stdout'    | { String c -> TaskResults.raw('Set-SCVirtualMachine : error') }
+        why                  | result                                                            || errorType                     | msgFragment
+        'a failed command'   | TaskResults.raw('', 1)                                            || 'ScvmmCommandException'       | 'exit code 1'
+        'a non-zero exit'    | new TaskResult(success: true, exitCode: '2', data: '')            || 'ScvmmCommandException'       | 'exit code 2'
+        'non-JSON stdout'    | { String c -> TaskResults.raw('Set-SCVirtualMachine : error') }   || 'ScvmmResponseParseException' | 'non-JSON'
     }
 
     def "validateServerConfig accepts a networkId"() {
@@ -387,7 +442,7 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         scripts[1].contains('\\\\vmm\\MSSCVMMLibrary\\images\\ubuntu_22_04\\*')
     }
 
-    def "getRootSharePath throws '#message' when #why"() {
+    def "getRootSharePath throws #exception.simpleName when #why"() {
         given:
         respond([:], result)
 
@@ -395,13 +450,25 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         svc.getRootSharePath(opts)
 
         then:
-        def e = thrown(Exception)
-        e.message == message
+        def e = thrown(exception)
+        e.message.startsWith(message)
 
         where:
-        why                 | result                  || message
-        'the lookup fails'  | TaskResults.raw('', 1)  || 'Error in getting library share'
-        'no share exists'   | TaskResults.raw('[]')   || 'No library share found'
+        why                 | result                  || exception             | message
+        'the lookup fails'  | TaskResults.raw('', 1)  || ScvmmCommandException | 'SCVMM command failed (exit code 1)'
+        'no share exists'   | TaskResults.raw('[]')   || ScvmmException        | 'No library share found'
+    }
+
+    def "getRootSharePath reports the library-share guidance to the user when no share exists"() {
+        given:
+        respond([:], TaskResults.raw('[]'))
+
+        when:
+        svc.getRootSharePath(opts)
+
+        then:
+        def e = thrown(ScvmmException)
+        e.userMessage.startsWith('The configured SCVMM library share could not be found')
     }
 
     def "insertContainerImage imports an image already staged on the host and cleans up the staging folder"() {
@@ -448,8 +515,8 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         svc.insertContainerImage(imageOpts())
 
         then:
-        def e = thrown(Exception)
-        e.message == 'Error in importing physical resource'
+        def e = thrown(ScvmmCommandException)
+        e.message.contains('Error importing physical resource into the library share (Import-SCLibraryPhysicalResource and Copy-Item both failed): denied')
     }
 
     def "insertContainerImage throws when the library VHD query fails"() {
@@ -460,8 +527,9 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         svc.insertContainerImage(imageOpts())
 
         then:
-        def e = thrown(Exception)
-        e.message == 'Error in getting Get-SCVirtualHardDisk'
+        def e = thrown(ScvmmCommandException)
+        e.commandSummary.contains('Get-SCVirtualHardDisk')
+        scripts.size() == 1
     }
 
     private CloudFile cloudFile(String name) {
@@ -629,7 +697,8 @@ class ScvmmApiServiceDiskAndImageSpec extends ScvmmSpec {
         svc.importAndMountIso('x'.bytes, 'C:\\disks\\vm-1', 'vm-1', opts)
 
         then:
-        def e = thrown(Exception)
-        e.message.startsWith('ISO Upload to SCVMM Host Failed')
+        def e = thrown(ScvmmException)
+        e.message == 'ISO upload to C:\\disks\\vm-1 on scvmm-controller failed: agent offline'
+        e.userMessage.startsWith('Upload of the cloud-init ISO to the SCVMM host scvmm-controller failed')
     }
 }

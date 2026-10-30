@@ -28,6 +28,7 @@ class TemplatesSync {
     private ScvmmApiService apiService
     private CloudProvider cloudProvider
     private LogInterface log = PrefixedLoggerFactory.getLogger(TemplatesSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('TemplatesSync', log)
 
     TemplatesSync(Cloud cloud, ComputeServer node, MorpheusContext context, CloudProvider cloudProvider) {
         this.cloud = cloud
@@ -42,6 +43,9 @@ class TemplatesSync {
         log.debug "TemplatesSync"
         def scvmmOpts = apiService.getScvmmZoneAndHypervisorOpts(context, cloud, node)
         def listResults = apiService.listTemplates(scvmmOpts)
+        if (!listResults.success) {
+            return [success: false, msg: listResults.msg ?: 'SCVMM template listing failed']
+        }
         if (listResults.success && listResults.templates) {
             def query = new DataQuery().withFilter('refType', 'ComputeZone').withFilter('refId', cloud.id)
                     .withFilter('virtualImage.imageType', 'in', ['vhd', 'vhdx']).withJoin('virtualImage')
@@ -81,6 +85,8 @@ class TemplatesSync {
                 removeMissingVirtualImages(removeItems)
             }.start()
         }
+        // exceptions from listTemplates propagate to the caller, which records the worker failure
+        return itemFailures.result()
     }
 
     protected removeMissingVirtualImages(List<VirtualImageLocationIdentityProjection> removeList) {
@@ -88,7 +94,7 @@ class TemplatesSync {
             log.debug("removeMissingVirtualImageLocations: ${cloud} ${removeList.size()}")
             context.async.virtualImage.location.remove(removeList).blockingGet()
         } catch (e) {
-            log.error("error deleting synced virtual image: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
@@ -202,7 +208,7 @@ class TemplatesSync {
                 context.async.virtualImage.save(imagesToUpdate, cloud).blockingGet()
             }
         } catch (e) {
-            log.error("Error in updateMatchedVirtualImageLocations: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
@@ -240,7 +246,7 @@ class TemplatesSync {
                 return context.async.virtualImage.listById(updateItems?.collect { it.existingItem.id } as List<Long>)
             }.start()
         } catch (e) {
-            log.error("Error in addMissingVirtualImageLocations: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
@@ -358,7 +364,7 @@ class TemplatesSync {
                 context.async.virtualImage.save(imagesToUpdate, cloud).blockingGet()
             }
         } catch (e) {
-            log.error("Error in updateMatchedVirtualImages: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
@@ -423,7 +429,7 @@ class TemplatesSync {
                 }
             }
         } catch (e) {
-            log.error("Error in addMissingVirtualImages: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
@@ -453,7 +459,7 @@ class TemplatesSync {
                 removeMissingStorageVolumes(removeItems, addLocation, changes)
             }.start()
         } catch (e) {
-            log.error("syncVolumes error: ${e}", e)
+            itemFailures.record(e)
         }
         return changes
     }

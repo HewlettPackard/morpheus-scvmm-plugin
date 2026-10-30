@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
@@ -29,6 +31,7 @@ class DatastoresSync {
     private MorpheusContext context
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(DatastoresSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('DatastoresSync', log)
 
     DatastoresSync(ComputeServer node, Cloud cloud, MorpheusContext context) {
         this.node = node
@@ -107,9 +110,13 @@ class DatastoresSync {
                     return context.async.cloud.datastore.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
             }
+        } catch (ScvmmConnectionException ex) {
+            throw ex
         } catch (ex) {
-            log.error("DatastoresSync error: {}", ex.getMessage())
+            log.error("DatastoresSync error: ${ex.message}", ex)
+            return ScvmmErrorTranslator.toResultMap(ex)
         }
+        return itemFailures.result()
     }
 
     private removeMissingDatastores(List<DatastoreIdentityProjection> removeList) {
@@ -117,7 +124,7 @@ class DatastoresSync {
         try {
             context.services.cloud.datastore.bulkRemove(removeList)
         } catch (ex) {
-            log.error("DatastoresSync: removeMissingDatastores error: {}", ex.getMessage())
+            itemFailures.record(ex)
         }
     }
 
@@ -175,7 +182,7 @@ class DatastoresSync {
                 }
             }
         } catch (e) {
-            log.error("Error in updateMatchedDatastores method: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
@@ -214,7 +221,7 @@ class DatastoresSync {
                 }
             }
         } catch (e) {
-            log.error "Error in adding Datastores sync ${e}", e
+            itemFailures.record(e)
         }
     }
 
@@ -339,7 +346,7 @@ class DatastoresSync {
             }
 
         } catch (ex) {
-            log.error "Error in volumeSync Datastores ${ex}", ex
+            itemFailures.record(ex)
         }
     }
 

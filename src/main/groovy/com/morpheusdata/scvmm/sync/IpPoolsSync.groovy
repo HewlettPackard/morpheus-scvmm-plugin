@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.ScvmmConstants
 import com.morpheusdata.core.MorpheusContext
@@ -29,6 +31,7 @@ class IpPoolsSync {
     private ScvmmApiService apiService
     private NetworkPoolServer poolServer
     private LogInterface log = PrefixedLoggerFactory.getLogger(IpPoolsSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('IpPoolsSync', log)
 
     /**
      * @param poolServer the hidden per-cloud pool server SCVMM pools are parented to; resolved from the cloud when null
@@ -87,10 +90,17 @@ class IpPoolsSync {
                 }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<NetworkPoolIdentityProjection, Map>> updateItems ->
                     return morpheusContext.async.cloud.network.pool.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
+            } else {
+                log.warn("IpPoolsSync: SCVMM IP pool listing failed: ${listResults.msg}")
+                return [success: false, msg: listResults.msg ?: 'SCVMM IP pool listing failed']
             }
+        } catch (ScvmmConnectionException e) {
+            throw e
         } catch (e) {
-            log.error("ipPoolsSync error: ${e}", e)
+            log.error("IpPoolsSync error: ${e.message}", e)
+            return ScvmmErrorTranslator.toResultMap(e)
         }
+        return itemFailures.result()
     }
 
     private addMissingIpPools(Collection<Map> addList, List<Network> networks, NetworkPoolType poolType, networkMapping) {
@@ -174,7 +184,7 @@ class IpPoolsSync {
                 updateNetworkForPool(networks, pool, mapping?.NetworkID, mapping?.SubnetID, networkMapping)
             }
         } catch (e) {
-            log.error("Error in addMissingIpPools: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
@@ -194,7 +204,7 @@ class IpPoolsSync {
                 log.debug("updateNetworkForPool: SCVMM pool ${pool?.name} (${pool?.externalId}) reports no VM network (networkId=${networkId}); not linking")
             }
         } catch (e) {
-            log.error("Error in updateNetworkForPool: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
@@ -282,7 +292,7 @@ class IpPoolsSync {
                 }
             }
         } catch (e) {
-            log.error("Error in linkNetworkToPool: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
@@ -388,7 +398,7 @@ class IpPoolsSync {
                 }
             }
         } catch (e) {
-            log.error("Error in updateMatchedIpPools: ${e}", e)
+            itemFailures.record(e)
         }
     }
 }

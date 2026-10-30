@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
@@ -32,6 +34,7 @@ class RegisteredStorageFileSharesSync {
     private MorpheusContext context
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(RegisteredStorageFileSharesSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('RegisteredStorageFileSharesSync', log)
 
     RegisteredStorageFileSharesSync(Cloud cloud, ComputeServer node, MorpheusContext context) {
         this.cloud = cloud
@@ -77,11 +80,18 @@ class RegisteredStorageFileSharesSync {
                     return context.async.cloud.datastore.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
             } else {
+                if (!listResults.success) {
+                    return [success: false, msg: listResults.msg ?: 'SCVMM file share listing failed']
+                }
                 log.info("Not getting the RegisteredStorageFileShares data")
             }
+        } catch (ScvmmConnectionException e) {
+            throw e
         } catch (e) {
-            log.error("RegisteredStorageFileSharesSync error: ${e}", e.getMessage())
+            log.error("RegisteredStorageFileSharesSync error: ${e.message}", e)
+            return ScvmmErrorTranslator.toResultMap(e)
         }
+        return itemFailures.result()
     }
 
     private addMissingFileShares(Collection<Map> addList, objList, clusters, List<ComputeServer> existingHosts) {
@@ -141,7 +151,7 @@ class RegisteredStorageFileSharesSync {
             }
             syncVolumeForEachHosts(hostToShareMap, objList)
         } catch (e) {
-            log.error "Error in adding RegisteredStorageFileSharesSync ${e}", e
+            itemFailures.record(e)
         }
     }
 
@@ -212,7 +222,7 @@ class RegisteredStorageFileSharesSync {
             }
             syncVolumeForEachHosts(hostToShareMap, objList)
         } catch (e) {
-            log.error "Error in update updateMatchedFileShares ${e}", e
+            itemFailures.record(e)
         }
     }
 
@@ -323,7 +333,7 @@ class RegisteredStorageFileSharesSync {
                 }.start()
             }
         } catch (e) {
-            log.error "error in cacheRegisteredStorageFileShares: ${e}", e
+            itemFailures.record(e)
         }
     }
 

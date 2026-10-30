@@ -78,7 +78,7 @@ class ScvmmApiServiceSnapshotSpec extends Specification {
         payload << [[], null, [VmmPayloads.snapshot(ID: 'other-id')]]
     }
 
-    def "snapshotServer returns success=false and no snapshotId when the command throws"() {
+    def "snapshotServer returns success=false, no snapshotId and a translated message when the command throws"() {
         given:
         service.wrapExecuteCommand(_ as String, _ as Map) >> { throw new RuntimeException('winrm timeout') }
 
@@ -87,7 +87,12 @@ class ScvmmApiServiceSnapshotSpec extends Specification {
 
         then:
         noExceptionThrown()
-        rtn == [success: false]
+        !rtn.success
+        !rtn.containsKey('snapshotId')
+        rtn.msg.startsWith('The connection to the SCVMM host timed out')
+        rtn.errorCode == 'winrm.timeout'
+        rtn.error == 'winrm timeout'
+        rtn.connectionFailure
     }
 
     // ---------------------------------------------------------------- deleteSnapshot
@@ -121,7 +126,7 @@ class ScvmmApiServiceSnapshotSpec extends Specification {
         !rtn.containsKey('error')
     }
 
-    def "deleteSnapshot swallows a command exception and returns success=false"() {
+    def "deleteSnapshot swallows a command exception and returns success=false with the cause as msg"() {
         given:
         service.wrapExecuteCommand(_ as String, _ as Map) >> { throw new IllegalStateException('boom') }
 
@@ -130,7 +135,11 @@ class ScvmmApiServiceSnapshotSpec extends Specification {
 
         then:
         noExceptionThrown()
-        rtn == [success: false]
+        !rtn.success
+        !rtn.containsKey('snapshotId')
+        rtn.msg == 'boom'
+        rtn.errorType == 'IllegalStateException'
+        !rtn.connectionFailure
     }
 
     // ---------------------------------------------------------------- restoreServer
@@ -162,7 +171,7 @@ class ScvmmApiServiceSnapshotSpec extends Specification {
         rtn == [success: false]
     }
 
-    def "restoreServer swallows a command exception and returns success=false"() {
+    def "restoreServer swallows a command exception and returns success=false with a translated message"() {
         given:
         service.wrapExecuteCommand(_ as String, _ as Map) >> { throw new RuntimeException('winrm timeout') }
 
@@ -171,7 +180,10 @@ class ScvmmApiServiceSnapshotSpec extends Specification {
 
         then:
         noExceptionThrown()
-        rtn == [success: false]
+        !rtn.success
+        rtn.msg.startsWith('The connection to the SCVMM host timed out')
+        rtn.errorCode == 'winrm.timeout'
+        rtn.connectionFailure
     }
 
     // ---------------------------------------------------------------- shared success mapping

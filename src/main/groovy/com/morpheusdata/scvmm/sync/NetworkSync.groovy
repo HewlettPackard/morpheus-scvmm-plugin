@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.BulkCreateResult
 import com.morpheusdata.core.MorpheusContext
@@ -26,6 +28,7 @@ class NetworkSync {
     private Cloud cloud
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(NetworkSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('NetworkSync', log)
 
     NetworkSync(MorpheusContext morpheusContext, Cloud cloud) {
         this.cloud = cloud
@@ -69,12 +72,19 @@ class NetworkSync {
                 }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<NetworkIdentityProjection, Map>> updateItems ->
                     return morpheusContext.async.cloud.network.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
+            } else if (listResults.success != true) {
+                log.warn("NetworkSync: SCVMM network listing failed: ${listResults.msg}")
+                return [success: false, msg: listResults.msg ?: 'SCVMM network listing failed']
             } else {
                 log.info("Not getting the listNetworks")
             }
+        } catch (ScvmmConnectionException e) {
+            throw e
         } catch (e) {
-            log.error("cacheNetworks error: ${e}", e)
+            log.error("NetworkSync error: ${e.message}", e)
+            return ScvmmErrorTranslator.toResultMap(e)
         }
+        return itemFailures.result()
     }
 
     private addMissingNetworks(Collection<Map> addList, NetworkType networkType, NetworkSubnetType subnetType, ComputeServer server) {
@@ -137,7 +147,7 @@ class NetworkSync {
                 }
             }
         } catch (e) {
-            log.error("Error in addMissingNetworks: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
@@ -170,8 +180,8 @@ class NetworkSync {
                     return morpheusContext.async.networkSubnet.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
             }
-        } catch(e) {
-            log.error("Error in updateMatchedNetworks: ${e}", e)
+        } catch (e) {
+            itemFailures.record(e)
         }
     }
 
@@ -208,7 +218,7 @@ class NetworkSync {
             //create networkSubnets
             morpheusContext.async.networkSubnet.create(subnetAdds, network).blockingGet()
         } catch (e) {
-            log.error("Error in addMissingNetworkSubnet: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
@@ -278,8 +288,8 @@ class NetworkSync {
             if (itemsToUpdate.size() > 0) {
                 morpheusContext.async.networkSubnet.save(itemsToUpdate).blockingGet()
             }
-        } catch(e) {
-            log.error "Error in updateMatchedNetworkSubnet ${e}", e
+        } catch (e) {
+            itemFailures.record(e)
         }
 
     }

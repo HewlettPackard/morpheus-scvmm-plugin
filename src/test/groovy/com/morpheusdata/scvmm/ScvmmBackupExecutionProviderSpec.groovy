@@ -137,7 +137,7 @@ class ScvmmBackupExecutionProviderSpec extends ScvmmSpec {
         rtn.msg == 'no controller'
         rtn.data.updates
         result.status == BackupResult.Status.FAILED.toString()
-        result.errorOutput == GrailsCodecs.base64('Failed to execute backup')
+        result.errorOutput == GrailsCodecs.base64('Failed to execute backup: no controller')
         result.backupSetId
         result.backupSetId != 'set-from-config'
         result.executorIpAddress == '10.0.0.9'

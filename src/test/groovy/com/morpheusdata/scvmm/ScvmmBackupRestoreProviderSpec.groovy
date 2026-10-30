@@ -96,7 +96,7 @@ class ScvmmBackupRestoreProviderSpec extends ScvmmSpec {
         restore.status != BackupResult.Status.SUCCEEDED.toString()
     }
 
-    def "restoreBackup fails after the restore and skips the start when stopWorkload throws"() {
+    def "restoreBackup fails after the restore, marks the restore FAILED and skips the start when stopWorkload throws"() {
         // plan assumed stop -> restore -> start; the code restores first, so restoreServer has already run
         given:
         BackupResult result = resultWith(snapshotId: 'snap-1', vmId: 'vm-ext-1')
@@ -113,10 +113,12 @@ class ScvmmBackupRestoreProviderSpec extends ScvmmSpec {
         0 * provisionProvider.startWorkload(_)
         rtn.success == false
         rtn.msg == 'stop failed'
-        restore.status == null
+        restore.status == BackupResult.Status.FAILED.toString()
+        restore.errorMessage == 'stop failed'
+        rtn.data.updates
     }
 
-    def "restoreBackup fails without power-cycling when restoreServer throws"() {
+    def "restoreBackup fails with a translated message and without power-cycling when restoreServer throws"() {
         given:
         BackupResult result = resultWith(snapshotId: 'snap-1', vmId: 'vm-ext-1')
         workloadService.get(20L) >> workload
@@ -132,7 +134,9 @@ class ScvmmBackupRestoreProviderSpec extends ScvmmSpec {
         0 * provisionProvider.stopWorkload(_)
         0 * provisionProvider.startWorkload(_)
         rtn.success == false
-        rtn.msg == 'winrm timeout'
+        rtn.msg == 'The connection to the SCVMM host timed out. Verify the host is online and reachable from the Morpheus appliance.'
+        restore.status == BackupResult.Status.FAILED.toString()
+        restore.errorMessage == rtn.msg
     }
 
     // ---------------------------------------------------------------- seams and wiring

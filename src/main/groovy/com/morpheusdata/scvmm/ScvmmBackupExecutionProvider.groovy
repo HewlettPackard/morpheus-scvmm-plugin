@@ -10,6 +10,7 @@ import com.morpheusdata.model.BackupResult
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.response.ServiceResponse
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
@@ -131,15 +132,16 @@ class ScvmmBackupExecutionProvider implements BackupExecutionProvider {
 				opts = apiService.getScvmmZoneAndHypervisorOpts(morpheusContext, cloud, node)
 				def result = apiService.deleteSnapshot(opts, server.externalId, snapshotId)
 				if (!result.success) {
-					log.debug "An error occurred removing the snapshot, server may already be deleted?... ${result}"
+					log.debug "An error occurred removing the snapshot, server may already be deleted?... ${result.msg ?: result}"
 					rtn.success = false
+					rtn.msg = result.msg
 				} else {
 					result = [success: true]
 				}
 			}
 		} catch (e) {
-			log.error("error in deleteBackupResult: {}", e, e)
-			rtn.success = false
+			log.error("error in deleteBackupResult ${backupResult?.id}: ${e.message}", e)
+			ScvmmErrorTranslator.toResultMap(e, rtn, 'Error deleting backup snapshot')
 		}
 		return ServiceResponse.create(rtn)
 	}
@@ -229,14 +231,14 @@ class ScvmmBackupExecutionProvider implements BackupExecutionProvider {
 				rtn.data.backupResult.resultPath = outputPath
 				rtn.data.backupResult.sizeInMb = 0l
 				rtn.data.backupResult.status = BackupResult.Status.FAILED
-				rtn.data.backupResult.errorOutput = snapshotResults.error?.toString().encodeAsBase64()
+				rtn.data.backupResult.errorOutput = (snapshotResults.msg ?: snapshotResults.error ?: 'SCVMM checkpoint failed')?.toString().encodeAsBase64()
 				rtn.data.updates = true
 			}
 			rtn.success = true
 		} catch(e) {
-			log.error("executeBackup: ${e}", e)
-			rtn.msg = e.getMessage()
-			def error = "Failed to execute backup"
+			log.error("executeBackup error for backup ${backup?.id}: ${e.message}", e)
+			rtn.msg = ScvmmErrorTranslator.userMessage(e)
+			def error = "Failed to execute backup: ${rtn.msg}".toString()
 			rtn.data.backupResult.backupSetId = executionConfig.backupResultId ?: BackupResultUtility.generateBackupResultSetId()
 			rtn.data.backupResult.executorIpAddress = executionConfig.ipAddress
 			rtn.data.backupResult.sizeInMb = 0l

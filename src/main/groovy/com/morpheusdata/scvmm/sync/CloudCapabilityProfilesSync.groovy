@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
@@ -14,6 +16,7 @@ class CloudCapabilityProfilesSync {
     private Cloud cloud
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(CloudCapabilityProfilesSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('CloudCapabilityProfilesSync', log)
 
     CloudCapabilityProfilesSync(MorpheusContext morpheusContext, Cloud cloud) {
         this.cloud = cloud
@@ -30,19 +33,29 @@ class CloudCapabilityProfilesSync {
 
             if(scvmmCloud.regionCode) {
                 def cloudResults = apiService.getCloud(scvmmOpts)
+                if (!cloudResults.success) {
+                    return [success: false, msg: cloudResults.msg ?: 'SCVMM cloud lookup failed']
+                }
                 if(cloudResults.success == true && cloudResults?.cloud?.CapabilityProfiles) {
                     scvmmCloud.setConfigProperty('capabilityProfiles', cloudResults?.cloud?.CapabilityProfiles)
                     morpheusContext.services.cloud.save(scvmmCloud)
                 }
             } else {
                 def capabilityProfileResults = apiService.getCapabilityProfiles(scvmmOpts)
+                if (!capabilityProfileResults.success) {
+                    return [success: false, msg: capabilityProfileResults.msg ?: 'SCVMM capability profile listing failed']
+                }
                 if(capabilityProfileResults.success == true && capabilityProfileResults?.capabilityProfiles) {
                     scvmmCloud.setConfigProperty('capabilityProfiles', capabilityProfileResults.capabilityProfiles.collect { it.Name })
                     morpheusContext.services.cloud.save(scvmmCloud)
                 }
             }
+        } catch (ScvmmConnectionException e) {
+            throw e
         } catch (e) {
-            log.error("CloudCapabilityProfilesSync error: ${e}", e)
+            log.error("CloudCapabilityProfilesSync error: ${e.message}", e)
+            return ScvmmErrorTranslator.toResultMap(e)
         }
+        return itemFailures.result()
     }
 }

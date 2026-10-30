@@ -102,6 +102,49 @@ class HostSyncSpec extends Specification {
 		1 * computeServerService.save(server) >> Single.just(server)
 	}
 
+	def "a host persistence failure is recorded so the worker reports failure without aborting other hosts"() {
+		given:
+		ComputeServer server = serverWithCapacity(maxSockets: 2L)
+		computeServerService.save(server) >> Single.error(new IllegalStateException('host save failed'))
+
+		when:
+		hostSync.updateHostStats(server, VmmPayloads.host(cpuCount: '2'))
+		Map result = hostSync.@itemFailures.result()
+
+		then:
+		noExceptionThrown()
+		!result.success
+		result.msg == '1 item operation(s) failed; first: host save failed'
+	}
+
+	def "a connection failure while reconciling a host still aborts the worker"() {
+		given:
+		ComputeServer server = serverWithCapacity(maxSockets: 2L)
+		computeServerService.save(server) >> Single.error(
+				new com.morpheusdata.scvmm.error.ScvmmConnectionException('WinRM lost', 'vmm', 5985))
+
+		when:
+		hostSync.updateHostStats(server, VmmPayloads.host(cpuCount: '2'))
+
+		then:
+		thrown(com.morpheusdata.scvmm.error.ScvmmConnectionException)
+	}
+
+	def "SyncTask propagates callback failures to the worker boundary"() {
+		given:
+		def task = new SyncTask(io.reactivex.rxjava3.core.Observable.empty(), [[id: 'host1']])
+		task.addMatchFunction { a, b -> false }.onAdd {
+			throw new IllegalStateException('host callback failed')
+		}
+
+		when:
+		task.start()
+
+		then:
+		def error = thrown(Exception)
+		com.morpheusdata.scvmm.error.ScvmmErrorTranslator.rootCause(error).message == 'host callback failed'
+	}
+
 	private static ComputeServer serverWithCapacity(Map overrides) {
 		Map values = [
 			maxCpu     : 2L,

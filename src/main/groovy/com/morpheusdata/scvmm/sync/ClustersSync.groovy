@@ -1,5 +1,7 @@
 package com.morpheusdata.scvmm.sync
 
+import com.morpheusdata.scvmm.error.ScvmmConnectionException
+import com.morpheusdata.scvmm.error.ScvmmErrorTranslator
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
@@ -19,6 +21,7 @@ class ClustersSync {
     private Cloud cloud
     private ScvmmApiService apiService
     private LogInterface log = PrefixedLoggerFactory.getLogger(ClustersSync)
+    private final SyncItemFailures itemFailures = new SyncItemFailures('ClustersSync', log)
 
     ClustersSync(MorpheusContext morpheusContext, Cloud cloud) {
         this.cloud = cloud
@@ -64,11 +67,18 @@ class ClustersSync {
                     chooseOwnerPoolDefaults(cloud.owner)
                 }
             } else {
+                if (!listResults.success) {
+                    return [success: false, msg: listResults.msg ?: 'SCVMM cluster listing failed']
+                }
                 log.info("Not getting the listClusters")
             }
+        } catch (ScvmmConnectionException e) {
+            throw e
         } catch (e) {
-            log.error("ClustersSync error: ${e}", e)
+            log.error("ClustersSync error: ${e.message}", e)
+            return ScvmmErrorTranslator.toResultMap(e)
         }
+        return itemFailures.result()
     }
 
     private addMissingResourcePools(Collection<Map> addList){
@@ -118,7 +128,7 @@ class ClustersSync {
                 morpheusContext.async.resourcePermission.bulkCreate(resourcePerms).blockingGet()
             }
         } catch (e) {
-            log.error "Error in addMissingResourcePools: ${e}", e
+            itemFailures.record(e)
         }
     }
 
@@ -159,8 +169,8 @@ class ClustersSync {
             if (itemsToUpdate.size() > 0) {
                 morpheusContext.async.cloud.pool.bulkSave(itemsToUpdate).blockingGet()
             }
-        } catch(e) {
-            log.error "Error in updateMatchedResourcePools ${e}", e
+        } catch (e) {
+            itemFailures.record(e)
         }
     }
 
@@ -203,7 +213,7 @@ class ClustersSync {
                 morpheusContext.async.cloud.pool.bulkRemove(deleteList).blockingGet()
             }
         } catch (e) {
-            log.error("Error in removeMissingResourcePools: ${e}", e)
+            itemFailures.record(e)
         }
     }
 
