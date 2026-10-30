@@ -144,7 +144,8 @@ class ScvmmApiService {
     def createServer(opts) {
         log.debug("createServer: ${opts}")
 
-        def rtn = [success: false]
+        // failedDisks: requested data disks SCVMM could not add; diskWarnings: other non-fatal disk problems for the customer
+        def rtn = [success: false, failedDisks: [], diskWarnings: []]
         try {
             def createCommands
             def launchCommand
@@ -226,6 +227,24 @@ class ScvmmApiService {
                 //Get the created VM Disk configuration for new server with id opts.externalId
                 //expect Map [success:true/false, disks: []]
                 def vmDisk = listVirtualDiskDrives(opts,opts.externalId)
+                // clone with a disk plan: SCVMM drive ID -> Morpheus clone volume id; null means map by position
+                Map cloneDriveVolumeIds = null
+                if (opts.cloneDiskPlan && vmDisk.success) {
+                    def sourceDrives = listVirtualDiskDrives(opts, opts.cloneVMId)
+                    if (sourceDrives.success) {
+                        def resolved = resolveCloneInheritedDisks(sourceDrives.disks, vmDisk.disks, opts.cloneDiskPlan)
+                        cloneDriveVolumeIds = resolved.driveVolumeIds
+                        resolved.removeVhdIds.each { vhdId ->
+                            def removeResult = removeDisk(opts, vhdId)
+                            log.info("createServer - removed clone copy of a source disk dropped in the clone request (VHD ${vhdId}): ${removeResult?.success}")
+                            if (removeResult?.success != true) {
+                                rtn.diskWarnings << "A disk removed from the clone request (VHD ${vhdId}) is still attached to the VM: ${cleanPowerShellError(removeResult?.error) ?: 'SCVMM did not confirm the removal'}. Remove it from the VM in SCVMM."
+                            }
+                        }
+                    } else {
+                        log.warn("createServer - unable to list source VM ${opts.cloneVMId} disks; mapping clone disks by position")
+                    }
+                }
                 if (vmDisk.success) {
                     log.info("createServer - received current Disk configuration for VM ${opts.externalId}")
                     log.info("createServer - additional volumes - opts.additionalTemplateDisks: ${opts.additionalTemplateDisks}")
@@ -243,8 +262,19 @@ class ScvmmApiService {
                         // Now the Powershell automatically discovers next available bus/lun
                         def result = createAndAttachDisk(opts, diskSpec)
                         log.debug("createServer - add disk result ${result}")
+                        if (result?.success != true) {
+                            log.warn("createServer - unable to add ${diskSpec.sizeMb} MB disk: ${result?.errOut}")
+                            rtn.failedDisks << [volumeId: diskConfig.volumeId, diskSize: diskConfig.diskSize, error: result?.errOut ?: 'unknown error']
+                        } else if (cloneDriveVolumeIds != null && diskConfig.volumeId != null && result.disk?.ID) {
+                            cloneDriveVolumeIds[result.disk.ID] = diskConfig.volumeId
+                        }
                     }
                     log.debug "createServer - finished with adding additionalDisks: ${opts.additionalTemplateDisks}"
+                } else {
+                    def reason = "unable to read the new VM's disks from SCVMM${vmDisk.error ? ': ' + cleanPowerShellError(vmDisk.error) : ''}"
+                    opts.additionalTemplateDisks?.each { diskConfig ->
+                        rtn.failedDisks << [volumeId: diskConfig.volumeId, diskSize: diskConfig.diskSize, error: reason]
+                    }
                 }
 
                 // Special stuff for cloned VMs
@@ -256,8 +286,9 @@ class ScvmmApiService {
                         rtn.cloneBaseResults = [cloudInitIsoPath: importAndMountIso(opts.cloneBaseOpts.cloudConfigBytes, opts.cloneBaseOpts.diskFolder, opts.cloneBaseOpts.imageFolderName, opts.cloneBaseOpts.clonedScvmmOpts)]
                     }
                 }
-                // Fetch the disks to create a mapping
-                def disks = [osDisk: [externalId: ''], dataDisks: opts.dataDisks?.collect { [id: it.id] }, diskMetaData: [:]]
+                // Fetch the disks to create a mapping; volumes whose disk could not be added have no drive to map
+                def failedVolumeIds = rtn.failedDisks*.volumeId.findAll { it != null }*.toString() as Set
+                def disks = [osDisk: [externalId: ''], dataDisks: opts.dataDisks?.findAll { !(it.id?.toString() in failedVolumeIds) }?.collect { [id: it.id] }, diskMetaData: [:]]
                 def diskDrives = listVirtualDiskDrives(opts, opts.externalId)
                 def bookDiskIndex = findBootDiskIndex(diskDrives)
                 //add property VhdLocation to diskMetaData property Location - this will set the StorageVolume.internalId
@@ -266,7 +297,11 @@ class ScvmmApiService {
                         disks.osDisk.externalId = disk.ID
                         disks.diskMetaData[disk.ID] = [HostVolumeId: disk.HostVolumeId, FileShareId: disk.FileShareId, VhdID: disk.VhdID, Location: disk.VhdLocation, PartitionUniqueId: disk.PartitionUniqueId]
                     } else {
-                        disks.dataDisks[diskIndex - 1].externalId = disk.ID
+                        if (cloneDriveVolumeIds != null) {
+                            assignDataDiskExternalIdByVolume(disks.dataDisks, cloneDriveVolumeIds[disk.ID], disk.ID)
+                        } else {
+                            assignDataDiskExternalId(disks.dataDisks, diskIndex - 1, disk.ID)
+                        }
                         disks.diskMetaData[disk.ID] = [HostVolumeId: disk.HostVolumeId, FileShareId: disk.FileShareId, dataDisk: true, VhdID: disk.VhdID, Location: disk.VhdLocation, PartitionUniqueId: disk.PartitionUniqueId]
                     }
 
@@ -1714,10 +1749,21 @@ foreach (\$network in \$networks) {
                 .replace("<%vhdpath%>",diskSpec.vhdPath ?: "")
         //Execute
         def out = wrapExecuteCommand(generateCommandString(addDiskCmd), opts)
-        if(out.success && returnDiskDrives) {
-            def listResults = listVirtualDiskDrives(opts, opts.externalId, diskSpec.vhdName)
-            return [success: listResults.success, disk: listResults.disks.first()]
+        if (!out.success) {
+            return [success: false, errOut: cleanPowerShellError(out.error) ?: 'Failed to run the add-disk command on SCVMM']
         }
+        def report = out.data instanceof List ? out.data[0] : (out.data instanceof Map ? out.data : null)
+        if (report?.success != true) {
+            return [success: false, errOut: report?.errOut ?: 'SCVMM did not confirm the disk was added']
+        }
+        if (returnDiskDrives) {
+            def listResults = listVirtualDiskDrives(opts, opts.externalId, diskSpec.vhdName)
+            if (!listResults.success || !listResults.disks) {
+                return [success: false, errOut: "Disk ${diskSpec.vhdName} was added but could not be found on the VM"]
+            }
+            return [success: true, disk: listResults.disks.first()]
+        }
+        return [success: true]
     }
 
     def getDiskName(index, platform = 'linux') {
@@ -1744,6 +1790,69 @@ foreach (\$network in \$networks) {
         return wrapExecuteCommand(generateCommandString(cmd), opts)
     }
 
+    // SCVMM can report more drives than Morpheus has data volumes (e.g. a clone keeps a source disk the user
+    // removed in the wizard); the VM already exists here, so skip the extra drive rather than fail.
+    protected boolean assignDataDiskExternalId(List dataDisks, int dataIndex, diskId) {
+        def size = dataDisks?.size() ?: 0
+        // negative indexes keep the existing Groovy list semantics (boot disk not reported first)
+        def dataDisk = (dataIndex < size && dataIndex >= -size) ? dataDisks[dataIndex] : null
+        if (dataDisk == null) {
+            log.warn("createServer - SCVMM disk ${diskId} has no matching Morpheus data volume (index ${dataIndex}, ${size} data volume(s)); leaving it unmapped")
+            return false
+        }
+        dataDisk.externalId = diskId
+        return true
+    }
+
+    protected boolean assignDataDiskExternalIdByVolume(List dataDisks, volumeId, diskId) {
+        def dataDisk = volumeId != null ? dataDisks?.find { it.id?.toString() == volumeId.toString() } : null
+        if (dataDisk == null) {
+            log.warn("createServer - clone disk ${diskId} has no matching Morpheus data volume; leaving it unmapped")
+            return false
+        }
+        dataDisk.externalId = diskId
+        return true
+    }
+
+    // SCVMM's clone keeps each source drive in the same BusType/Bus/Lun slot, so a clone drive is identified by
+    // the slot of the source drive its Morpheus volume was inherited from. Source volume externalIds may hold
+    // either the drive ID or the VHD ID, so both are matched.
+    protected Map resolveCloneInheritedDisks(List sourceDrives, List cloneDrives, Map cloneDiskPlan) {
+        def slotOf = { drive -> "${drive.BusType}:${drive.Bus}:${drive.Lun}".toString() }
+        def cloneDrivesBySlot = (cloneDrives ?: []).collectEntries { [(slotOf(it)): it] }
+        def cloneDriveFor = { sourceExternalId ->
+            def sourceDrive = sourceExternalId ? sourceDrives?.find { it.ID == sourceExternalId || it.VhdID == sourceExternalId } : null
+            sourceDrive ? cloneDrivesBySlot[slotOf(sourceDrive)] : null
+        }
+        def driveVolumeIds = [:]
+        cloneDiskPlan.inherited?.each { Map vol ->
+            def cloneDrive = cloneDriveFor(vol.sourceExternalId)
+            if (cloneDrive) {
+                driveVolumeIds[cloneDrive.ID] = vol.volumeId
+            } else {
+                log.warn("createServer - no clone drive found for inherited source disk ${vol.sourceExternalId}")
+            }
+        }
+        def removeVhdIds = []
+        cloneDiskPlan.removedSourceExternalIds?.each { sourceExternalId ->
+            def cloneDrive = cloneDriveFor(sourceExternalId)
+            if (cloneDrive?.VhdID) {
+                removeVhdIds << cloneDrive.VhdID
+            } else {
+                log.warn("createServer - no clone drive found for removed source disk ${sourceExternalId}")
+            }
+        }
+        [driveVolumeIds: driveVolumeIds, removeVhdIds: removeVhdIds]
+    }
+
+    // A clone always starts with exactly the source's disks, so runWorkload sets expectedCreatedDiskCount for clones.
+    protected static int expectedCreatedDiskCount(opts) {
+        if (opts.expectedCreatedDiskCount != null) {
+            return opts.expectedCreatedDiskCount as int
+        }
+        return 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))
+    }
+
     def checkServerCreated(opts, vmId) {
         log.debug "checkServerCreated: ${vmId}"
         def rtn = [success: false]
@@ -1759,7 +1868,7 @@ foreach (\$network in \$networks) {
                     log.debug "serverStatus: ${serverDetail.server?.Status}, opts.dataDisks: ${opts.dataDisks?.size()}, additionalTemplateDisks: ${opts.additionalTemplateDisks?.size()}"
 
                      if (serverDetail.server?.Status != 'UnderCreation' &&
-                             serverDetail.server?.VirtualDiskDrives?.size() == 1 + ((opts.dataDisks?.size() ?: 0) - (opts.additionalTemplateDisks?.size() ?: 0))) {
+                             serverDetail.server?.VirtualDiskDrives?.size() == expectedCreatedDiskCount(opts)) {
                         // additionalTemplateDisks are created after VM creation
                         // data disks are created and attached after vm creation
 

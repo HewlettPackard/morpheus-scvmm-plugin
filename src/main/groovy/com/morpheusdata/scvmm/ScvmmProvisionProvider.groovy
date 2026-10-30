@@ -666,6 +666,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         Cloud cloud = server.cloud
 		def scvmmOpts = [:]
 		def cloneAgentViaCloudInit = false
+		List<String> volumeWarnings = []
         try {
             def containerConfig = workload.getConfigMap()
 			WorkloadType workloadType = context.services.workloadType.get(workload.workloadType.id)
@@ -699,9 +700,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             def maxStorage = getContainerRootSize(workload)
             def maxMemory = workload.maxMemory ?: workload.instance.plan.maxMemory
             setDynamicMemory(scvmmOpts, workload.instance.plan)
+            Workload cloneContainer = null
             try {
                 if (opts.cloneContainerId) {
-                    Workload cloneContainer = context.services.workload.get(opts.cloneContainerId.toLong())
+                    cloneContainer = context.services.workload.get(opts.cloneContainerId.toLong())
                     if (!cloneContainer?.server) {
                         provisionResponse.setError("Unable to locate source workload ${opts.cloneContainerId} for clone")
                         return new ServiceResponse(success: false, msg: provisionResponse.message, error: provisionResponse.message, data: provisionResponse)
@@ -807,7 +809,20 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         provisionResponse.success = false
                     }
                 }
-                if (scvmmOpts.templateId && scvmmOpts.isSyncdImage) {
+                if (cloneContainer) {
+                    // The clone script copies only the source's disks; volumes added in the wizard are attached afterwards
+                    def sourceDataDiskCount = getContainerDataDiskList(cloneContainer)?.size() ?: 0
+                    scvmmOpts.expectedCreatedDiskCount = 1 + sourceDataDiskCount
+                    def cloneDiskPlan = buildCloneDiskPlan(workload, cloneContainer)
+                    if (cloneDiskPlan) {
+                        scvmmOpts.cloneDiskPlan = cloneDiskPlan
+                        scvmmOpts.additionalTemplateDisks = cloneDiskPlanAttachList(cloneDiskPlan, sourceDataDiskCount)
+                        log.info("clone: ${cloneDiskPlan.inherited.size()} inherited, ${cloneDiskPlan.added.size()} new and ${cloneDiskPlan.removedSourceExternalIds.size()} removed data volume(s)")
+                    } else {
+                        scvmmOpts.additionalTemplateDisks = additionalTemplateDisksConfig(workload, scvmmOpts, sourceDataDiskCount)
+                    }
+                    log.info("clone: ${scvmmOpts.additionalTemplateDisks.size()} volume(s) to attach after cloning (source data disks: ${sourceDataDiskCount})")
+                } else if (scvmmOpts.templateId && scvmmOpts.isSyncdImage) {
                     // Determine if any additional data disks were added to the template
                     scvmmOpts.additionalTemplateDisks = additionalTemplateDisksConfig(workload, scvmmOpts)
                     log.debug "scvmmOpts.additionalTemplateDisks ${scvmmOpts.additionalTemplateDisks}"
@@ -961,6 +976,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 								}
                             }
                         }
+						volumeWarnings = removeFailedVolumes(server, createResults, scvmmOpts)
 						server = context.services.computeServer.get(server.id)
 						server.externalId = createResults.server.id
 						server.internalId = createResults.server.VMId
@@ -1022,6 +1038,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
 
 			if (provisionResponse.success) {
+				reportVolumeWarnings(workloadRequest.process, volumeWarnings)
 				def status = provisionResponse.skipNetworkWait ? 'waiting for server status' : 'waiting for network'
 				context.process.startProcessStep(workloadRequest.process,
 						new ProcessEvent(type: ProcessEvent.ProcessType.provisionNetwork), status).blockingGet()
@@ -1039,6 +1056,51 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		}
 		return rtn
     }
+
+	// A data disk SCVMM couldn't add is not fatal: the VM is usable, so its Morpheus volume is dropped (the guest will
+	// never see it) and the reason is returned for the customer instead of failing the whole provision.
+	protected List<String> removeFailedVolumes(ComputeServer server, Map createResults, Map scvmmOpts) {
+		def warnings = []
+		createResults.failedDisks?.each { Map failed ->
+			def reason = failed.error?.toString()?.replaceAll(/[.\s]+$/, '') ?: 'unknown error'
+			def sizeGb = ((failed.diskSize ?: 0L) as Long).intdiv(ComputeUtility.ONE_GIGABYTE)
+			def volume = failed.volumeId != null ? server.volumes?.find { it.id?.toString() == failed.volumeId.toString() } : null
+			def removed = false
+			if (volume) {
+				try {
+					removed = context.async.storageVolume.remove([volume], server, true).blockingGet()
+				} catch (e) {
+					log.error("Unable to remove volume ${volume.id} after its disk failed to attach: ${e.message}", e)
+				}
+			}
+			if (removed) {
+				if (scvmmOpts.maxTotalStorage) {
+					scvmmOpts.maxTotalStorage = scvmmOpts.maxTotalStorage - (volume.maxStorage ?: 0L)
+				}
+				warnings << "Volume '${volume.name}' (${sizeGb} GB) could not be added to the VM: ${reason}. It has been removed from this instance; add it again with Reconfigure once the issue is resolved.".toString()
+			} else {
+				warnings << "A ${sizeGb} GB volume could not be added to the VM: ${reason}. If it is still listed under Storage it is not attached to the VM; remove it and add it again with Reconfigure once the issue is resolved.".toString()
+			}
+		}
+		warnings.addAll(createResults.diskWarnings ?: [])
+		warnings.each { log.warn("runWorkload: ${it}") }
+		warnings
+	}
+
+	// Core shows a successful provision's returned message nowhere, so warnings go into the instance History as a
+	// completed "volumes" step whose output carries the reason.
+	protected void reportVolumeWarnings(com.morpheusdata.model.Process process, List<String> warnings) {
+		if (!warnings || !process) {
+			return
+		}
+		def text = warnings.collect { "WARNING: ${it}" }.join('\n')
+		try {
+			context.process.startProcessStep(process, new ProcessEvent(type: ProcessEvent.ProcessType.provisionVolumes, message: text), 'adding volumes').blockingGet()
+			context.process.endProcessStep(process, com.morpheusdata.core.MorpheusProcessService.STATUS_COMPLETE, text).blockingGet()
+		} catch (e) {
+			log.error("Unable to record volume warnings in the instance history: ${e.message}", e)
+		}
+	}
 
 	private cloneParentCleanup(Map<String, Object> scvmmOpts, ServiceResponse rtn) {
 		if (scvmmOpts.cloneVMId && scvmmOpts.cloneContainerId) {
@@ -1105,7 +1167,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		return [count: nonRootCount, volumes: storageVolumes]
 	}
 
-    def additionalTemplateDisksConfig(Workload workload, scvmmOpts) {
+    def additionalTemplateDisksConfig(Workload workload, scvmmOpts, Integer cloneSourceDataDiskCount = null) {
         // Determine what additional disks need to be added after provisioning
         def additionalTemplateDisks = []
 		def totalDataVolsAndNewVols = getUserAddedVolumes(workload)
@@ -1113,6 +1175,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		def userAddedVolumes = totalDataVolsAndNewVols.volumes
         def dataDisks = getContainerDataDiskList(workload)
         log.debug "dataDisks: ${dataDisks} ${dataDisks?.size()}"
+
+		if (cloneSourceDataDiskCount != null) {
+			return cloneAdditionalDisksConfig(dataDisks ?: [], userAddedVolumes, cloneSourceDataDiskCount)
+		}
 
 		// if totalDataVols == getUserAddedVolumes its a new vm creation
 		// else its a clone and we only want to add the new volumes
@@ -1126,14 +1192,14 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		}
 
 		// scvmmOpts.diskExternalIdMappings will usually contain the virtualImage disk externalId
-        def diskExternalIdMappings = scvmmOpts.diskExternalIdMappings
+        def diskExternalIdMappings = scvmmOpts.diskExternalIdMappings ?: []
         def additionalDisksRequired = dataDisks?.size() + 1 > diskExternalIdMappings?.size()
         def busNumber = '0'
         if (additionalDisksRequired) {
             def diskCounter = diskExternalIdMappings.size()
 			// These new volumes will be added after the VM is created.
 			nonRootAdditionalVolumes?.eachWithIndex { StorageVolume sv, index ->
-				additionalTemplateDisks << [idx: index + 1, diskCounter: diskCounter, diskSize: sv.maxStorage, busNumber: busNumber]
+				additionalTemplateDisks << [idx: index + 1, diskCounter: diskCounter, diskSize: sv.maxStorage, busNumber: busNumber, volumeId: (sv.id != null && sv.id > 0) ? sv.id : null]
 				diskCounter++
 
             }
@@ -1141,6 +1207,72 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
         log.debug "returning additionalTemplateDisks ${additionalTemplateDisks}"
         additionalTemplateDisks
+    }
+
+    // Classifies each clone data volume by identity rather than position. Core names the StorageVolume built from
+    // config volumes[i] "morpheus-vol-<instanceId>-<workloadId>-<i>"; a config entry carrying a source data volume's
+    // id is inherited (SCVMM's clone already has a copy), anything else is new. Source data volumes the request no
+    // longer references were removed in the wizard. Returns null if a clone volume can't be located, so the caller
+    // falls back to the count-based behaviour.
+    protected Map buildCloneDiskPlan(Workload workload, Workload sourceWorkload) {
+        def configs = workload.configs
+        if (configs instanceof String) {
+            configs = new JsonSlurper().parseText(configs)
+        }
+        List configVolumes = configs?.volumes ?: []
+        def cloneVolumes = workload.server?.volumes ?: []
+        def sourceDataVolumes = getContainerDataDiskList(sourceWorkload) ?: []
+        def uniqueIdPrefix = "morpheus-vol-${workload.instance?.id}-${workload.id}-"
+        def inherited = []
+        def added = []
+        for (int i = 0; i < configVolumes.size(); i++) {
+            def configVolume = configVolumes[i]
+            if (configVolume.rootVolume) {
+                continue
+            }
+            def cloneVolume = cloneVolumes.find { it.uniqueId == "${uniqueIdPrefix}${i}".toString() }
+            if (!cloneVolume) {
+                log.warn("clone: no volume with uniqueId ${uniqueIdPrefix}${i}; mapping clone disks by count")
+                return null
+            }
+            def configId = configVolume.id?.toString()?.isLong() ? configVolume.id.toString().toLong() : null
+            def sourceVolume = (configId != null && configId > 0) ? sourceDataVolumes.find { it.id == configId } : null
+            if (sourceVolume) {
+                inherited << [volumeId: cloneVolume.id, sourceExternalId: sourceVolume.externalId]
+            } else {
+                added << [volumeId: cloneVolume.id, diskSize: cloneVolume.maxStorage]
+            }
+        }
+        def keptSourceExternalIds = inherited*.sourceExternalId as Set
+        def removedSourceVolumes = sourceDataVolumes.findAll { !(it.externalId in keptSourceExternalIds) }
+        removedSourceVolumes.findAll { !it.externalId }.each {
+            log.warn("clone: removed source volume ${it.id} has no externalId; its copy stays on the clone")
+        }
+        [inherited: inherited, added: added, removedSourceExternalIds: removedSourceVolumes*.externalId.findAll()]
+    }
+
+    protected static List<Map> cloneDiskPlanAttachList(Map cloneDiskPlan, int sourceDataDiskCount) {
+        def diskCounter = 1 + sourceDataDiskCount
+        def rtn = []
+        cloneDiskPlan.added.eachWithIndex { Map vol, int index ->
+            rtn << [idx: index + 1, diskCounter: diskCounter++, diskSize: vol.diskSize, busNumber: '0', volumeId: vol.volumeId]
+        }
+        rtn
+    }
+
+    // The clone copies exactly the source's disks; the wizard's id:-1 volumes are the ones to attach afterwards.
+    // Volume ids carry no clone-origin, so a count mismatch is only logged rather than resolved by position.
+    protected List<Map> cloneAdditionalDisksConfig(List dataDisks, List userAddedVolumes, int sourceDataDiskCount) {
+        def expectedNewCount = Math.max(dataDisks.size() - sourceDataDiskCount, 0)
+        if (userAddedVolumes.size() != expectedNewCount) {
+            log.warn("clone: attaching ${userAddedVolumes.size()} new volume(s) from config, but the clone has ${dataDisks.size()} data disk(s) vs ${sourceDataDiskCount} on the source; source volumes removed or re-sent as new in the clone request are not reflected on the cloned VM")
+        }
+        def diskCounter = 1 + sourceDataDiskCount
+        def rtn = []
+        userAddedVolumes.eachWithIndex { sv, index ->
+            rtn << [idx: index + 1, diskCounter: diskCounter++, diskSize: sv.maxStorage, busNumber: '0']
+        }
+        rtn
     }
 
     private constructCloudInitOptions(Workload container, WorkloadRequest workloadRequest, installAgent, platform, VirtualImage virtualImage, networkConfig, licenses, scvmmOpts, Map cloudConfigSource = null) {
