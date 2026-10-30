@@ -706,6 +706,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         provisionResponse.setError("Unable to locate source workload ${opts.cloneContainerId} for clone")
                         return new ServiceResponse(success: false, msg: provisionResponse.message, error: provisionResponse.message, data: provisionResponse)
                     }
+                    assertCloneHostEligible(cloneContainer.server, containerConfig.hostId)
                     cloneContainer.server.volumes?.eachWithIndex { vol, i ->
                         server.volumes[i].datastore = vol.datastore
                         context.services.storageVolume.save(server.volumes[i])
@@ -2126,6 +2127,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
         // If host specified by the user, then use it
         node = hostId ? context.services.computeServer.get(hostId.toLong()) : null
+        // SCVMM rejects placement on a host in maintenance mode (Error ID 10730), so fail with a clear message instead
+        if (node?.maintenanceMode) {
+            throw new Exception("Host ${node.name} is in maintenance mode and is not available for placement. Select another host or retry after it exits maintenance mode.")
+        }
+        List<Datastore> autoDatastores = null
         if (!datastore) {
             def datastoreIds = context.services.resourcePermission.listAccessibleResources(account.id, ResourcePermission.ResourceType.Datastore, siteId, null)
             def hasFilteredDatastores = false
@@ -2180,6 +2186,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             // Return the first one
             if (dsList.size() > 0) {
                 datastore = dsList[0]
+                autoDatastores = dsList
                 log.info("Selected datastore: ${datastore?.name} (${datastore?.id})")
             } else {
                 log.warn("No datastore found with query: ${dsQuery} and cluster: ${clusterId}")
@@ -2187,15 +2194,20 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
 
         if (!node && datastore) {
-            // We've grabbed a datastore.. now pick a host that has this datastore
-            def nodes = context.services.computeServer.list(new DataQuery()
-                    .withFilter('cloud.id', cloud.id)
-                    .withFilter('enabled', true)
-                    .withFilter('computeServerType.code', 'scvmmHypervisor')
-                    .withFilter('volumes.datastore.id', datastore.id)
-                    .withFilter('powerState', ComputeServer.PowerState.on))
-            nodes = nodes.findAll { it.capacityInfo?.maxMemory - it.capacityInfo?.usedMemory > maxMemory }?.sort { -(it.capacityInfo?.maxMemory - it.capacityInfo?.usedMemory) }
-            node = nodes?.size() > 0 ? nodes.first() : null
+            // Pick a host that has this datastore. When the datastore was chosen automatically, move on to the next
+            // candidate if none of its hosts can take the VM (e.g. every host attached to it is in maintenance mode).
+            def candidates = autoDatastores ?: [datastore]
+            for (Datastore candidate in candidates) {
+                def nodes = findPlacementHosts(cloud, candidate, maxMemory)
+                if (nodes) {
+                    if (candidate.id != datastore.id) {
+                        log.info("Selected datastore: ${candidate.name} (${candidate.id}); no eligible host for ${datastore.name}")
+                    }
+                    datastore = candidate
+                    node = nodes.first()
+                    break
+                }
+            }
         }
 
         if (!zoneHasCloud && (!node || !datastore)) {
@@ -2214,6 +2226,38 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
 
         return [node, datastore, volumePath, highlyAvailable]
+    }
+
+    /**
+     * Hosts that can take a new VM on the given datastore, most free memory first. Hosts in maintenance mode are
+     * excluded; a null flag (host not re-synced yet) counts as not in maintenance.
+     */
+    protected List<ComputeServer> findPlacementHosts(Cloud cloud, Datastore datastore, maxMemory) {
+        def nodes = context.services.computeServer.list(new DataQuery()
+                .withFilter('cloud.id', cloud.id)
+                .withFilter('enabled', true)
+                .withFilter('computeServerType.code', 'scvmmHypervisor')
+                .withFilter('volumes.datastore.id', datastore.id)
+                .withFilter('powerState', ComputeServer.PowerState.on))
+        return nodes.findAll { !it.maintenanceMode && it.capacityInfo?.maxMemory - it.capacityInfo?.usedMemory > maxMemory }
+                .sort { -(it.capacityInfo?.maxMemory - it.capacityInfo?.usedMemory) }
+    }
+
+    /**
+     * A clone inherits the source VM's host, which SCVMM does not update when the source live-migrates. Fail early
+     * when that host is in maintenance mode, pointing the user at the source's current host when it has moved to a
+     * healthy one.
+     */
+    protected void assertCloneHostEligible(ComputeServer sourceServer, hostId) {
+        ComputeServer pinnedHost = hostId ? context.services.computeServer.get(hostId.toLong()) : null
+        if (!pinnedHost?.maintenanceMode) {
+            return
+        }
+        ComputeServer sourceHost = sourceServer?.parentServer?.id ? context.services.computeServer.get(sourceServer.parentServer.id) : null
+        if (sourceHost && sourceHost.id != pinnedHost.id && !sourceHost.maintenanceMode) {
+            throw new Exception("Cannot clone to host ${pinnedHost.name} because it is in maintenance mode. The source VM has since migrated to host ${sourceHost.name}. Clone the running VM so the copy is placed on an available host.")
+        }
+        throw new Exception("Cannot clone to host ${pinnedHost.name} because it is in maintenance mode, and the source VM is not running on another available host. Retry after the host exits maintenance mode.")
     }
 
     /**
