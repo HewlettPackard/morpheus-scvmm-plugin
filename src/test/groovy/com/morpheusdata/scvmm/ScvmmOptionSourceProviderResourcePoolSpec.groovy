@@ -462,7 +462,7 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
     def "consoleSessionMode offers auto, enhanced and normal"() {
         expect:
         provider.consoleSessionMode([:]) == ['auto', 'enhanced', 'normal'].collect { [name: it, value: it] }
-        provider.methodNames.containsAll(['scvmmHost', 'scvmmVirtualImages', 'scvmmCapabilityProfile', 'scvmmSharedControllers'])
+        provider.methodNames.containsAll(['scvmmHost', 'scvmmVirtualImages', 'scvmmCapabilityProfile', 'scvmmSharedControllers', 'consoleSessionMode'])
         provider.code == 'scvmm-option-source'
         provider.name == 'SCVMM Option Source'
     }

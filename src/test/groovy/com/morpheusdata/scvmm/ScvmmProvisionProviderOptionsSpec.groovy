@@ -62,6 +62,16 @@ class ScvmmProvisionProviderOptionsSpec extends ScvmmSpec {
                 .every { it in scvmmMethods }
     }
 
+    def "compute server type options only reference option sources the SCVMM option source provides"() {
+        given:
+        def scvmmMethods = new ScvmmOptionSourceProvider(plugin, context).methodNames
+        def serverTypeOptions = new ScvmmCloudProvider(plugin, context).computeServerTypes*.optionTypes.flatten().findAll { it }
+
+        expect:
+        serverTypeOptions.find { it.code == 'computeServerType.scvmm.vmrdpConsoleSessionMode' }.optionSource == 'consoleSessionMode'
+        serverTypeOptions.findAll { it.optionSourceType == 'scvmm' }*.optionSource.every { it in scvmmMethods }
+    }
+
     def "getNodeOptionTypes declares 11 unique, optional node options"() {
         when:
         def options = provider.nodeOptionTypes
