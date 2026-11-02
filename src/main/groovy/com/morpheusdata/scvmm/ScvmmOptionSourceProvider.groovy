@@ -49,7 +49,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 	@Override
 	List<String> getMethodNames() {
 		return new ArrayList<String>([
-				'scvmmCloud', 'scvmmHostGroup', 'scvmmCluster', 'scvmmLibraryShares', 'scvmmSharedControllers', 'scvmmCapabilityProfile', 'scvmmHost', 'scvmmVirtualImages'
+				'scvmmCloud', 'scvmmHostGroup', 'scvmmCluster', 'scvmmLibraryShares', 'scvmmSharedControllers', 'scvmmCapabilityProfile', 'scvmmHost', 'scvmmVirtualImages', 'consoleSessionMode'
 		])
 	}
 
