@@ -596,15 +596,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     null
             )
         }
+        // A VM converted from discovered has no source image (MORPH-11751); core then resolves the image from the
+        // instance layout, and runWorkload clones the VM directly if there is none. Embedded has no image requirement.
         VirtualImage sourceImage = sourceServer.sourceImage
-        if (!sourceImage?.id) {
-            return new ServiceResponse<PrepareCloneInstanceResponse>(
-                    false,
-                    'Unable to prepare SCVMM clone: source image is missing',
-                    [imageId: 'Missing source image on source server'],
-                    null
-            )
-        }
 
         // Core hands this back to runWorkload as provisionOpts.cloneContainerId and it is resolved as a
         // Workload id, so it must be the source workload's id, not the source instance's id (MORPH-19193).
@@ -829,7 +823,19 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 }
             }
             log.debug("imageId2: ${imageId}")
-            if (imageId) {
+            // Clone of a VM converted from discovered whose layout has no catalog image: there is no image to deploy,
+            // so clone the source VM as-is with its own generation (MORPH-11751). A resolved image that failed to upload
+            // still fails below.
+            ComputeServer imagelessCloneSource = null
+            if (!imageId && opts.cloneContainerId && !containerConfig.template && !virtualImage?.id) {
+                def cloneSourceRef = context.services.workload.get(opts.cloneContainerId.toLong())?.server
+                imagelessCloneSource = cloneSourceRef ? (context.services.computeServer.get(cloneSourceRef.id) ?: cloneSourceRef) : null
+                if (imagelessCloneSource) {
+                    scvmmOpts.scvmmGeneration = imagelessCloneSource.getConfigProperty('generation') ?: 'generation1'
+                    log.info("clone: source ${imagelessCloneSource.name} has no image (converted VM); cloning VM ${imagelessCloneSource.externalId} directly as ${scvmmOpts.scvmmGeneration}")
+                }
+            }
+            if (imageId || imagelessCloneSource) {
                 scvmmOpts.isSysprep = virtualImage?.isSysprep
                 if (scvmmOpts.isSysprep) {
                     // Need to lookup the OS name
@@ -837,7 +843,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 }
 				opts.installAgent = (virtualImage ? virtualImage.installAgent : true) && !workloadRequest.cloudConfigOpts?.noAgent
 				// If the image is an ISO or VMTools not installed, we need to skip network wait
-				opts.skipNetworkWait = virtualImage?.imageType == 'iso' || !virtualImage?.vmToolsInstalled ? true : false
+				opts.skipNetworkWait = !imagelessCloneSource && (virtualImage?.imageType == 'iso' || !virtualImage?.vmToolsInstalled) ? true : false
                 //user config
                 def userGroups = workload.instance.userGroups?.toList() ?: []
                 if (workload.instance.userGroup && userGroups.contains(workload.instance.userGroup) == false) {
@@ -846,8 +852,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 server.sourceImage = virtualImage
                 server.externalId = scvmmOpts.name
                 server.parentServer = node
-                server.serverOs = server.serverOs ?: virtualImage.osType
-				def osplatform = virtualImage?.osType?.platform?.toString()?.toLowerCase() ?: virtualImage?.platform?.toString()?.toLowerCase()
+                server.serverOs = server.serverOs ?: (virtualImage ? virtualImage.osType : imagelessCloneSource?.serverOs)
+				def osplatform = virtualImage?.osType?.platform?.toString()?.toLowerCase() ?: virtualImage?.platform?.toString()?.toLowerCase() ?:
+						imagelessCloneSource?.serverOs?.platform?.toString()?.toLowerCase() ?: imagelessCloneSource?.osType?.toLowerCase()
 				server.osType = ['windows', 'osx'].contains(osplatform) ? osplatform : 'linux'
                 def newType = this.findVmNodeServerTypeForCloud(cloud.id, server.osType, PROVISION_TYPE_CODE)
                 if (newType && server.computeServerType != newType)

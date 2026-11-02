@@ -64,18 +64,20 @@ class ScvmmProvisionProviderCloneSpec extends Specification {
         result.data == null
     }
 
-    def "prepareCloneInstance fails when the source server has no source image"() {
-        given:
+    def "prepareCloneInstance succeeds without an image for a VM converted from discovered (MORPH-11751)"() {
+        given: 'a converted-to-managed source: it has a VM but was never provisioned from an image'
         Workload sourceWorkload = new Workload(id: 54L, server: new ComputeServer(id: 78L, externalId: 'vm-guid'))
         Instance instance = new Instance(id: 52L, containers: [sourceWorkload])
 
         when:
         def result = provider.prepareCloneInstance(instance, [cloneInstanceId: 52L])
 
-        then:
-        !result.success
-        result.msg.contains('source image')
-        result.data == null
+        then: 'core gets no image and resolves one from the layout, or runWorkload clones the VM directly'
+        result.success
+        PrepareCloneInstanceResponse response = result.data
+        response.image == null
+        response.cloneVmExternalId == 'vm-guid'
+        response.cloneContainerId == 54L
     }
 
     // cloud-init on a cloned disk only re-runs if its cache is cleared on the source first; runWorkload uses the
