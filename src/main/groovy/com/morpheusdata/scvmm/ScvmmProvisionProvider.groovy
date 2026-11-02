@@ -843,7 +843,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 }
 				opts.installAgent = (virtualImage ? virtualImage.installAgent : true) && !workloadRequest.cloudConfigOpts?.noAgent
 				// If the image is an ISO or VMTools not installed, we need to skip network wait
-				opts.skipNetworkWait = !imagelessCloneSource && (virtualImage?.imageType == 'iso' || !virtualImage?.vmToolsInstalled) ? true : false
+				opts.skipNetworkWait = !imagelessCloneSource && (virtualImage?.imageType == 'iso' || !virtualImage?.vmToolsInstalled)
                 //user config
                 def userGroups = workload.instance.userGroups?.toList() ?: []
                 if (workload.instance.userGroup && userGroups.contains(workload.instance.userGroup) == false) {
