@@ -133,6 +133,20 @@ You can use finer controls if you want to enable/disable `IsAvailableForPlacemen
 - Select your SCVMM cloud and choose a deployment flavor/template.
 - Fill in the required VM details and submit the provisioning request.
 
+#### VM generation and Secure Boot
+
+- For uploaded disk images, the virtual image's `generation` configuration selects Generation 1 or 2
+  (Generation 1 is the default). Select the generation that matches the image's boot mode.
+- Generation 1 uses legacy BIOS and does not support Secure Boot.
+- Generation 2 uses UEFI. The virtual image's **Secure Boot** setting controls Secure Boot independently
+  of its UEFI setting; leaving Secure Boot unset disables it.
+- For Generation 2 disk images, the plugin selects the Secure Boot template `MicrosoftWindows` for
+  Windows and `MicrosoftUEFICertificateAuthority` for non-Windows images, including Linux. Set the
+  virtual image's OS correctly. Non-Windows images must have a bootloader trusted by that certificate
+  authority; disable Secure Boot for images without a compatible signed bootloader.
+- Deployments from existing SCVMM templates retain the template's Secure Boot configuration.
+  Uploaded-image Secure Boot overrides are not applied to clones.
+
 ### VM Snapshots and Backups
 
 - Select a VM managed by the SCVMM plugin.
@@ -172,4 +186,5 @@ at `DEBUG` level.
 
 ```xml
     <logger name="com.morpheusdata.scvmm" level="DEBUG"/>
+
 ```
