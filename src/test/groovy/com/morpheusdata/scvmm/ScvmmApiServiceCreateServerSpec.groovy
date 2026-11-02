@@ -241,7 +241,7 @@ class ScvmmApiServiceCreateServerSpec extends ScvmmSpec {
         then:
         1 * svc.checkServerCreated(_, 'vm-new') >> [success: false]
         0 * svc.listVirtualDiskDrives(*_)
-        rtn == [success: false]
+        rtn == [success: false, failedDisks: [], diskWarnings: []]
         server.externalId == 'vm-new'
         scripts.count { it.contains('Remove-SCHardwareProfile') } == 2
     }
