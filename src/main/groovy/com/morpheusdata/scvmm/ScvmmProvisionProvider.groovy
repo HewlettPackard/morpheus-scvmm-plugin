@@ -2128,8 +2128,9 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
      * so we want to make sure we are checking all possible locations for these values (top level opts, opts.config,
      * and nested config for network interfaces).
      * @param opts the options map that may contain various configurations for the server and network interfaces
-     * @return a map of options to be used for validating the server config, including networkId, capability profile,
-     *         node count, and template if available
+     * @return a map of options to be used for validating the server config, including networkId, capability profile
+     *         and node count. The virtual image (template) is deliberately not validated, matching embedded SCVMM:
+     *         clones of converted-to-managed VMs have no image and core sends template: null for them (MORPH-11751).
      */
     static protected Map getValidateServerConfigOptions(Map opts = [:]) {
         // Check all possible locations for network selection
@@ -2153,13 +2154,6 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             validationOpts.nodeCount = opts.config.nodeCount
         } else if (opts?.containsKey('nodeCount')) {
             validationOpts.nodeCount = opts.nodeCount
-        }
-
-        // Check all possible locations for template (for validating virtual image configs)
-        if (opts?.config?.containsKey('template')) {
-            validationOpts.template = opts.config.template
-        } else if (opts?.containsKey('template')) {
-            validationOpts.template = opts.template
         }
 
         return validationOpts
