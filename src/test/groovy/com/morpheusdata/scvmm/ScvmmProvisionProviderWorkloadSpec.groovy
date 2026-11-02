@@ -350,6 +350,101 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         workload.getConfigMap().cloneParentDvdCleanup == [externalId: 'src-vm', deleteIso: 'C:\\disks\\src\\config.iso']
     }
 
+    // MORPH-11751: a VM converted from discovered has no source image. With no catalog image for its layout,
+    // core hands runWorkload no image either and the clone must come straight from the source VM.
+
+    def "runWorkload clones a converted VM without an image, keeping the source's generation and OS"() {
+        given:
+        server.sourceImage = null
+        server.platform = 'linux'
+        def parent = imagelessCloneParent('generation2', PlatformType.linux)
+
+        when:
+        def rtn = provider.runWorkload(workload, request, [cloneContainerId: 99L])
+
+        then:
+        0 * apiService.insertContainerImage(_)
+        0 * provisionService.buildIsoOutputStream(*_)
+        1 * provider.stopWorkload(parent) >> ServiceResponse.success()
+        1 * apiService.startServer({ it.async == true }, 'src-vm') >> [success: true]
+        rtn.success
+        createOpts.cloneVMId == 'src-vm'
+        createOpts.cloneContainerId == 99L
+        createOpts.imageId == null
+        createOpts.templateId == null
+        createOpts.scvmmGeneration == 'generation2'
+        !createOpts.isSysprep
+        createOpts.cloudConfigBytes == null
+        createOpts.cloneBaseOpts == [cloudInitIsoNeeded: false]
+        createOpts.networkId == 'net-c'
+        server.sourceImage == null
+        server.serverOs.is(parent.server.serverOs)
+        server.osType == 'linux'
+        server.status == 'provisioned'
+        rtn.data.installAgent == true
+    }
+
+    def "runWorkload image-less clone uses generation #expected and osType #osType for a #platform source with generation '#generation'"() {
+        given:
+        server.sourceImage = null
+        imagelessCloneParent(generation, platform)
+
+        when:
+        def rtn = provider.runWorkload(workload, request, [cloneContainerId: 99L])
+
+        then:
+        rtn.success
+        createOpts.scvmmGeneration == expected
+        server.osType == osType
+
+        where:
+        generation    | platform               || expected      | osType
+        'generation1' | PlatformType.linux     || 'generation1' | 'linux'
+        null          | PlatformType.linux     || 'generation1' | 'linux'
+        'generation2' | PlatformType.windows   || 'generation2' | 'windows'
+    }
+
+    def "runWorkload image-less clone still honours an explicit scvmmGeneration in the clone request"() {
+        given:
+        server.sourceImage = null
+        imagelessCloneParent('generation2', PlatformType.linux)
+
+        when:
+        provider.runWorkload(workload, request, [cloneContainerId: 99L, config: [scvmmGeneration: 'generation1']])
+
+        then:
+        createOpts.scvmmGeneration == 'generation1'
+    }
+
+    def "runWorkload clone of a converted VM uses the image core resolved from the layout (embedded parity)"() {
+        given: 'the source has no image of its own but core found a catalog image for the layout'
+        imagelessCloneParent('generation1', PlatformType.linux)
+
+        when:
+        def rtn = provider.runWorkload(workload, request, [cloneContainerId: 99L])
+
+        then: 'the image-backed path is unchanged: image id, template and generation come from the image'
+        rtn.success
+        createOpts.cloneVMId == 'src-vm'
+        createOpts.imageId == 'vhd-tpl'
+        createOpts.templateId == 'tpl-1'
+        createOpts.scvmmGeneration == 'generation2'
+        server.sourceImage.is(image)
+    }
+
+    def "runWorkload without an image still fails with 'Failed to upload image' when it is not a clone"() {
+        given:
+        server.sourceImage = null
+
+        when:
+        def rtn = provider.runWorkload(workload, request, [:])
+
+        then:
+        0 * apiService.createServer(_)
+        !rtn.success
+        rtn.msg == 'Failed to upload image'
+    }
+
     def "runWorkload builds the cloud-init ISO from the request for a cloud-init image"() {
         given:
         image.isCloudInit = true
@@ -736,6 +831,21 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         workloadService.get(99L) >> parent
         workloadService.find(_) >> parent
         provider.resetCloudInitCacheForClone(_) >> false
+        return parent
+    }
+
+    private Workload imagelessCloneParent(String generation, PlatformType platform) {
+        def parentServer = Domain.server(id: 77L, name: 'converted-src', externalId: 'src-vm', sourceImage: null, cloud: cloud,
+                serverOs: new OsType(code: "${platform}.64".toString(), platform: platform), osType: platform.toString(),
+                volumes: [Domain.volume(id: 62L, datastore: datastore)])
+        if (generation) {
+            parentServer.setConfigProperty('generation', generation)
+        }
+        def parent = Domain.workload(id: 99L, server: parentServer, status: Workload.Status.running)
+        workloadService.get(99L) >> parent
+        workloadService.find(_) >> parent
+        provider.stopWorkload(_) >> ServiceResponse.success()
+        apiService.startServer(*_) >> [success: true]
         return parent
     }
 }

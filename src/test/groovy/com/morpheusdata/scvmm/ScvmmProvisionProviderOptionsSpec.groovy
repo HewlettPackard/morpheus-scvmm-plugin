@@ -113,7 +113,13 @@ class ScvmmProvisionProviderOptionsSpec extends ScvmmSpec {
         !ScvmmProvisionProvider.getValidateServerConfigOptions([config: [:]]).containsKey(key)
 
         where:
-        key << ['scvmmCapabilityProfile', 'nodeCount', 'template']
+        key << ['scvmmCapabilityProfile', 'nodeCount']
+    }
+
+    def "getValidateServerConfigOptions never passes the template on, like embedded SCVMM"() {
+        expect:
+        !ScvmmProvisionProvider.getValidateServerConfigOptions([config: [template: 'cfg'], template: 'top']).containsKey('template')
+        !ScvmmProvisionProvider.getValidateServerConfigOptions([template: null]).containsKey('template')
     }
 
     def "getValidateServerConfigOptions tolerates null opts"() {
@@ -154,9 +160,31 @@ class ScvmmProvisionProviderOptionsSpec extends ScvmmSpec {
         'no network is selected'               | [config: [:]]                                                     | 'networkId'              | 'Network is required'
         'opts are empty'                       | [:]                                                               | 'networkId'              | 'Network is required'
         'the capability profile is blank'      | [config: [scvmmNetworkId: 'n', scvmmCapabilityProfile: '']]        | 'scvmmCapabilityProfile' | 'You must select a capability profile'
-        'the template is blank'                | [config: [scvmmNetworkId: 'n', template: null]]                    | 'template'               | 'Virtual image is required'
         'the node count is an empty string'    | [config: [scvmmNetworkId: 'n', nodeCount: '']]                     | 'nodeCount'              | 'You must indicate number of hosts'
         'the first interface has no network'   | [networkInterfaces: [[network: [:]], [network: [id: 'n']]]]       | 'networkInterface'       | 'Network is required'
+    }
+
+    def "#entryPoint accepts a clone of a converted VM whose template is null (MORPH-11751)"() {
+        given: 'the opts core builds in cloneInstance when prepareCloneInstance returns no image'
+        def opts = [template: null, imageId: null, skipProvision: true, config: [scvmmNetworkId: 'n'],
+                    provisionOpts: [cloneVmId: 'vm-ext-1', cloneContainerId: 172L]]
+
+        when:
+        def result = call(provider, opts)
+
+        then:
+        result.success
+        !result.errors
+
+        where:
+        entryPoint         | call
+        'validateWorkload' | { p, o -> p.validateWorkload(o) }
+        'validateInstance' | { p, o -> p.validateInstance(null, o) }
+    }
+
+    def "validateWorkload does not require a virtual image for a new provision, like embedded SCVMM"() {
+        expect:
+        provider.validateWorkload([config: [scvmmNetworkId: 'n', template: '']]).success
     }
 
     def "validateWorkload keeps only the last message per field when several errors share it"() {
