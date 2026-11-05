@@ -142,8 +142,8 @@ class CloneWizardReconcilerSpec extends Specification {
         new NoOp().historyStatus == 'configuring noop'
     }
 
-    def "the SCVMM reconciler has no aspects until one is registered"() {
+    def "the SCVMM reconciler handles the network today"() {
         expect:
-        CloneWizardReconciler.forScvmm().aspects == []
+        CloneWizardReconciler.forScvmm().aspects*.name == ['network']
     }
 }

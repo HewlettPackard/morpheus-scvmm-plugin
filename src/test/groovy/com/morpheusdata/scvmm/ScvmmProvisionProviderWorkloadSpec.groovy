@@ -352,7 +352,41 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         workload.getConfigMap().cloneParentDvdCleanup == [externalId: 'src-vm', deleteIso: 'C:\\disks\\src\\config.iso']
     }
 
-    // MORPH-20363: clone wizard changes are reconciled by the clone wizard reconciler.
+    // MORPH-20363: the clone's NICs are made to match the wizard.
+
+    def "runWorkload clone reads the source's adapters before stopping it and hands the NIC plan to createServer"() {
+        given:
+        def parent = cloneParent(false)
+
+        when:
+        def rtn = provider.runWorkload(workload, request, cloneOpts())
+
+        then:
+        1 * apiService.getServerDetails(_, 'src-vm') >> [success: true, server: [NetworkAdapters: [[ID: 'src-a1', SlotId: 1], [ID: 'src-a0', SlotId: 0]]]]
+
+        then:
+        1 * provider.stopWorkload(parent) >> ServiceResponse.success()
+
+        and:
+        rtn.success
+        createOpts.clonePlans.network.updates*.adapterId == ['src-a0']
+        createOpts.clonePlans.network.removes*.adapterId == ['src-a1']
+    }
+
+    def "runWorkload clone fails fast, without stopping the source, when the source's adapters can't be read"() {
+        given:
+        cloneParent(false)
+
+        when:
+        def rtn = provider.runWorkload(workload, request, cloneOpts())
+
+        then:
+        1 * apiService.getServerDetails(_, 'src-vm') >> [success: false, error: 'VM_NOT_FOUND']
+        0 * provider.stopWorkload(_)
+        0 * apiService.createServer(_)
+        !rtn.success
+        rtn.msg.contains('network adapters')
+    }
 
     def "runWorkload clone applies the clone wizard changes before the clone's first start and records their warnings in History"() {
         given:
@@ -859,6 +893,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
 
     private void stubCloneNics() {
         apiService.getServerDetails(_, 'src-vm') >> [success: true, server: [NetworkAdapters: [[ID: 'src-a0', SlotId: 0]]]]
+        apiService.applyCloneNicPlan(*_) >> [success: true, adapters: [[ID: 'c-0', SlotId: 0]], failedAdds: [], warnings: []]
     }
 
     private Workload cloneParent(boolean cloudInit) {

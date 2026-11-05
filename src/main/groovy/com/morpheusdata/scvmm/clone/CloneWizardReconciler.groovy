@@ -19,9 +19,9 @@ class CloneWizardReconciler {
         this.aspects = aspects ?: []
     }
 
-    /** The aspects the SCVMM plugin reconciles. Volumes (MORPH-980) still run in createServer/runWorkload. */
+    /** The aspects the SCVMM plugin reconciles today. Volumes (MORPH-980) still run in createServer/runWorkload. */
     static CloneWizardReconciler forScvmm() {
-        return new CloneWizardReconciler([])
+        return new CloneWizardReconciler([new NicCloneAspect()])
     }
 
     /**
