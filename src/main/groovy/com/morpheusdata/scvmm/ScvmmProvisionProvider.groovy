@@ -26,6 +26,8 @@ import com.morpheusdata.response.PrepareInstanceResponse
 import com.morpheusdata.response.PrepareWorkloadResponse
 import com.morpheusdata.response.ProvisionResponse
 import com.morpheusdata.response.ServiceResponse
+import com.morpheusdata.scvmm.clone.CloneContext
+import com.morpheusdata.scvmm.clone.CloneWizardReconciler
 import com.morpheusdata.scvmm.helper.ReconfigurePoolIpHelper
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
@@ -661,6 +663,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		def scvmmOpts = [:]
 		def cloneAgentViaCloudInit = false
 		List<String> volumeWarnings = []
+		List<Map> cloneWarnings = []
         try {
             def containerConfig = workload.getConfigMap()
 			WorkloadType workloadType = context.services.workloadType.get(workload.workloadType.id)
@@ -908,8 +911,20 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                     opts.unattendCustomized = initOptions.unattendCustomized
                 }
                 // If cloning.. gotta stop it first
+                CloneContext cloneContext = null
+                Map clonePlans = null
                 if (opts.cloneContainerId) {
                     Workload parentContainer = context.services.workload.get(opts.cloneContainerId.toLong())
+                    // MORPH-20363: plan what the clone wizard changed while the source is still untouched; fail fast
+                    cloneContext = buildCloneContext(scvmmOpts, server, parentContainer.server.externalId)
+                    def clonePlan = getCloneReconciler().plan(cloneContext)
+                    if (clonePlan.success != true) {
+                        server.statusMessage = clonePlan.error
+                        context.async.computeServer.save(server).blockingGet()
+                        throw new IllegalStateException(clonePlan.error?.toString())
+                    }
+                    clonePlans = clonePlan.plans as Map
+                    scvmmOpts.clonePlans = clonePlans
                     scvmmOpts.cloneContainerId = parentContainer.id
                     scvmmOpts.cloneVMId = parentContainer.server.externalId
                     // Must run while the source is still up, before it is stopped for the clone
@@ -1005,6 +1020,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 						server.status = 'provisioned'
 						MorpheusUtil.saveAndGetMorpheusServer(context, server)
 
+						// MORPH-20363: make the powered-off clone match the wizard before its first start
+						if (clonePlans) {
+							cloneWarnings = applyCloneWizardChanges(cloneContext, clonePlans, createResults.server.id?.toString())
+						}
+
 						// start it
 						log.info("Starting Server  ${scvmmOpts.name}")
 						apiService.startServer(scvmmOpts, scvmmOpts.externalId)
@@ -1046,6 +1066,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
 			if (provisionResponse.success) {
 				reportVolumeWarnings(workloadRequest.process, volumeWarnings)
+				cloneWarnings.each { Map group -> reportProcessWarnings(workloadRequest.process, group.type as ProcessEvent.ProcessType, group.status?.toString(), group.warnings as List<String>) }
 				def status = provisionResponse.skipNetworkWait ? 'waiting for server status' : 'waiting for network'
 				context.process.startProcessStep(workloadRequest.process,
 						new ProcessEvent(type: ProcessEvent.ProcessType.provisionNetwork), status).blockingGet()
@@ -1097,15 +1118,46 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 	// Core shows a successful provision's returned message nowhere, so warnings go into the instance History as a
 	// completed "volumes" step whose output carries the reason.
 	protected void reportVolumeWarnings(com.morpheusdata.model.Process process, List<String> warnings) {
+		reportProcessWarnings(process, ProcessEvent.ProcessType.provisionVolumes, 'adding volumes', warnings)
+	}
+
+	protected void reportProcessWarnings(com.morpheusdata.model.Process process, ProcessEvent.ProcessType type, String status, List<String> warnings) {
 		if (!warnings || !process) {
 			return
 		}
 		def text = warnings.collect { "WARNING: ${it}" }.join('\n')
 		try {
-			context.process.startProcessStep(process, new ProcessEvent(type: ProcessEvent.ProcessType.provisionVolumes, message: text), 'adding volumes').blockingGet()
+			context.process.startProcessStep(process, new ProcessEvent(type: type, message: text), status).blockingGet()
 			context.process.endProcessStep(process, com.morpheusdata.core.MorpheusProcessService.STATUS_COMPLETE, text).blockingGet()
 		} catch (e) {
-			log.error("Unable to record volume warnings in the instance history: ${e.message}", e)
+			log.error("Unable to record warnings in the instance history: ${e.message}", e)
+		}
+	}
+
+	protected CloneWizardReconciler getCloneReconciler() {
+		return CloneWizardReconciler.forScvmm()
+	}
+
+	protected CloneContext buildCloneContext(Map scvmmOpts, ComputeServer server, String sourceVmId) {
+		return new CloneContext(morpheusContext: context, apiService: apiService, poolIpHelper: getPoolIpHelper(), scvmmOpts: scvmmOpts,
+				server: server, sourceVmId: sourceVmId, networkConfig: scvmmOpts.networkConfig as Map)
+	}
+
+	// MORPH-20363: applies each clone wizard aspect to the powered-off clone and updates Morpheus to match.
+	// Per-item problems are returned as History warning groups; they don't fail the clone.
+	protected List<Map> applyCloneWizardChanges(CloneContext cloneContext, Map clonePlans, String cloneVmId) {
+		try {
+			cloneContext.cloneVmId = cloneVmId
+			cloneContext.server = context.services.computeServer.get(cloneContext.server.id)
+			def reconciler = getCloneReconciler()
+			def results = reconciler.applyBeforeStart(cloneContext, clonePlans)
+			def groups = reconciler.reconcileRecords(cloneContext, clonePlans, results)
+			groups.each { group -> group.warnings.each { log.warn("runWorkload: ${it}") } }
+			return groups
+		} catch (e) {
+			log.error("runWorkload: unable to apply the clone wizard changes to ${cloneVmId}: ${e.message}", e)
+			return [[type: ProcessEvent.ProcessType.provision, status: 'configuring clone',
+					 warnings: ["The clone was created but the changes made in the clone wizard could not all be applied: ${e.message}. Check its network interfaces and use Reconfigure if needed.".toString()]]]
 		}
 	}
 
