@@ -3,11 +3,14 @@
 package com.morpheusdata.scvmm
 
 import com.morpheusdata.core.MorpheusContext
+import com.morpheusdata.model.OsType
+import com.morpheusdata.model.VirtualImage
 import spock.lang.Specification
 import spock.lang.Subject
+import spock.lang.Unroll
 
 /**
- * Covers the multi-NIC command generation in {@link ScvmmApiService#buildCreateServerCommands}:
+ * Covers boot settings and multi-NIC command generation in {@link ScvmmApiService#buildCreateServerCommands}:
  * secondary adapters are added to the hardware profile, and static pool IP assignment is scoped
  * to the correct adapter configuration instead of being applied to every adapter on the VM.
  */
@@ -70,6 +73,71 @@ class ScvmmApiServiceBuildCreateServerCommandsSpec extends Specification {
 
     private static List<String> adapterConfigSets(List<String> cmds) {
         cmds.findAll { it.contains('Set-SCVirtualNetworkAdapterConfiguration ') }
+    }
+
+    @Unroll
+    def "disk image boot commands for #generation #platform secureBoot=#secureBoot cloud=#cloudId"() {
+        given:
+        def image = new VirtualImage(secureBoot: secureBoot, uefi: true, osType: new OsType(platform: platform))
+        image.setConfigProperty('generation', generation)
+        def provider = new ScvmmProvisionProvider(Mock(ScvmmPlugin), Mock(MorpheusContext))
+        def imageOpts = provider.getScvmmImageOpts(image)
+
+        when:
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(dynamicPrimary(),
+            imageOpts + [zone: [regionCode: cloudId]])))
+        def secureBootCommands = cmds.findAll { it.contains('-SecureBoot') }
+
+        then:
+        cmds.find { it.contains('New-SCHardwareProfile ') }.contains("-Generation ${generation == 'generation2' ? '2' : '1'}")
+        if (generation == 'generation2') {
+            def expected = '$ignore = Set-SCHardwareProfile -HardwareProfile $HardwareProfile -SecureBootEnabled ' +
+                (secureBoot == true ? '$true' : '$false') + ' -SecureBootTemplate ' + imageOpts.secureBootTemplate
+            assert secureBootCommands == [expected]
+            assert cmds[cmds.indexOf(expected) + 1].contains('Exit 29')
+            assert cmds.indexOf(expected) < cmds.findIndexOf { it.contains('New-SCVMTemplate ') }
+        } else {
+            assert secureBootCommands.isEmpty()
+        }
+
+        where:
+        [generation, platform, secureBoot, cloudId] << [
+            ['generation1', 'generation2'],
+            ['windows', 'linux', 'other', 'osx', 'solaris', 'unknown'],
+            [false, true, null],
+            [null, 'cloud-guid']
+        ].combinations()
+    }
+
+    @Unroll
+    def "SCVMM template boot settings are inherited only for #generation"() {
+        when:
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(dynamicPrimary(), [
+            isTemplate: true, templateId: 'template-id', scvmmGeneration: generation,
+            secureBoot: true, secureBootTemplate: 'MicrosoftUEFICertificateAuthority'
+        ])))
+        def secureBootCommands = cmds.findAll { it.contains('-SecureBoot') }
+
+        then:
+        secureBootCommands.size() == count
+        secureBootCommands.every { it.contains('$template.SecureBoot') }
+        !secureBootCommands.any { it.contains('MicrosoftUEFICertificateAuthority') }
+
+        where:
+        generation    | count
+        'generation1' | 0
+        'generation2' | 2
+    }
+
+    def "cloning a Generation 2 VM does not apply uploaded image Secure Boot overrides"() {
+        when:
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(dynamicPrimary(), [
+            cloneVMId: 'source-vm', scvmmGeneration: 'generation2',
+            secureBoot: false, secureBootTemplate: 'MicrosoftWindows'
+        ])))
+
+        then:
+        !cmds.any { it.contains('-SecureBoot') }
     }
 
     def "single NIC provisioning only creates the primary adapter"() {
