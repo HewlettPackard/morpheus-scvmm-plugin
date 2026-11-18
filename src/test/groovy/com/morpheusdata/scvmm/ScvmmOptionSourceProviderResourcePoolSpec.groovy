@@ -135,8 +135,10 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
         captured.sort == 'name'
         captured.order == DataQuery.SortOrder.asc
         !captured.joins.contains('resourcePool')
-        // plan said "maintenance-mode hosts excluded": there is no maintenance filter, only enabled + powerState
-        !captured.filters*.name.any { it?.toString()?.toLowerCase()?.contains('maintenance') }
+        // MORPH-18569 parity: hosts in maintenance mode are excluded, hosts never flagged (NULL) are kept
+        def maintenance = captured.filters.find { it instanceof DataOrFilter }
+        maintenance.value*.name == ['maintenanceMode', 'maintenanceMode']
+        maintenance.value*.value == [false, null]
     }
 
     def "scvmmHost narrows the list to the selected resource pool (#source)"() {

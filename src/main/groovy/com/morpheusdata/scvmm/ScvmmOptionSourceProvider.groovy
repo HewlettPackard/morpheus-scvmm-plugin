@@ -241,6 +241,8 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 				.withFilter('enabled', true)
 				.withFilter('powerState', 'on')
 				.withFilter('category', "scvmm.host.${tmpZone.id}")
+				// Hosts in SCVMM maintenance mode cannot take new VMs; NULL is a host not synced since the flag existed.
+				.withFilters(new DataOrFilter(new DataFilter('maintenanceMode', false), new DataFilter('maintenanceMode', null)))
 
 		if(resourcePoolId) {
 			query.withJoin('resourcePool')

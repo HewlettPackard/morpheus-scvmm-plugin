@@ -99,7 +99,7 @@ class HostSyncSpec extends Specification {
 		then:
 		server.maxSockets == 2L
 		0 * server.setMaxSockets(_)
-		1 * computeServerService.save(server) >> Single.just(server)
+		0 * computeServerService.save(server)
 	}
 
 	private static ComputeServer serverWithCapacity(Map overrides) {
@@ -237,7 +237,7 @@ class HostSyncSpec extends Specification {
 		null                                       | null                                     || 'windows.server.2012'
 	}
 
-	def "updateMatchedHosts saves and refreshes stats when the host moved cluster"() {
+	def "updateMatchedHosts saves once and refreshes stats when the host moved cluster"() {
 		given:
 		def sync = Spy(wired()) { getHypervisorOs(_) >> new OsType(code: 'windows') }
 		def server = serverWithCapacity(maxSockets: 2L, serverOs: new OsType(code: 'windows'))
@@ -246,26 +246,89 @@ class HostSyncSpec extends Specification {
 		updateMatchedHosts.accessible = true
 
 		when:
-		updateMatchedHosts.invoke(sync, [new SyncTask.UpdateItem(existingItem: server, masterItem: VmmPayloads.host(cpuCount: '2', cluster: 'c1'))], [cluster])
+		updateMatchedHosts.invoke(sync, [new SyncTask.UpdateItem(existingItem: server, masterItem: VmmPayloads.host(cpuCount: '2', cluster: 'c1', totalMemory: '999'))], [cluster])
 
 		then:
-		2 * computeServerService.save(server) >> Single.just(server)
+		1 * computeServerService.save(server) >> Single.just(server)
 		server.resourcePool.is(cluster)
+		server.maxMemory == 999L
 	}
 
-	def "updateMatchedHosts does not save a host whose cluster, OS and sockets are unchanged"() {
+	def "updateMatchedHosts refreshes stats, power state and hostname when cluster, OS and sockets are unchanged"() {
 		given:
 		def sync = Spy(wired()) { getHypervisorOs(_) >> new OsType(code: 'windows') }
-		def server = serverWithCapacity(maxSockets: 2L, serverOs: new OsType(code: 'windows'))
+		def server = serverWithCapacity(maxSockets: 2L, serverOs: new OsType(code: 'windows'), hostname: 'old-name')
+		def updateMatchedHosts = HostSync.declaredMethods.find { it.name == 'updateMatchedHosts' }
+		updateMatchedHosts.accessible = true
+		def masterItem = VmmPayloads.host(cpuCount: '2', totalMemory: '8589934592', availableMemory: '1024',
+			usedStorage: '500', hyperVState: 'Stopped', name: 'new-name.example.test')
+
+		when:
+		updateMatchedHosts.invoke(sync, [new SyncTask.UpdateItem(existingItem: server, masterItem: masterItem)], [])
+
+		then: 'embedded parity: every matched host gets updateHostStats, not only cluster/OS changes'
+		1 * computeServerService.save(server) >> Single.just(server)
+		server.maxMemory == 8589934592L
+		server.usedMemory == 8589934592L - 1024L * 1024L * 1024L
+		server.usedStorage == 500L
+		server.powerState == ComputeServer.PowerState.off
+		server.hostname == 'new-name.example.test'
+	}
+
+	def "updateMatchedHosts does not save a stopped host when nothing changed"() {
+		given:
+		def sync = Spy(wired()) { getHypervisorOs(_) >> new OsType(code: 'windows') }
+		def server = serverWithCapacity(maxSockets: 2L, serverOs: new OsType(code: 'windows'), powerState: ComputeServer.PowerState.off)
 		def updateMatchedHosts = HostSync.declaredMethods.find { it.name == 'updateMatchedHosts' }
 		updateMatchedHosts.accessible = true
 
 		when:
-		updateMatchedHosts.invoke(sync, [new SyncTask.UpdateItem(existingItem: server, masterItem: VmmPayloads.host(cpuCount: '2', totalMemory: '999'))], [])
+		updateMatchedHosts.invoke(sync, [new SyncTask.UpdateItem(existingItem: server, masterItem: VmmPayloads.host(cpuCount: '2', hyperVState: 'Stopped'))], [])
 
-		then: 'stats (e.g. memory) are only refreshed on a cluster/OS change'
+		then:
 		0 * computeServerService.save(_)
-		server.maxMemory == 0L
+	}
+
+	def "updateHostStats sets maintenanceMode=#expected from status '#status' (was #before)"() {
+		given:
+		def server = serverWithCapacity(maintenanceMode: before)
+		Map host = status != null ? VmmPayloads.host(status: status) : VmmPayloads.host()
+
+		when:
+		hostSync.updateHostStats(server, host)
+
+		then:
+		server.maintenanceMode == expected
+		saves * computeServerService.save(server) >> Single.just(server)
+
+		where:
+		status                  | before || expected | saves
+		'In Maintenance Mode'   | false  || true     | 1
+		' in maintenance mode ' | false  || true     | 1
+		'OK'                    | true   || false    | 1
+		'Needs Attention'       | true   || false    | 1
+		'In Maintenance Mode'   | true   || true     | 0
+		null                    | true   || true     | 0
+		''                      | true   || true     | 0
+	}
+
+	def "execute removes every host when none is left in the cloud's host group"() {
+		given:
+		def cloud = new Cloud(id: 1L)
+		cloud.setConfigProperty('hostGroup', 'All Hosts\\a')
+		def sync = wired(cloud)
+		apiService.listHosts(_) >> [success: true, hosts: [VmmPayloads.host(id: 'h-out', hostGroup: 'All Hosts\\b')]]
+		poolService.list(_ as DataQuery) >> []
+		def moved = new ComputeServerIdentityProjection(id: 9L, externalId: 'h-out')
+		computeServerService.listIdentityProjections(_ as DataQuery) >> Observable.just(moved)
+		syncComputeServerService.list(_ as DataQuery) >> []
+
+		when:
+		sync.execute()
+
+		then:
+		0 * computeServerService.create(_)
+		1 * computeServerService.bulkRemove([moved]) >> Single.just(true)
 	}
 
 	def "updateHostStats maps hyperVState #state to powerState #power"() {
