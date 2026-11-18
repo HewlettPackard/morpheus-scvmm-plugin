@@ -106,33 +106,12 @@ class NetworkSync {
             if (networkAdds.size() > 0) {
                 def result = morpheusContext.async.cloud.network.bulkCreate(networkAdds).blockingGet()
 
-                // Now add subnets to the created networks
-                result.persistedItems.each { networkAdd ->
-
-                    def cloudItem = addList.find {it.Name == networkAdd.name} // Find corresponding cloud item
-                    def subnet = cloudItem.Subnets?.getAt(0)?.Subnet
-                    def networkCidr = NetworkUtility.getNetworkCidrConfig(subnet)
-
-                    if (cloudItem) {
-                        def subnetConfig = [
-                                dhcpServer         : true,
-                                account            : cloud.owner,
-                                externalId         : cloudItem.ID,
-                                networkSubnetType  : subnetType,
-                                category           : "scvmm.subnet.${cloud.id}",
-                                name               : cloudItem.Name,
-                                vlanId             : cloudItem.VLanID,
-                                cidr               : subnet,
-                                netmask            : networkCidr.config?.netmask,
-                                dhcpStart          : (networkCidr.ranges ? networkCidr.ranges[0].startAddress : null),
-                                dhcpEnd            : (networkCidr.ranges ? networkCidr.ranges[0].endAddress : null),
-                                subnetAddress      : subnet,
-                                refType            : 'ComputeZone',
-                                refId              : cloud.id
-                        ]
-                        def addSubnet = new NetworkSubnet(subnetConfig)
-                        // Create subnet for the network
-                        morpheusContext.async.networkSubnet.create([addSubnet], networkAdd).blockingGet()
+                // Every VLAN-enabled site of the VM subnet becomes a subnet, keyed by the subnet's own ID
+                // (VMSubnetID-VLanID) so the next sync matches it instead of recreating it.
+                result.persistedItems.each { Network networkAdd ->
+                    def cloudItem = addList.find { it.ID == networkAdd.externalId }
+                    if (cloudItem?.Subnets) {
+                        addMissingNetworkSubnet(cloudItem.Subnets as Collection<Map>, subnetType, networkAdd)
                     }
                 }
             }
@@ -191,6 +170,7 @@ class NetworkSync {
                         networkSubnetType: subnetType,
                         category         : "scvmm.subnet.${cloud.id}",
                         name             : scvmmSubnet.Name,
+                        vlanId           : scvmmSubnet.VLanID,
                         cidr             : scvmmSubnet.Subnet,
                         netmask          : networkCidr.config?.netmask,
                         dhcpStart        : (networkCidr.ranges ? networkCidr.ranges[0].startAddress : null),
@@ -202,11 +182,15 @@ class NetworkSync {
                 ]
 
                 NetworkSubnet subnetAdd = new NetworkSubnet(subnetInfo)
+                subnetAdd.setConfigProperty('subnetName', scvmmSubnet.Name?.toString())
+                subnetAdd.setConfigProperty('subnetCidr', scvmmSubnet.Subnet?.toString())
                 subnetAdds << subnetAdd
             }
 
             //create networkSubnets
-            morpheusContext.async.networkSubnet.create(subnetAdds, network).blockingGet()
+            if (subnetAdds) {
+                morpheusContext.async.networkSubnet.create(subnetAdds, network).blockingGet()
+            }
         } catch (e) {
             log.error("Error in addMissingNetworkSubnet: ${e}", e)
         }
