@@ -2628,6 +2628,10 @@ For (\$i=0; \$i -le 10; \$i++) {
         return rtn
     }
 
+    /**
+     * Maps an SCVMM operating system name to a Morpheus OsType code (or, with findByKey=false, a code back to the
+     * first SCVMM name). {@code defaultOsType} is an OsType code returned when the name is not in the table.
+     */
     def getMapScvmmOsType(searchFor, findByKey = true, defaultOsType = null) {
         def SCVMM_OS_TYPE_MAP = [
                 '64-bit edition of Windows 10'                       : 'windows.10.64',
@@ -2739,7 +2743,7 @@ For (\$i=0; \$i -le 10; \$i++) {
         ]
 
         if (findByKey) {
-            return SCVMM_OS_TYPE_MAP[searchFor] ?: SCVMM_OS_TYPE_MAP[defaultOsType] ?: 'other'
+            return SCVMM_OS_TYPE_MAP[searchFor] ?: defaultOsType ?: 'other'
         } else {
             // Passed in the value... find the key
             def found = SCVMM_OS_TYPE_MAP.find { k, v -> v == searchFor }
