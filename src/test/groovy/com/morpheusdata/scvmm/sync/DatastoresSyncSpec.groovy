@@ -407,4 +407,99 @@ class DatastoresSyncSpec extends Specification {
         [name: 'C:\\', isClusteredSharedVolume: false]    | cluster(10L, 'cluster-a', []) | host('HYPERV-A1.lab.local', null) || 'HYPERV-A1 : C:\\'
         [name: 'C:\\', isClusteredSharedVolume: false]    | null      | null                     || 'C:\\'
     }
+
+    def "execute syncs the host volume even when the datastore record itself is unchanged"() {
+        given: 'the datastore already matches VMM, only the host volume is stale'
+        wire(sync)
+        def existingVolume = new StorageVolume(id: 3L, externalId: 'p1', internalId: 'v1', maxStorage: 1L, name: 'D:\\')
+        def h = hostWithVolumes('HYPERV-A1.lab.local', clusterA, [existingVolume])
+        poolService.list(_ as DataQuery) >> [clusterA]
+        computeServerService.list(_ as DataQuery) >> [h]
+        apiService.listDatastores(_) >> [success: true, datastores: [VmmPayloads.datastore(id: 'v1', name: 'D:\\', vmHost: 'HYPERV-A1.lab.local',
+                partitionUniqueID: 'p1', size: 200L, freeSpace: 50L, mountPoints: ['D:\\'], isAvailableForPlacement: true)]]
+        def ds = new Datastore(id: 50L, externalId: 'p1', name: 'HYPERV-A1 : D:\\', freeSpace: 50L, storageSize: 200L, online: true,
+                externalType: DatastoresSync.EXTERNAL_TYPE_HOST_VOLUME, assignedZonePools: [new CloudPool(id: clusterA.id)])
+        asyncDatastoreService.listIdentityProjections(_ as DataQuery) >> Observable.just(new DatastoreIdentityProjection(id: 50L, externalId: 'p1'))
+        asyncDatastoreService.listById([50L]) >> Observable.just(ds)
+
+        when:
+        sync.execute()
+
+        then:
+        0 * asyncDatastoreService.save(_)
+        1 * asyncStorageVolumeService.save(existingVolume) >> Single.just(existingVolume)
+        0 * asyncStorageVolumeService.create(_, _)
+        existingVolume.maxStorage == 200L
+        existingVolume.usedStorage == 150L
+        existingVolume.volumePath == 'D:\\'
+        existingVolume.datastore.is(ds)
+    }
+
+    def "execute creates a host volume on every host that reports a new cluster shared volume"() {
+        given: 'the CSV is reported by both nodes of cluster A but de-duplicated to a single datastore'
+        wire(sync)
+        def a1 = hostWithVolumes('HYPERV-A1.lab.local', clusterA, [])
+        def a2 = hostWithVolumes('HYPERV-A2.lab.local', clusterA, [])
+        poolService.list(_ as DataQuery) >> [clusterA]
+        volumeTypeService.find(_ as DataQuery) >> dsVolumeType
+        computeServerService.list(_ as DataQuery) >> [a1, a2]
+        apiService.listDatastores(_) >> [success: true, datastores: [
+                VmmPayloads.datastore(id: 'csv-a1', name: 'Volume1', vmHost: 'HYPERV-A1.lab.local', partitionUniqueID: 'p-csv',
+                        isClusteredSharedVolume: true, mountPoints: ['C:\\ClusterStorage\\Volume1']),
+                VmmPayloads.datastore(id: 'csv-a2', name: 'Volume1', vmHost: 'HYPERV-A2.lab.local', partitionUniqueID: 'p-csv',
+                        isClusteredSharedVolume: true, mountPoints: ['C:\\ClusterStorage\\Volume1'])]]
+        asyncDatastoreService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
+        StorageVolume onA1
+        StorageVolume onA2
+
+        when:
+        sync.execute()
+
+        then:
+        1 * asyncDatastoreService.create(_ as Datastore) >> { Datastore d -> d.id = 70L; Single.just(d) }
+        1 * asyncStorageVolumeService.create(_ as List, a1) >> { List l, ComputeServer s -> onA1 = l[0]; Single.just(true) }
+        1 * asyncStorageVolumeService.create(_ as List, a2) >> { List l, ComputeServer s -> onA2 = l[0]; Single.just(true) }
+        onA1.externalId == 'p-csv'
+        onA1.internalId == 'csv-a1'
+        onA2.externalId == 'p-csv'
+        onA2.internalId == 'csv-a2'
+        onA1.datastore.id == 70L
+        onA2.datastore.id == 70L
+    }
+
+    def "execute adds the host volume for a node that starts reporting an existing shared volume"() {
+        given: 'A1 already has its volume, A2 joined the cluster since the last sync'
+        wire(sync)
+        def onA1 = new StorageVolume(id: 4L, externalId: 'p-csv', internalId: 'csv-a1', name: 'Volume1',
+                maxStorage: 107374182400L, usedStorage: 53687091200L, volumePath: 'C:\\ClusterStorage\\Volume1')
+        def a1 = hostWithVolumes('HYPERV-A1.lab.local', clusterA, [onA1])
+        def a2 = hostWithVolumes('HYPERV-A2.lab.local', clusterA, [])
+        poolService.list(_ as DataQuery) >> [clusterA]
+        volumeTypeService.find(_ as DataQuery) >> dsVolumeType
+        computeServerService.list(_ as DataQuery) >> [a1, a2]
+        apiService.listDatastores(_) >> [success: true, datastores: [
+                VmmPayloads.datastore(id: 'csv-a1', name: 'Volume1', vmHost: 'HYPERV-A1.lab.local', partitionUniqueID: 'p-csv',
+                        isClusteredSharedVolume: true, mountPoints: ['C:\\ClusterStorage\\Volume1']),
+                VmmPayloads.datastore(id: 'csv-a2', name: 'Volume1', vmHost: 'HYPERV-A2.lab.local', partitionUniqueID: 'p-csv',
+                        isClusteredSharedVolume: true, mountPoints: ['C:\\ClusterStorage\\Volume1'])]]
+        def ds = new Datastore(id: 70L, externalId: 'p-csv', name: 'cluster-a : Volume1', freeSpace: 53687091200L, storageSize: 107374182400L,
+                online: true, externalType: DatastoresSync.EXTERNAL_TYPE_CLUSTERED_SHARED_VOLUME, assignedZonePools: [new CloudPool(id: clusterA.id)])
+        onA1.datastore = ds
+        asyncDatastoreService.listIdentityProjections(_ as DataQuery) >> Observable.just(new DatastoreIdentityProjection(id: 70L, externalId: 'p-csv'))
+        asyncDatastoreService.listById([70L]) >> Observable.just(ds)
+        StorageVolume onA2
+
+        when:
+        sync.execute()
+
+        then:
+        0 * asyncDatastoreService.save(_)
+        0 * asyncStorageVolumeService.save(_)
+        0 * asyncStorageVolumeService.create(_, a1)
+        1 * asyncStorageVolumeService.create(_ as List, a2) >> { List l, ComputeServer s -> onA2 = l[0]; Single.just(true) }
+        onA2.externalId == 'p-csv'
+        onA2.internalId == 'csv-a2'
+        onA2.datastore.is(ds)
+        onA2.type.is(dsVolumeType)
+    }
 }
