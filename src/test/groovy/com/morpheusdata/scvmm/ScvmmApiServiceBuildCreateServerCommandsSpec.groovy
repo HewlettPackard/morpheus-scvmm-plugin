@@ -344,7 +344,7 @@ class ScvmmApiServiceBuildCreateServerCommandsSpec extends Specification {
         ]
 
         when:
-        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(networkConfig, [cloneVMId: 'source-vm'])))
+        def cmds = lines(apiService.buildCreateServerCommands(baseOpts(networkConfig, cloneOpts(networkConfig))))
 
         then:
         !cmds.any { it.contains('VMNetworkExtra') }
@@ -408,23 +408,133 @@ class ScvmmApiServiceBuildCreateServerCommandsSpec extends Specification {
         [primaryInterface: [network: [externalId: PRIMARY_NET], doStatic: true, ipAddress: '10.0.0.10', vlanId: 0]]
     }
 
-    def "clone reconfigures the source adapter with #mode addressing"() {
+    // MORPH-20363: clone NICs are reconciled per copied adapter from a plan built on the source's adapters.
+    private static final String SRC_A0 = 'src-adapter-0'
+    private static final String SRC_A1 = 'src-adapter-1'
+    private static final String SRC_A2 = 'src-adapter-2'
+
+    private static Map cloneOpts(Map networkConfig, List<Map> sourceAdapters = [[ID: SRC_A0, SlotId: 0]], Map extra = [:]) {
+        [cloneVMId: 'source-vm', clonePlans: [network: com.morpheusdata.scvmm.clone.CloneNicPlanner.build(sourceAdapters, networkConfig)]] + extra
+    }
+
+    private static List<String> cloneAdapterSets(List<String> cmds) {
+        cmds.findAll { it.contains('Set-SCVirtualNetworkAdapter ') }
+    }
+
+    private static String jobGroupOf(String cmd) {
+        (cmd =~ /-JobGroup "?([0-9a-f-]{36})"?/)[0][1]
+    }
+
+    def "clone reconfigures the copied adapter with #mode addressing"() {
         when:
-        def cmds = build(networkConfig, [cloneVMId: 'source-vm'])
+        def cmds = build(networkConfig, cloneOpts(networkConfig))
+        def sets = cloneAdapterSets(cmds)
 
         then:
-        cmds.findAll { it.startsWith('Set-SCVirtualNetworkAdapter ') }.every { it.contains(ipConfig) }
-        cmds.count { it.startsWith('Set-SCVirtualNetworkAdapter ') } == 2
+        sets.size() == 1
+        sets[0].contains(ipConfig)
+        !sets[0].contains('-IPv4AddressPools')
 
         where:
-        mode      | networkConfig    || ipConfig
-        'static'  | staticPrimary()  || '-IPv4AddressType Static -IPv4Address "10.0.0.10"'
-        'dynamic' | dynamicPrimary() || '-IPv4AddressType Dynamic'
+        mode                           | networkConfig    || ipConfig
+        'static from an SCVMM pool'    | poolPrimary()    || '-IPv4AddressType Static -IPv4Addresses "10.0.0.10"'
+        'typed static without a pool'  | staticPrimary()  || '-IPv4AddressType Dynamic'
+        'dynamic'                      | dynamicPrimary() || '-IPv4AddressType Dynamic'
+    }
+
+    def "a multi-NIC clone sets each copied adapter on its own network instead of passing all adapters at once"() {
+        given:
+        def networkConfig = dynamicPrimary() + [extraInterfaces: [[network: [externalId: EXTRA_NET_0], vlanId: 0], [network: [externalId: EXTRA_NET_1], vlanId: 0]]]
+        def source = [[ID: SRC_A0, SlotId: 0], [ID: SRC_A1, SlotId: 1], [ID: SRC_A2, SlotId: 2]]
+
+        when:
+        def cmds = build(networkConfig, cloneOpts(networkConfig, source))
+        def sets = cloneAdapterSets(cmds)
+        def create = cmds.find { it.startsWith('$createdVm = New-SCVirtualMachine -VM $VM') }
+
+        then: 'one Set per copied adapter, each selecting its adapter by ID and using its own network'
+        sets.size() == 3
+        [SRC_A0, SRC_A1, SRC_A2].every { id -> cmds.any { it.contains("\$_.ID -eq \"${id}\"") } }
+        [PRIMARY_NET, EXTRA_NET_0, EXTRA_NET_1].every { net -> cmds.any { it.contains("Get-SCVMNetwork -VMMServer localhost -ID \"${net}\"") } }
+
+        and: 'every change belongs to the clone job, so it applies to the new VM, not the source'
+        sets.every { jobGroupOf(it) == jobGroupOf(create) }
+        cmds.findIndexOf { it.contains('Set-SCVirtualNetworkAdapter ') } < cmds.indexOf(create)
+
+        and: 'the old all-adapters value is gone'
+        !cmds.any { it.contains('$VirtualNetworkAdapter.VirtualNetwork') }
+        !cmds.any { it.contains('-VirtualNetworkAdapter $VirtualNetworkAdapter ') }
+    }
+
+    def "a copied adapter the wizard removed is disconnected in the clone job"() {
+        given:
+        def source = [[ID: SRC_A0, SlotId: 0], [ID: SRC_A1, SlotId: 1]]
+
+        when:
+        def cmds = build(dynamicPrimary(), cloneOpts(dynamicPrimary(), source))
+        def sets = cloneAdapterSets(cmds)
+
+        then:
+        sets.size() == 2
+        sets.count { it.contains('-NoConnection') } == 1
+        cmds.any { it.contains("\$_.ID -eq \"${SRC_A1}\"") }
+    }
+
+    def "NICs added in the clone wizard are not part of the clone script"() {
+        given:
+        def networkConfig = dynamicPrimary() + [extraInterfaces: [[network: [externalId: EXTRA_NET_0], vlanId: 0]]]
+
+        when:
+        def cmds = build(networkConfig, cloneOpts(networkConfig))
+
+        then: 'they are created after the clone exists, before its first start'
+        cloneAdapterSets(cmds).size() == 1
+        !cmds.any { it.contains(EXTRA_NET_0) }
+    }
+
+    def "an extra SCVMM pool NIC on a copied adapter is bound with its leased IP only"() {
+        given:
+        def networkConfig = dynamicPrimary() + [extraInterfaces: [[network: [externalId: EXTRA_NET_0], vlanId: 0, doStatic: true, ipMode: 'static',
+                                                                   poolType: 'scvmm', ipAddress: '10.0.0.20', networkPool: [externalId: EXTRA_POOL]]]]
+        def source = [[ID: SRC_A0, SlotId: 0], [ID: SRC_A1, SlotId: 1]]
+
+        when:
+        def sets = cloneAdapterSets(build(networkConfig, cloneOpts(networkConfig, source)))
+
+        then:
+        sets.count { it.contains('-IPv4AddressType Static -IPv4Addresses "10.0.0.20"') } == 1
+        sets.count { it.contains('-IPv4AddressType Dynamic') } == 1
+        !sets.any { it.contains('-IPv4AddressPools') }
+    }
+
+    def "a copied adapter moved to a subnet or VLAN gets that subnet and VLAN"() {
+        given:
+        def networkConfig = dynamicPrimary() + [extraInterfaces: [[network: [externalId: EXTRA_NET_1], subnet: [externalId: EXTRA_SUBNET_1], vlanId: 42]]]
+        def source = [[ID: SRC_A0, SlotId: 0], [ID: SRC_A1, SlotId: 1]]
+
+        when:
+        def cmds = build(networkConfig, cloneOpts(networkConfig, source))
+        def extraSet = cloneAdapterSets(cmds).find { !it.contains('-NoConnection') && it.contains('-VLanID 42') }
+
+        then:
+        cmds.any { it.contains("Get-SCVMSubnet -VMMServer localhost -ID \"${EXTRA_SUBNET_1}\"") }
+        extraSet != null
+        extraSet.contains('-VMSubnet ')
+        extraSet.contains('-VLanEnabled $true')
+    }
+
+    def "a clone without a NIC plan fails fast"() {
+        when:
+        build(dynamicPrimary(), [cloneVMId: 'source-vm'])
+
+        then:
+        def e = thrown(Exception)
+        e.message.contains('network adapter')
     }
 
     def "clone to a host group places the copy on the host and volume path"() {
         when:
-        def cmds = build(dynamicPrimary(), [cloneVMId: 'source-vm'])
+        def cmds = build(dynamicPrimary(), cloneOpts(dynamicPrimary()))
         def create = cmds.find { it.startsWith('$createdVm = New-SCVirtualMachine -VM $VM') }
 
         then:
@@ -437,7 +547,7 @@ class ScvmmApiServiceBuildCreateServerCommandsSpec extends Specification {
 
     def "clone to an SCVMM cloud with a host targets the cloud"() {
         when:
-        def create = build(dynamicPrimary(), [cloneVMId: 'source-vm', zone: [regionCode: 'cloud-guid']])
+        def create = build(dynamicPrimary(), cloneOpts(dynamicPrimary(), [[ID: SRC_A0, SlotId: 0]], [zone: [regionCode: 'cloud-guid']]))
                 .find { it.startsWith('$createdVm = New-SCVirtualMachine -VM $VM') }
 
         then:
@@ -448,7 +558,7 @@ class ScvmmApiServiceBuildCreateServerCommandsSpec extends Specification {
     def "clone without a host always passes -Cloud, twice when deploying to a cloud and with an unset \$cloud otherwise"() {
         // Pinned as-is: the no-host clone branch hard-codes "-Cloud $cloud" in addition to the conditional one.
         when:
-        def cmds = build(dynamicPrimary(), [cloneVMId: 'source-vm', hostExternalId: null, zone: [regionCode: regionCode]])
+        def cmds = build(dynamicPrimary(), cloneOpts(dynamicPrimary(), [[ID: SRC_A0, SlotId: 0]], [hostExternalId: null, zone: [regionCode: regionCode]]))
         def create = cmds.find { it.startsWith('$createdVm = New-SCVirtualMachine -VM $VM') }
 
         then:

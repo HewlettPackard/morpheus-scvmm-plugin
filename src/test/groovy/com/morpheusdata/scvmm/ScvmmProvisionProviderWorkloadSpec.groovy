@@ -24,6 +24,8 @@ import com.morpheusdata.request.UpdateModel
 import com.morpheusdata.request.ResizeRequest
 import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
+import com.morpheusdata.model.ProcessEvent
+import com.morpheusdata.scvmm.clone.CloneWizardReconciler
 import com.morpheusdata.scvmm.support.Domain
 import com.morpheusdata.scvmm.support.ScvmmSpec
 import io.reactivex.rxjava3.core.Single
@@ -302,7 +304,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         workloadService.get(99L) >> null
 
         when:
-        def rtn = provider.runWorkload(workload, request, [cloneContainerId: 99L])
+        def rtn = provider.runWorkload(workload, request, cloneOpts())
 
         then:
         0 * provider.getHostAndDatastore(*_)
@@ -317,7 +319,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         server.platform = 'linux'
 
         when:
-        def rtn = provider.runWorkload(workload, request, [cloneContainerId: 99L])
+        def rtn = provider.runWorkload(workload, request, cloneOpts())
 
         then:
         1 * provider.stopWorkload(parent) >> ServiceResponse.success()
@@ -338,7 +340,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         createResults.cloneBaseResults = [cloudInitIsoPath: 'C:\\disks\\src\\config.iso']
 
         when:
-        provider.runWorkload(workload, request, [cloneContainerId: 99L])
+        provider.runWorkload(workload, request, cloneOpts())
 
         then:
         1 * provider.stopWorkload(parent) >> ServiceResponse.success()
@@ -348,6 +350,68 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         createOpts.cloneBaseOpts.cloudConfigBytes == iso
         createOpts.cloneBaseOpts.diskFolder == 'C:\\disks\\morpheus\\morpheus_server_10'
         workload.getConfigMap().cloneParentDvdCleanup == [externalId: 'src-vm', deleteIso: 'C:\\disks\\src\\config.iso']
+    }
+
+    // MORPH-20363: the clone's NICs are made to match the wizard.
+
+    def "runWorkload clone reads the source's adapters before stopping it and hands the NIC plan to createServer"() {
+        given:
+        def parent = cloneParent(false)
+
+        when:
+        def rtn = provider.runWorkload(workload, request, cloneOpts())
+
+        then:
+        1 * apiService.getServerDetails(_, 'src-vm') >> [success: true, server: [NetworkAdapters: [[ID: 'src-a1', SlotId: 1], [ID: 'src-a0', SlotId: 0]]]]
+
+        then:
+        1 * provider.stopWorkload(parent) >> ServiceResponse.success()
+
+        and:
+        rtn.success
+        createOpts.clonePlans.network.updates*.adapterId == ['src-a0']
+        createOpts.clonePlans.network.removes*.adapterId == ['src-a1']
+    }
+
+    def "runWorkload clone fails fast, without stopping the source, when the source's adapters can't be read"() {
+        given:
+        cloneParent(false)
+
+        when:
+        def rtn = provider.runWorkload(workload, request, cloneOpts())
+
+        then:
+        1 * apiService.getServerDetails(_, 'src-vm') >> [success: false, error: 'VM_NOT_FOUND']
+        0 * provider.stopWorkload(_)
+        0 * apiService.createServer(_)
+        !rtn.success
+        rtn.msg.contains('network adapters')
+    }
+
+    def "runWorkload clone applies the clone wizard changes before the clone's first start and records their warnings in History"() {
+        given:
+        def parent = cloneParent(false)
+        provider.stopWorkload(parent) >> ServiceResponse.success()
+        def reconciler = Mock(CloneWizardReconciler)
+        provider.getCloneReconciler() >> reconciler
+        reconciler.plan(_) >> [success: true, plans: [network: [updates: []]]]
+        def warning = "Network interface 'eth1' (cxo-2) could not be added to the VM: no virtual switch"
+        request.process = new com.morpheusdata.model.Process(id: 7L)
+
+        when:
+        def rtn = provider.runWorkload(workload, request, cloneOpts())
+
+        then:
+        1 * reconciler.applyBeforeStart({ it.cloneVmId == 'vm-new' && it.sourceVmId == 'src-vm' }, [network: [updates: []]]) >> [network: [success: true]]
+        1 * reconciler.reconcileRecords(_, [network: [updates: []]], [network: [success: true]]) >>
+                [[type: ProcessEvent.ProcessType.provisionNetwork, status: 'configuring network interfaces', warnings: [warning]]]
+
+        then:
+        1 * apiService.startServer(_, { it != 'src-vm' }) >> [success: true]
+
+        and:
+        1 * asyncProcessService.startProcessStep(_, { it.type == ProcessEvent.ProcessType.provisionNetwork && it.message == "WARNING: ${warning}" }, 'configuring network interfaces') >> Single.just(true)
+        rtn.success
     }
 
     // MORPH-11751: a VM converted from discovered has no source image. With no catalog image for its layout,
@@ -360,7 +424,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         def parent = imagelessCloneParent('generation2', PlatformType.linux)
 
         when:
-        def rtn = provider.runWorkload(workload, request, [cloneContainerId: 99L])
+        def rtn = provider.runWorkload(workload, request, cloneOpts())
 
         then:
         0 * apiService.insertContainerImage(_)
@@ -390,7 +454,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         imagelessCloneParent(generation, platform)
 
         when:
-        def rtn = provider.runWorkload(workload, request, [cloneContainerId: 99L])
+        def rtn = provider.runWorkload(workload, request, cloneOpts())
 
         then:
         rtn.success
@@ -410,7 +474,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         imagelessCloneParent('generation2', PlatformType.linux)
 
         when:
-        provider.runWorkload(workload, request, [cloneContainerId: 99L, config: [scvmmGeneration: 'generation1']])
+        provider.runWorkload(workload, request, cloneOpts(config: [scvmmGeneration: 'generation1']))
 
         then:
         createOpts.scvmmGeneration == 'generation1'
@@ -421,7 +485,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         imagelessCloneParent('generation1', PlatformType.linux)
 
         when:
-        def rtn = provider.runWorkload(workload, request, [cloneContainerId: 99L])
+        def rtn = provider.runWorkload(workload, request, cloneOpts())
 
         then: 'the image-backed path is unchanged: image id, template and generation come from the image'
         rtn.success
@@ -822,7 +886,18 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         server.statusMessage == 'Unable to resize server: VMM timeout'
     }
 
+    // MORPH-20363: core always sends the clone's NIC list; the source has one adapter unless a test says otherwise.
+    private static Map cloneOpts(Map extra = [:]) {
+        [cloneContainerId: 99L, networkConfig: [primaryInterface: [network: [externalId: 'net-c'], vlanId: 0]]] + extra
+    }
+
+    private void stubCloneNics() {
+        apiService.getServerDetails(_, 'src-vm') >> [success: true, server: [NetworkAdapters: [[ID: 'src-a0', SlotId: 0]]]]
+        apiService.applyCloneNicPlan(*_) >> [success: true, adapters: [[ID: 'c-0', SlotId: 0]], failedAdds: [], warnings: []]
+    }
+
     private Workload cloneParent(boolean cloudInit) {
+        stubCloneNics()
         def parentImage = Domain.image(id: 51L, isCloudInit: cloudInit)
         def parentServer = Domain.server(id: 77L, externalId: 'src-vm', sourceImage: parentImage, cloud: cloud,
                 serverOs: new OsType(platform: PlatformType.linux), cloudConfigUser: 'src-user', cloudConfigMeta: 'src-meta',
@@ -835,6 +910,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
     }
 
     private Workload imagelessCloneParent(String generation, PlatformType platform) {
+        stubCloneNics()
         def parentServer = Domain.server(id: 77L, name: 'converted-src', externalId: 'src-vm', sourceImage: null, cloud: cloud,
                 serverOs: new OsType(code: "${platform}.64".toString(), platform: platform), osType: platform.toString(),
                 volumes: [Domain.volume(id: 62L, datastore: datastore)])
