@@ -313,6 +313,25 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         rtn.msg == 'Unable to locate source workload 99 for clone'
     }
 
+    def "runWorkload clone fails before placement when the pinned host is in maintenance mode"() {
+        given:
+        cloneParent(false)
+        node.maintenanceMode = true
+        workload.setConfigProperty('hostId', 5L)
+
+        when:
+        def rtn = provider.runWorkload(workload, request, [cloneContainerId: 99L])
+
+        then:
+        0 * provider.getHostAndDatastore(*_)
+        0 * provider.stopWorkload(_)
+        0 * apiService.createServer(_)
+        !rtn.success
+        rtn.msg.contains('hyperv-1')
+        rtn.msg.contains('maintenance mode')
+        server.statusMessage == rtn.msg
+    }
+
     def "runWorkload clone stops a running source, clones from its VM and restarts it afterwards"() {
         given:
         def parent = cloneParent(false)

@@ -705,6 +705,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         provisionResponse.setError("Unable to locate source workload ${opts.cloneContainerId} for clone")
                         return new ServiceResponse(success: false, msg: provisionResponse.message, error: provisionResponse.message, data: provisionResponse)
                     }
+                    assertCloneHostEligible(cloneContainer.server, containerConfig.hostId)
                     cloneContainer.server.volumes?.eachWithIndex { vol, i ->
                         server.volumes[i].datastore = vol.datastore
                         context.services.storageVolume.save(server.volumes[i])
@@ -2295,11 +2296,34 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     }
 
 
+    /**
+     * A clone inherits the source VM's config-time host, which SCVMM does not rewrite on live migration. If that host
+     * is now in maintenance mode, fail early: point the user at the host the source VM migrated to when it is healthy,
+     * otherwise report the host as unavailable.
+     */
+    protected void assertCloneHostEligible(ComputeServer sourceServer, hostId) {
+        hostId = hostId && hostId.toString().trim() != '' && hostId.toString() != 'null' ? hostId : null
+        ComputeServer pinnedHost = hostId ? context.services.computeServer.get(hostId.toLong()) : null
+        if (!pinnedHost?.maintenanceMode) {
+            return
+        }
+        ComputeServer sourceHost = sourceServer?.parentServer?.id ? context.services.computeServer.get(sourceServer.parentServer.id) : null
+        if (sourceHost && sourceHost.id != pinnedHost.id && !sourceHost.maintenanceMode) {
+            throw new Exception("Cannot clone to host ${pinnedHost.name}: it is in maintenance mode. The source VM now runs on " +
+                    "${sourceHost.name}; select that host or another host that is not in maintenance mode.")
+        }
+        throw new Exception("Cannot clone to host ${pinnedHost.name}: it is in maintenance mode. Select a host that is not in maintenance mode.")
+    }
+
     def getHostAndDatastore(Cloud cloud, account, clusterId, hostId, Datastore datastore, datastoreOption, size, siteId = null, maxMemory) {
         log.info "getHostAndDatastore : clusterId: ${clusterId}, hostId: ${hostId}, datastore: ${datastore}, datastoreOption: ${datastoreOption}, size: ${size}, siteId: ${siteId}, maxMemory ${maxMemory}"
         ComputeServer node
         def volumePath
         def highlyAvailable = false
+        // An auto-selected datastore may fall back to the next free-space-ordered candidate when the first one has
+        // no eligible host (e.g. it is only reachable from hosts in maintenance mode).
+        boolean datastoreAutoSelected = (datastore == null)
+        List<Datastore> datastoreCandidates = datastore ? [datastore] : []
 
         // If clusterId (resourcePool) is not specified AND host not specified AND datastore is 'auto',
         // then we are just deploying to the cloud (so... can not select the datastore, nor host)
@@ -2311,6 +2335,10 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
         // If host specified by the user, then use it
         node = hostId ? context.services.computeServer.get(hostId.toLong()) : null
+        // SCVMM rejects a build on a host in maintenance mode, so fail with a clear message instead.
+        if (node?.maintenanceMode) {
+            throw new Exception("Host ${node.name} is not eligible for placement: it is in maintenance mode")
+        }
         if (!datastore) {
             def datastoreIds = context.services.resourcePermission.listAccessibleResources(account.id, ResourcePermission.ResourceType.Datastore, siteId, null)
             def hasFilteredDatastores = false
@@ -2369,18 +2397,27 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             } else {
                 log.warn("No datastore found with query: ${dsQuery} and cluster: ${clusterId}")
             }
+            datastoreCandidates = dsList
         }
 
         if (!node && datastore) {
-            // We've grabbed a datastore.. now pick a host that has this datastore
-            def nodes = context.services.computeServer.list(new DataQuery()
-                    .withFilter('cloud.id', cloud.id)
-                    .withFilter('enabled', true)
-                    .withFilter('computeServerType.code', 'scvmmHypervisor')
-                    .withFilter('volumes.datastore.id', datastore.id)
-                    .withFilter('powerState', ComputeServer.PowerState.on))
-            nodes = nodes.findAll { it.capacityInfo?.maxMemory - it.capacityInfo?.usedMemory > maxMemory }?.sort { -(it.capacityInfo?.maxMemory - it.capacityInfo?.usedMemory) }
-            node = nodes?.size() > 0 ? nodes.first() : null
+            // Pick the host with the most free memory that has the datastore, never one in maintenance mode.
+            def candidates = datastoreAutoSelected && datastoreCandidates ? datastoreCandidates : [datastore]
+            for (candidate in candidates) {
+                def nodes = context.services.computeServer.list(new DataQuery()
+                        .withFilter('cloud.id', cloud.id)
+                        .withFilter('enabled', true)
+                        .withFilter('computeServerType.code', 'scvmmHypervisor')
+                        .withFilter('volumes.datastore.id', candidate.id)
+                        .withFilter('powerState', ComputeServer.PowerState.on)
+                        .withFilters(new DataOrFilter(new DataFilter('maintenanceMode', false), new DataFilter('maintenanceMode', null))))
+                nodes = nodes.findAll { it.capacityInfo?.maxMemory - it.capacityInfo?.usedMemory > maxMemory }?.sort { -(it.capacityInfo?.maxMemory - it.capacityInfo?.usedMemory) }
+                if (nodes) {
+                    node = nodes.first()
+                    datastore = candidate
+                    break
+                }
+            }
         }
 
         if (!zoneHasCloud && (!node || !datastore)) {
