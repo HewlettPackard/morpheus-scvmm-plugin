@@ -80,13 +80,17 @@ class DatastoresSync {
                 log.debug("DatastoresSync: objList: ${objList}")
 
                 // A shared volume is reported once per host that can see it, but only a single record survives the
-                // de-duplication above. Keep the full set of hosts per datastore so it can be scoped to every cluster
-                // that is able to place VMs on it.
-                Map<String, Set<String>> hostNamesByDatastore = [:]
+                // de-duplication above. Keep every reported row per datastore so it can be scoped to every cluster
+                // that is able to place VMs on it, and so every reporting host gets its own host volume.
+                Map<String, List<Map>> rowsByDatastore = [:]
                 scopedDatastores.each { data ->
-                    def hostName = normalizeHostName(data.vmHost)
-                    if (hostName) {
-                        hostNamesByDatastore.get(getDataStoreExternalId(data).toString(), [] as Set) << hostName
+                    rowsByDatastore.get(getDataStoreExternalId(data).toString(), []) << data
+                }
+                Map<String, Set<String>> hostNamesByDatastore = [:]
+                rowsByDatastore.each { externalId, rows ->
+                    Set<String> hostNames = rows.collect { normalizeHostName(it.vmHost) }.findAll { it } as Set
+                    if (hostNames) {
+                        hostNamesByDatastore[externalId] = hostNames
                     }
                 }
 
@@ -100,9 +104,9 @@ class DatastoresSync {
                 }.onDelete { removeItems ->
                     removeMissingDatastores(removeItems)
                 }.onUpdate { updateItems ->
-                    updateMatchedDatastores(updateItems, clusters, existingHosts, volumeType, hostNamesByDatastore)
+                    updateMatchedDatastores(updateItems, clusters, existingHosts, volumeType, hostNamesByDatastore, rowsByDatastore)
                 }.onAdd { itemsToAdd ->
-                    addMissingDatastores(itemsToAdd, clusters, existingHosts, volumeType, hostNamesByDatastore)
+                    addMissingDatastores(itemsToAdd, clusters, existingHosts, volumeType, hostNamesByDatastore, rowsByDatastore)
                 }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<DatastoreIdentityProjection, Map>> updateItems ->
                     return context.async.cloud.datastore.listById(updateItems.collect { it.existingItem.id } as List<Long>)
                 }.start()
@@ -121,14 +125,14 @@ class DatastoresSync {
         }
     }
 
-    private void updateMatchedDatastores(List<SyncTask.UpdateItem<Datastore, Map>> updateList, clusters, existingHosts, volumeType, Map<String, Set<String>> hostNamesByDatastore) {
+    private void updateMatchedDatastores(List<SyncTask.UpdateItem<Datastore, Map>> updateList, clusters, existingHosts, volumeType,
+                                         Map<String, Set<String>> hostNamesByDatastore, Map<String, List<Map>> rowsByDatastore) {
         try {
             log.debug("updateMatchedDatastores: ${updateList?.size()}")
-            def host
             updateList.each { item ->
                 def masterItem = item.masterItem
                 def existingItem = item.existingItem
-                host = findHost(existingHosts, masterItem.vmHost)
+                def host = findHost(existingHosts, masterItem.vmHost)
                 def cluster = findSharedVolumeCluster(masterItem, clusters, host)
                 List<CloudPool> owningPools = findOwningPools(masterItem, existingHosts, hostNamesByDatastore, cluster)
                 def name = getName(masterItem, cluster, host)
@@ -167,19 +171,21 @@ class DatastoresSync {
                     existingItem.assignedZonePools = owningPools
                     doSave = true
                 }
+                Datastore datastore = existingItem
                 if (doSave) {
-                    def savedDataStore = context.async.cloud.datastore.save(existingItem).blockingGet()
-                    if (savedDataStore && host) {
-                        syncVolume(masterItem, host, savedDataStore, volumeType, getDataStoreExternalId(masterItem))
-                    }
+                    datastore = context.async.cloud.datastore.save(existingItem).blockingGet() ?: existingItem
                 }
+                // Host volumes carry per-host size/mount data and may be missing for hosts that joined later, so they
+                // are synced every time, independently of whether the datastore record itself changed.
+                syncHostVolumes(masterItem, datastore, existingHosts, volumeType, rowsByDatastore)
             }
         } catch (e) {
             log.error("Error in updateMatchedDatastores method: ${e}", e)
         }
     }
 
-    private addMissingDatastores(Collection<Map> addList, clusters, existingHosts, volumeType, Map<String, Set<String>> hostNamesByDatastore) {
+    private addMissingDatastores(Collection<Map> addList, clusters, existingHosts, volumeType,
+                                 Map<String, Set<String>> hostNamesByDatastore, Map<String, List<Map>> rowsByDatastore) {
         log.debug("addMissingDatastores: addList?.size(): ${addList?.size()}")
         try {
             addList?.each { Map item ->
@@ -209,12 +215,29 @@ class DatastoresSync {
                 datastore.assignedZonePools = owningPools
                 def savedDataStore = context.async.cloud.datastore.create(datastore).blockingGet()
                 log.debug("savedDataStore?.id: ${savedDataStore?.id}")
-                if (savedDataStore && host) {
-                    syncVolume(item, host, savedDataStore, volumeType, externalId)
+                if (savedDataStore) {
+                    syncHostVolumes(item, savedDataStore, existingHosts, volumeType, rowsByDatastore)
                 }
             }
         } catch (e) {
             log.error "Error in adding Datastores sync ${e}", e
+        }
+    }
+
+    /**
+     * Creates or updates the host volume on every in-scope host that reported the datastore, mirroring the embedded
+     * SCVMM sync which associates each reported row with its host. A host reporting the same datastore twice only
+     * gets a single volume.
+     */
+    private void syncHostVolumes(Map masterItem, Datastore datastore, existingHosts, volumeType, Map<String, List<Map>> rowsByDatastore) {
+        def externalId = getDataStoreExternalId(masterItem)
+        List<Map> rows = rowsByDatastore?.get(externalId?.toString()) ?: [masterItem]
+        Set<String> syncedHosts = [] as Set
+        rows.each { row ->
+            ComputeServer rowHost = findHost(existingHosts, row.vmHost)
+            if (rowHost && syncedHosts.add(normalizeHostName(rowHost.hostname))) {
+                syncVolume(row, rowHost, datastore, volumeType, externalId)
+            }
         }
     }
 
@@ -290,7 +313,7 @@ class DatastoresSync {
             def freeSpace = item.freeSpace?.toLong() ?: 0
             def usedSpace = totalSize - freeSpace
             def mountPoint = item.mountPoints?.size() > 0 ? item.mountPoints[0] : null
-            StorageVolume existingVolume = host.volumes.find { it.externalId == externalId }
+            StorageVolume existingVolume = host.volumes?.find { it.externalId == externalId?.toString() }
             if (existingVolume) {
                 def save = false
                 if (existingVolume.internalId != item.id) {
