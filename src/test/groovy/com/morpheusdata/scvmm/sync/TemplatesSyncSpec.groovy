@@ -104,7 +104,7 @@ class TemplatesSyncSpec extends ScvmmSpec {
         locationService.listIdentityProjections(_ as DataQuery) >> []
         asyncLocationService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
         asyncVirtualImageService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
-        apiService.getMapScvmmOsType('Windows Server 2022 Standard', true, 'Other Linux (64 bit)') >> 'windows.server.2022'
+        apiService.getMapScvmmOsType('Windows Server 2022 Standard') >> 'windows.server.2022'
         osTypeService.find(_ as DataQuery) >> new OsType(code: 'windows.server.2022')
         def savedLocation = new VirtualImageLocation(id: 77L, volumes: [])
         asyncLocationService.find(_ as DataQuery) >> Maybe.just(savedLocation)
@@ -190,6 +190,90 @@ class TemplatesSyncSpec extends ScvmmSpec {
         noExceptionThrown()
     }
 
+    private VirtualImageLocation location(Long id, Long cloudId, VirtualImage image) {
+        new VirtualImageLocation(id: id, externalId: "tpl-${id}", refType: 'ComputeZone', refId: cloudId, virtualImage: image)
+    }
+
+    def "removeMissingVirtualImages marks a synced image deleted when its last locations, all in this cloud, go"() {
+        given:
+        def image = new VirtualImage(id: 50L, name: 'Win2022')
+        def gone = location(9L, 1L, image)
+        def sibling = location(10L, 1L, image)
+        image.imageLocations = [gone, sibling]
+        List removed
+
+        when:
+        sync.removeMissingVirtualImages([locProj(9L, 'tpl-9')])
+
+        then:
+        1 * locationService.list(_ as DataQuery) >> [gone]
+        1 * asyncVirtualImageService.listById([50L]) >> Observable.just(image)
+        1 * asyncVirtualImageService.save([image], cloud) >> Single.just(true)
+        1 * asyncLocationService.remove(_ as List) >> { args -> removed = args[0]; Single.just(true) }
+        image.deleted
+        removed*.id == [9L, 10L]
+    }
+
+    def "removeMissingVirtualImages keeps a #why image but still removes its locations"() {
+        given:
+        def image = new VirtualImage([id: 50L, name: 'kept'] + flags)
+        def gone = location(9L, 1L, image)
+        image.imageLocations = [gone]
+
+        when:
+        sync.removeMissingVirtualImages([locProj(9L, 'tpl-9')])
+
+        then:
+        1 * locationService.list(_ as DataQuery) >> [gone]
+        1 * asyncVirtualImageService.listById([50L]) >> Observable.just(image)
+        0 * asyncVirtualImageService.save(*_)
+        1 * asyncLocationService.remove({ it*.id == [9L] }) >> Single.just(true)
+        !image.deleted
+
+        where:
+        why            | flags
+        'system'       | [systemImage: true]
+        'user-uploaded'| [userUploaded: true]
+        'user-defined' | [userDefined: true]
+    }
+
+    def "removeMissingVirtualImages only removes this cloud's location of an image also located elsewhere"() {
+        given:
+        def image = new VirtualImage(id: 50L, name: 'shared')
+        def gone = location(9L, 1L, image)
+        image.imageLocations = [gone, location(11L, 2L, image)]
+
+        when:
+        sync.removeMissingVirtualImages([locProj(9L, 'tpl-9')])
+
+        then:
+        1 * locationService.list(_ as DataQuery) >> [gone]
+        1 * asyncVirtualImageService.listById([50L]) >> Observable.just(image)
+        0 * asyncVirtualImageService.save(*_)
+        1 * asyncLocationService.remove({ it*.id == [9L] }) >> Single.just(true)
+        !image.deleted
+    }
+
+    def "execute re-saves a new image's location after creating its disks"() {
+        given:
+        def template = VmmPayloads.template(ID: 'tpl-1', Name: 'Win2022', Disks: [VmmPayloads.templateDisk()])
+        apiService.listTemplates(_) >> [success: true, templates: [template]]
+        locationService.listIdentityProjections(_ as DataQuery) >> []
+        asyncLocationService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
+        asyncVirtualImageService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
+        asyncVirtualImageService.create(*_) >> Single.just(true)
+        def savedLocation = new VirtualImageLocation(id: 77L, refType: 'ComputeZone', refId: 1L, volumes: [])
+        asyncLocationService.find(_ as DataQuery) >> Maybe.just(savedLocation)
+
+        when:
+        sync.execute()
+
+        then:
+        1 * asyncStorageVolumeService.create(_ as List, savedLocation) >> Single.just(true)
+        1 * asyncLocationService.save([savedLocation], cloud) >> Single.just(true)
+        0 * asyncVirtualImageService.save(*_)
+    }
+
     // ================================================================ updateMatchedVirtualImageLocations
 
     private SyncTask.UpdateItem<VirtualImageLocation, Map> updateItem(VirtualImageLocation loc, Map template) {
@@ -271,7 +355,7 @@ class TemplatesSyncSpec extends ScvmmSpec {
         created*.maxStorage == [42949672960L, 10L * GB]
         created*.cloudId == [1L, 1L]
         created*.displayOrder == [0, 1]
-        !changed
+        changed
     }
 
     def "addMissingStorageVolumes leaves maxStorage null for a disk without a size and keeps a provided deviceName"() {
@@ -280,10 +364,11 @@ class TemplatesSyncSpec extends ScvmmSpec {
         List<StorageVolume> created
 
         when:
-        sync.addMissingStorageVolumes([[ID: 'd9', VHDType: 'DynamicallyExpanding', VHDFormat: 'VHDX', deviceName: 'xvdb', VolumeType: 'None']], loc, 1, 0, false)
+        def added = sync.addMissingStorageVolumes([[ID: 'd9', VHDType: 'DynamicallyExpanding', VHDFormat: 'VHDX', deviceName: 'xvdb', VolumeType: 'None']], loc, 1)
 
         then:
         1 * asyncStorageVolumeService.create(_ as List, loc) >> { List l, VirtualImageLocation x -> created = l; Single.just(true) }
+        added
         created[0].maxStorage == null
         created[0].deviceName == 'xvdb'
         created[0].rootVolume == false
@@ -298,7 +383,7 @@ class TemplatesSyncSpec extends ScvmmSpec {
         fresh.@apiService = apiService
 
         when:
-        fresh.addMissingStorageVolumes([VmmPayloads.templateDisk()], new VirtualImageLocation(volumes: []), 0, 0, false)
+        fresh.addMissingStorageVolumes([VmmPayloads.templateDisk()], new VirtualImageLocation(volumes: []), 0)
 
         then:
         thrown(NullPointerException)
@@ -311,11 +396,12 @@ class TemplatesSyncSpec extends ScvmmSpec {
         def disk = VmmPayloads.templateDisk(TotalSize: size, Location: 'path')
 
         when:
-        sync.updateMatchedStorageVolumes([new SyncTask.UpdateItem(existingItem: volume, masterItem: disk)], loc, 0, false)
+        def changed = sync.updateMatchedStorageVolumes([new SyncTask.UpdateItem(existingItem: volume, masterItem: disk)], loc)
 
         then:
         saves * asyncStorageVolumeService.save(volume) >> Single.just(volume)
         volume.maxStorage == expected
+        changed == (saves == 1)
 
         where:
         why            | size              || saves | expected
@@ -332,7 +418,7 @@ class TemplatesSyncSpec extends ScvmmSpec {
 
         when:
         sync.updateMatchedStorageVolumes([new SyncTask.UpdateItem(existingItem: volume,
-                masterItem: VmmPayloads.templateDisk(TotalSize: 40L * GB, Location: 'new', VolumeType: 'BootAndSystem'))], loc, 0, false)
+                masterItem: VmmPayloads.templateDisk(TotalSize: 40L * GB, Location: 'new', VolumeType: 'BootAndSystem'))], loc)
 
         then:
         1 * asyncStorageVolumeService.save(volume) >> Single.just(volume)
@@ -347,9 +433,10 @@ class TemplatesSyncSpec extends ScvmmSpec {
         def loc = new VirtualImageLocation(id: 77L)
 
         when:
-        sync.removeMissingStorageVolumes([volume], loc, false)
+        def removed = sync.removeMissingStorageVolumes([volume], loc)
 
         then:
+        removed
         1 * asyncStorageVolumeService.save(volume) >> Single.just(volume)
         1 * asyncStorageVolumeService.remove([volume], loc) >> Single.just(true)
         1 * asyncStorageVolumeService.remove(volume) >> Single.just(true)

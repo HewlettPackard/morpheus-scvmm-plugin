@@ -621,16 +621,15 @@ class ScvmmProvisionProviderOptionsSpec extends ScvmmSpec {
         name << ['Windows Server 2030', 'windows server 2019 standard', null]
     }
 
-    def "getMapScvmmOsType uses the default when it is itself a VMM name"() {
+    def "getMapScvmmOsType returns the default OsType code for a name not in the table"() {
         expect:
-        typeMapApi.getMapScvmmOsType('Plan 9', true, 'Other Linux (64 bit)') == 'linux.64'
+        typeMapApi.getMapScvmmOsType('Plan 9', true, 'windows') == 'windows'
+        typeMapApi.getMapScvmmOsType('Plan 9', true, null) == 'other'
     }
 
-    def "getMapScvmmOsType treats the default as a VMM name, so an OsType code default falls through to 'other'"() {
-        // VirtualMachineSync passes 'windows' as the default for Windows guests expecting a code; it is looked up as
-        // a map key and misses, so the result is 'other'
+    def "getMapScvmmOsType prefers the mapped code over the default"() {
         expect:
-        typeMapApi.getMapScvmmOsType('Plan 9', true, 'windows') == 'other'
+        typeMapApi.getMapScvmmOsType('Windows Server 2019 Standard', true, 'windows') == 'windows.server.2019'
     }
 
     def "getMapScvmmOsType reverse lookup returns the first VMM name for code '#code'"() {
