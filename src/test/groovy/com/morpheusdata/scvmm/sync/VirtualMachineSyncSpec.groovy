@@ -3,6 +3,7 @@
 package com.morpheusdata.scvmm.sync
 
 import com.morpheusdata.core.BulkSaveResult
+import com.morpheusdata.core.MorpheusStatsService
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.MorpheusStorageVolumeTypeService
 import com.morpheusdata.core.compute.MorpheusComputeServerInterfaceService
@@ -55,12 +56,13 @@ class VirtualMachineSyncSpec extends ScvmmSpec {
     MorpheusSynchronousDatastoreService datastoreService = Mock()
     MorpheusComputeServerInterfaceService interfaceService = Mock()
     MorpheusStorageVolumeTypeService volumeTypeService = Mock()
+    MorpheusStatsService statsService = Mock()
 
     Cloud cloud = Domain.cloud(config: [username: 'DOMAIN\\svc', password: 'pw'])
     ComputeServer controllerNode = Domain.controller()
     ComputeServer host1 = Domain.server(id: 3L, name: 'HYPERV-1', externalId: 'host-1')
     ComputeServer host2 = Domain.server(id: 4L, name: 'HYPERV-2', externalId: 'host-2')
-    ComputeServerType unmanaged = new ComputeServerType(id: 8L, code: 'scvmmUnmanaged', guestVm: true)
+    ComputeServerType unmanaged = new ComputeServerType(id: 8L, code: 'scvmmUnmanaged', guestVm: true, managed: false)
     OsType ubuntu = new OsType(id: 12L, code: 'ubuntu.64', platform: PlatformType.linux)
     StorageVolumeType standard = new StorageVolumeType(id: 9L, code: 'standard')
     List<List> bulkSaves = []
@@ -76,6 +78,9 @@ class VirtualMachineSyncSpec extends ScvmmSpec {
         cloudService.getDatastore() >> datastoreService
         asyncComputeServerService.getComputeServerInterface() >> interfaceService
         asyncStorageVolumeService.getStorageVolumeType() >> volumeTypeService
+        asyncServices.getStats() >> statsService
+        statsService.updateServerStats(*_) >> Single.just(true)
+        statsService.updateWorkloadStats(*_) >> Single.just(true)
 
         osTypeService.find(_) >> ubuntu
         volumeTypeService.find(_) >> Maybe.just(standard)
@@ -219,9 +224,10 @@ class VirtualMachineSyncSpec extends ScvmmSpec {
         where:
         gen  | dyn     || cpuHot | memHot | generation
         1    | true    || false  | true   | 'generation1'
+        2    | false   || true   | false  | 'generation2'
         2    | 'false' || true   | false  | 'generation2'
         '2'  | 'true'  || true   | true   | 'generation2'
-        null | false   || true   | true   | 'generation2'
+        null | false   || true   | false  | 'generation2'
     }
 
     def "updateMatchedVirtualMachines re-points the parent host only to a known host"() {
@@ -581,6 +587,164 @@ class VirtualMachineSyncSpec extends ScvmmSpec {
         noExceptionThrown()
     }
 
+    def "syncVolumes keeps the server's maxStorage at the sum of its disks and reports no change when nothing moved"() {
+        given:
+        def vol = Domain.volume(id: 60L, externalId: 'disk-1', maxStorage: 40 * GB, rootVolume: true, internalId: 'disk-1.vhdx', removable: false)
+        def server = matched(volumes: [vol], maxStorage: 40 * GB)
+        asyncStorageVolumeService.listById(_) >> Observable.fromIterable([vol])
+
+        when:
+        def changed = sync.syncVolumes(server, [VmmPayloads.vmDisk(TotalSize: 40 * GB)])
+
+        then:
+        !changed
+        server.maxStorage == 40 * GB
+        0 * asyncComputeServerService.save(_)
+    }
+
+    def "syncVolumes adds a new disk's size to the server's maxStorage and reports the change"() {
+        given:
+        def vol = Domain.volume(id: 60L, externalId: 'disk-1', maxStorage: 40 * GB, rootVolume: true, internalId: 'disk-1.vhdx', removable: false)
+        def server = matched(volumes: [vol], maxStorage: 40 * GB)
+        asyncStorageVolumeService.listById(_) >> Observable.fromIterable([vol])
+
+        when:
+        def changed = sync.syncVolumes(server, [VmmPayloads.vmDisk(TotalSize: 40 * GB),
+                                                VmmPayloads.vmDisk(ID: 'disk-2', Name: 'disk-2.vhdx', VolumeType: 'None', TotalSize: 10 * GB)])
+
+        then:
+        1 * storageVolumeService.create(_)
+        changed
+        server.maxStorage == 50 * GB
+    }
+
+    def "syncVolumes drops a removed disk's size from the server's maxStorage"() {
+        given:
+        def keep = Domain.volume(id: 60L, externalId: 'disk-1', maxStorage: 40 * GB, rootVolume: true, internalId: 'disk-1.vhdx', removable: false)
+        def gone = Domain.volume(id: 61L, externalId: 'disk-gone', maxStorage: 10 * GB, rootVolume: false)
+        def server = matched(volumes: [keep, gone], maxStorage: 50 * GB)
+        asyncStorageVolumeService.listById(_) >> Observable.fromIterable([keep])
+
+        when:
+        def changed = sync.syncVolumes(server, [VmmPayloads.vmDisk(TotalSize: 40 * GB)])
+
+        then:
+        changed
+        server.maxStorage == 40 * GB
+    }
+
+    // ------------------------------------------------------------------ plan, sizing propagation, stats
+
+    com.morpheusdata.model.ServicePlan plan4g = Domain.plan(id: 41L, maxCores: 2L, maxMemory: 4096L * MB)
+    com.morpheusdata.model.ServicePlan plan8g = Domain.plan(id: 42L, maxCores: 2L, maxMemory: 8192L * MB)
+
+    private void updateWithPlans(List<ComputeServer> servers, List<Map> vms, List plans, List permissions = []) {
+        computeServerService.list(_) >> servers
+        def items = [servers, vms].transpose().collect { s, vm -> new SyncTask.UpdateItem<ComputeServer, Map>(existingItem: s, masterItem: vm) }
+        sync.updateMatchedVirtualMachines(items, plans, null, [host1, host2], false, unmanaged, [:], permissions)
+    }
+
+    def "updateMatchedVirtualMachines offers private plans granted through resource permissions"() {
+        given:
+        def tenant = new com.morpheusdata.model.Account(id: 5L)
+        def privatePlan = Domain.plan(id: 45L, maxCores: 2L, maxMemory: 4096L * MB, visibility: 'private', account: new com.morpheusdata.model.Account(id: 77L))
+        def server = matched(account: tenant)
+        def permission = new com.morpheusdata.model.ResourcePermission(morpheusResourceId: 45L, account: tenant)
+
+        when:
+        updateWithPlans([server], [vm(DynamicMemoryEnabled: false)], [privatePlan], [permission])
+
+        then:
+        server.plan.is(privatePlan)
+    }
+
+    def "updateMatchedVirtualMachines matches a dynamic-memory VM on its assigned memory"() {
+        given:
+        def dynamicPlan = Domain.plan(id: 43L, maxCores: 2L, maxMemory: 4096L * MB, config: [ranges: [minMemory: 2048L * MB, maxMemory: 8192L * MB]])
+        def server = matched()
+
+        when:
+        updateWithPlans([server], [vm(DynamicMemoryEnabled: true, MemoryAssignedMB: 3072, DynamicMemoryMinimumMB: 2048, DynamicMemoryMaximumMB: 8192)],
+                [plan4g, dynamicPlan])
+
+        then:
+        server.plan.is(dynamicPlan)
+    }
+
+    def "updateMatchedVirtualMachines pushes a sizing change onto the VM's workloads and instance"() {
+        given:
+        def server = matched(plan: plan4g)
+        def instance = new Instance(id: 30L, plan: plan4g, maxMemory: 4096L * MB, maxCores: 2L)
+        def wl = new Workload(id: 20L, server: server, instance: new Instance(id: 30L), plan: plan4g, maxMemory: 4096L * MB, maxCores: 2L)
+
+        when:
+        updateWithPlans([server], [vm(Memory: 8192, DynamicMemoryEnabled: false)], [plan4g, plan8g])
+
+        then:
+        2 * workloadService.list(_) >> [wl]
+        1 * workloadService.save(wl)
+        1 * instanceService.list(_) >> [instance]
+        1 * instanceService.save(instance)
+        server.plan.is(plan8g)
+        wl.plan.is(plan8g)
+        wl.maxMemory == 8192L * MB
+        instance.plan.is(plan8g)
+        instance.maxMemory == 8192L * MB
+        bulkSaves == [[server]]
+    }
+
+    def "updateMatchedVirtualMachines leaves an instance alone when its other workloads are sized differently"() {
+        given:
+        def server = matched(plan: plan4g)
+        def instance = new Instance(id: 30L, plan: plan4g)
+        def wl = new Workload(id: 20L, server: server, instance: new Instance(id: 30L))
+        def sibling = new Workload(id: 21L, server: Domain.server(id: 99L), instance: new Instance(id: 30L), plan: plan4g, maxMemory: 4096L * MB, maxCores: 2L)
+
+        when:
+        updateWithPlans([server], [vm(Memory: 8192, DynamicMemoryEnabled: false)], [plan4g, plan8g])
+
+        then:
+        2 * workloadService.list(_) >>> [[wl], [wl, sibling]]
+        1 * instanceService.list(_) >> [instance]
+        0 * instanceService.save(_)
+        instance.plan.is(plan4g)
+    }
+
+    def "updateMatchedVirtualMachines does not touch workloads when the sizing is unchanged"() {
+        when:
+        updateWithPlans([matched()], [vm()], [])
+
+        then:
+        0 * workloadService.list(_)
+        0 * workloadService.save(_)
+        0 * instanceService._
+    }
+
+    def "updateMatchedVirtualMachines records agentless stats for a powered-off VM and grows its storage"() {
+        given:
+        def server = matched(powerState: ComputeServer.PowerState.off, maxStorage: 10 * GB, usedStorage: 1 * GB)
+        def wl = new Workload(id: 20L)
+
+        when:
+        update([server], [vm(VirtualMachineState: 'PowerOff', TotalSize: 20 * GB, UsedSize: 2 * GB, MemoryAvailablePercentage: 25, CPUUtilization: 3)])
+
+        then:
+        1 * statsService.updateServerStats(server, 4096L * MB, 3072L * MB, 20 * GB, 2 * GB, 3f, false) >> Single.just(true)
+        1 * workloadService.find(_) >> wl
+        1 * statsService.updateWorkloadStats(wl, 4096L * MB, 3072L * MB, 20 * GB, 2 * GB, 3f, false) >> Single.just(true)
+        server.maxStorage == 20 * GB
+        server.usedStorage == 2 * GB
+        bulkSaves == [[server]]
+    }
+
+    def "updateMatchedVirtualMachines records no agentless stats for a running VM with an agent"() {
+        when:
+        update([matched(agentInstalled: true)], [vm()])
+
+        then:
+        0 * statsService._
+    }
+
     def "getVolumeName names the boot disk (or the first disk) root and others data-<index>"() {
         expect:
         sync.getVolumeName([VolumeType: volumeType], 'sdb', matched(volumes: volumes), 2) == expected
@@ -608,17 +772,21 @@ class VirtualMachineSyncSpec extends ScvmmSpec {
 
     // ------------------------------------------------------------------ execute
 
+    List<DataQuery> networkQueries = []
+
     private void executeFixture(ComputeServer existing, ComputeServer gone, List<Map> vms) {
         apiService.getScvmmZoneAndHypervisorOpts(*_) >> [zoneId: 1L]
         apiService.listVirtualMachines(_) >> [success: true, virtualMachines: vms]
-        computeServerService.list(_) >> { args -> args[0].filters.any { it.name == 'id' } ? [existing] : [host1] }
+        computeServerService.list(_) >> { args ->
+            def ids = args[0].filters.find { it.name == 'id' }?.value
+            ids == null ? [host1] : [existing, gone].findAll { it.id in ids }
+        }
         servicePlanService.list(_) >> []
         asyncCloudService.findComputeServerTypeByCode('scvmmUnmanaged') >> Maybe.just(unmanaged)
         cloudService.getNetwork() >> networkService
-        networkService.list(_) >> []
+        networkService.list(_) >> { DataQuery q -> networkQueries << q; [] }
         asyncComputeServerService.listIdentityProjections(_) >> Observable.fromIterable([existing, gone])
         asyncComputeServerService.listById([existing.id]) >> Observable.just(existing)
-        computeServerService.listIdentityProjections(_) >> [gone]
     }
 
     def "execute creates new VMs, updates matched ones and removes missing unmanaged ones"() {
@@ -626,18 +794,60 @@ class VirtualMachineSyncSpec extends ScvmmSpec {
         def existing = matched()
         def gone = matched(id: 11L, externalId: 'vm-gone')
         executeFixture(existing, gone, [vm(Name: 'renamed'), vm(ID: 'vm-new', Name: 'brand-new')])
-        DataQuery removeQuery
 
         when:
         sync.execute(true)
 
         then:
         1 * asyncComputeServerService.create({ it.externalId == 'vm-new' && it.name == 'brand-new' }) >> { args -> Single.just(args[0]) }
-        1 * computeServerService.listIdentityProjections(_) >> { args -> removeQuery = args[0]; [gone] }
         1 * asyncComputeServerService.remove([gone]) >> Single.just(true)
         existing.name == 'renamed'
         bulkSaves.contains([existing])
-        removeQuery.filters.find { it.name == 'computeServerType.code' }.value == 'scvmmUnmanaged'
+    }
+
+    def "execute resolves adapters against all of the cloud's networks, not only one network category"() {
+        given:
+        executeFixture(matched(), matched(id: 11L, externalId: 'vm-gone'), [vm()])
+        asyncComputeServerService.remove(_) >> Single.just(true)
+
+        when:
+        sync.execute(false)
+
+        then:
+        networkQueries.size() == 1
+        networkQueries[0].filters.collectEntries { [(it.name): it.value] } == [refType: 'ComputeZone', refId: 1L]
+    }
+
+    // ------------------------------------------------------------------ removeMissingVirtualMachines
+
+    def "removeMissingVirtualMachines hands unmanaged and managed servers to core and skips the rest"() {
+        given:
+        def managedType = new ComputeServerType(id: 81L, code: 'scvmmLinux', managed: true)
+        def otherType = new ComputeServerType(id: 82L, code: 'scvmmController', managed: false)
+        def unmanagedVm = matched(id: 11L)
+        def managedVm = matched(id: 12L, computeServerType: managedType, managed: true)
+        def convertedVm = matched(id: 13L, managed: true)
+        def otherVm = matched(id: 14L, computeServerType: otherType)
+        DataQuery query
+        List removed
+
+        when:
+        sync.removeMissingVirtualMachines([unmanagedVm, managedVm, convertedVm, otherVm])
+
+        then:
+        1 * computeServerService.list(_) >> { DataQuery q -> query = q; [unmanagedVm, managedVm, convertedVm, otherVm] }
+        1 * asyncComputeServerService.remove(_) >> { args -> removed = args[0]; Single.just(true) }
+        removed == [unmanagedVm, managedVm]
+        query.filters.find { it.name == 'id' }.value == [11L, 12L, 13L, 14L]
+    }
+
+    def "removeMissingVirtualMachines does nothing when nothing qualifies"() {
+        when:
+        sync.removeMissingVirtualMachines([matched(id: 13L, managed: true)])
+
+        then:
+        1 * computeServerService.list(_) >> [matched(id: 13L, managed: true)]
+        0 * asyncComputeServerService.remove(_)
     }
 
     def "execute with createNew=false does not import unknown VMs"() {
@@ -735,6 +945,34 @@ class VirtualMachineSyncSpec extends ScvmmSpec {
         created[0].consoleHost == 'HYPERV-1'
         created[0].consoleUsername == 'DOMAIN\\svc'
         created[0].sshUsername == null
+    }
+
+    def "addMissingVirtualMachines enables memory hot-resize only for dynamic memory (#dyn)"() {
+        when:
+        def created = addMissing([vm(DynamicMemoryEnabled: dyn)])
+
+        then:
+        created[0].hotResize == expected
+
+        where:
+        dyn     || expected
+        true    || true
+        'True'  || true
+        false   || false
+        'False' || false
+    }
+
+    def "addMissingVirtualMachines falls back to the windows OS type only for Windows guests"() {
+        when:
+        addMissing([vm(OperatingSystem: 'Unknown', OperatingSystemWindows: windows)])
+
+        then:
+        1 * apiService.getMapScvmmOsType('Unknown', true, fallbackCode) >> 'other'
+
+        where:
+        windows || fallbackCode
+        true    || 'windows'
+        false   || null
     }
 
     def "addMissingVirtualMachines syncs the new VM's disks and adapters"() {

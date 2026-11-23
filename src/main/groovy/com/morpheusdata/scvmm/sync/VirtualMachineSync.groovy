@@ -6,17 +6,19 @@ import com.morpheusdata.core.data.DataFilter
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.providers.CloudProvider
 import com.morpheusdata.core.util.ComputeUtility
-import com.morpheusdata.core.util.MorpheusUtils
 import com.morpheusdata.core.util.SyncTask
-import com.morpheusdata.core.util.SyncUtils
 import com.morpheusdata.model.*
 import com.morpheusdata.model.projection.ComputeServerIdentityProjection
 import com.morpheusdata.model.projection.StorageVolumeIdentityProjection
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import com.morpheusdata.scvmm.util.MorpheusUtil
+import com.morpheusdata.scvmm.util.ScvmmServicePlanUtil
 import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Observable
+
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * @author rahul.ray
@@ -68,8 +70,10 @@ class VirtualMachineSync {
                     ))
                 }
                 def serverType = context.async.cloud.findComputeServerTypeByCode("scvmmUnmanaged").blockingGet()
-                def systemNetworks = context.services.cloud.network.list(
-                    new DataQuery().withFilter('category', '=~', "scvmm.network.${cloud.id}.%")
+                // All of the cloud's networks (VM networks and VLAN/NoIsolation networks) so every adapter can resolve.
+                def systemNetworks = context.services.cloud.network.list(new DataQuery()
+                        .withFilter('refType', 'ComputeZone')
+                        .withFilter('refId', cloud.id)
                 )?.collectEntries { [(it.externalId): it] } ?: [:]
 
                 def existingVms = context.async.computeServer.listIdentityProjections(new DataQuery()
@@ -91,7 +95,7 @@ class VirtualMachineSync {
                         addMissingVirtualMachines(itemsToAdd, availablePlans, fallbackPlan, availablePlanPermissions, hosts, consoleEnabled, serverType, systemNetworks)
                     }
                 }.onUpdate { List<SyncTask.UpdateItem<ComputeServer, Map>> updateItems ->
-                    updateMatchedVirtualMachines(updateItems, availablePlans, fallbackPlan, hosts, consoleEnabled, serverType, systemNetworks)
+                    updateMatchedVirtualMachines(updateItems, availablePlans, fallbackPlan, hosts, consoleEnabled, serverType, systemNetworks, availablePlanPermissions)
                 }.onDelete { List<ComputeServerIdentityProjection> removeItems ->
                     removeMissingVirtualMachines(removeItems)
                 }.observe().blockingSubscribe()
@@ -117,7 +121,9 @@ class VirtualMachineSync {
                 add.maxMemory = (cloudItem.Memory?.toLong() ?: 0) * 1024l * 1024l
                 add.maxCores = cloudItem.CPUCount.toLong() ?: 1
                 add.parentServer = hosts?.find { host -> host.externalId == cloudItem.HostId }
-                add.plan = SyncUtils.findServicePlanBySizing(availablePlans, add.maxMemory, add.maxCores, null, fallbackPlan, null, cloud.account, availablePlanPermissions)
+                add.plan = ScvmmServicePlanUtil.findServicePlanBySizing(availablePlans, add.maxMemory, add.maxCores, fallbackPlan, null, cloud.account,
+                        availablePlanPermissions, cloudItem.DynamicMemoryEnabled, cloudItem.MemoryAssignedMB,
+                        cloudItem.DynamicMemoryMinimumMB, cloudItem.DynamicMemoryMaximumMB)
                 if (cloudItem.IpAddress) {
                     add.externalIp = cloudItem.IpAddress
                 }
@@ -125,7 +131,7 @@ class VirtualMachineSync {
                     add.internalIp = cloudItem.InternalIp
                 }
                 // Operating System
-                def osTypeCode = apiService.getMapScvmmOsType(cloudItem.OperatingSystem, true, "Other Linux (64 bit)")
+                def osTypeCode = apiService.getMapScvmmOsType(cloudItem.OperatingSystem, true, cloudItem.OperatingSystemWindows?.toString() == 'true' ? 'windows' : null)
                 def osTypeCodeStr = osTypeCode ?: 'other'
                 def osType = context.services.osType.find(new DataQuery().withFilter('code', osTypeCodeStr))
                 if (osType) {
@@ -158,7 +164,8 @@ class VirtualMachineSync {
     }
 
     protected updateMatchedVirtualMachines(List<SyncTask.UpdateItem<ComputeServer, Map>> updateList, availablePlans, fallbackPlan,
-                                           List<ComputeServer> hosts, consoleEnabled, ComputeServerType defaultServerType, Map systemNetworks) {
+                                           List<ComputeServer> hosts, consoleEnabled, ComputeServerType defaultServerType, Map systemNetworks,
+                                           Collection<ResourcePermission> availablePlanPermissions = []) {
         log.debug("VirtualMachineSync >> updateMatchedVirtualMachines() called")
         try {
             def matchedServers = context.services.computeServer.list(new DataQuery().withFilter('id', 'in', updateList.collect { up -> up.existingItem.id })
@@ -176,6 +183,7 @@ class VirtualMachineSync {
                     if (currentServer.status != 'provisioning') {
                         try {
                             Boolean save = false
+                            Boolean planInfoChanged = false
                             if (currentServer.name != masterItem.Name) {
                                 currentServer.name = masterItem.Name
                                 save = true
@@ -216,6 +224,7 @@ class VirtualMachineSync {
                             def maxCores = masterItem.CPUCount.toLong() ?: 1
                             if (currentServer.maxCores != maxCores) {
                                 currentServer.maxCores = maxCores
+                                planInfoChanged = true
                                 save = true
                             }
                             if (currentServer.capacityInfo && currentServer.capacityInfo.maxCores != maxCores) {
@@ -225,13 +234,14 @@ class VirtualMachineSync {
                             def maxMemory = (masterItem.Memory?.toLong() ?: 0) * 1024l * 1024l
                             if (currentServer.maxMemory != maxMemory) {
                                 currentServer.maxMemory = maxMemory
+                                planInfoChanged = true
                                 save = true
                             }
 
                             // Hot-add capabilities based on VM generation and dynamic memory
+                            def hotResize = isTrue(masterItem.DynamicMemoryEnabled)
                             if (masterItem.Generation != null) {
                                 def isGen2 = masterItem.Generation?.toString() == '2'
-                                def hotResize = MorpheusUtils.parseBooleanConfig(masterItem.DynamicMemoryEnabled)
                                 def generation = isGen2 ? 'generation2' : 'generation1'
                                 if (currentServer.hotResize != hotResize) {
                                     currentServer.hotResize = hotResize
@@ -245,6 +255,9 @@ class VirtualMachineSync {
                                     currentServer.setConfigProperty('generation', generation)
                                     save = true
                                 }
+                            } else if (currentServer.hotResize != hotResize) {
+                                currentServer.hotResize = hotResize
+                                save = true
                             }
                             def parentServer = hosts?.find { host -> host.externalId == masterItem.HostId }
                             if (parentServer != null && currentServer.parentServer != parentServer) {
@@ -290,6 +303,7 @@ class VirtualMachineSync {
                                 currentServer.serverOs = osType
                                 currentServer.osType = currentServer.serverOs?.platform?.toString()?.toLowerCase()
                                 currentServer.platform = osType?.platform
+                                planInfoChanged = true
                                 save = true
                             }
 
@@ -309,16 +323,25 @@ class VirtualMachineSync {
                             }
 
                             //plan
-                            ServicePlan plan = SyncUtils.findServicePlanBySizing(availablePlans, currentServer.maxMemory, currentServer.maxCores,
-                                    null, fallbackPlan, currentServer.plan, currentServer.account, [])
+                            ServicePlan plan = ScvmmServicePlanUtil.findServicePlanBySizing(availablePlans, currentServer.maxMemory, currentServer.maxCores,
+                                    fallbackPlan, currentServer.plan, currentServer.account, availablePlanPermissions,
+                                    masterItem.DynamicMemoryEnabled, masterItem.MemoryAssignedMB,
+                                    masterItem.DynamicMemoryMinimumMB, masterItem.DynamicMemoryMaximumMB)
                             if (currentServer.plan?.id != plan?.id) {
                                 currentServer.plan = plan
+                                planInfoChanged = true
                                 save = true
                             }
                             if (masterItem.Disks) {
                                 if (currentServer.status != 'resizing' && currentServer.status != 'provisioning') {
-                                    syncVolumes(currentServer, masterItem.Disks)
+                                    if (syncVolumes(currentServer, masterItem.Disks)) {
+                                        planInfoChanged = true
+                                        save = true
+                                    }
                                 }
+                            }
+                            if (planInfoChanged && currentServer.computeServerType?.guestVm) {
+                                updateWorkloadAndInstanceSizing(currentServer)
                             }
                             if (masterItem.NetworkAdapters != null) {
                                 // Interface changes are persisted by the interface service; no server save needed for them.
@@ -328,6 +351,11 @@ class VirtualMachineSync {
                             }
                             else {
                                 log.debug("Null NetworkAdapters from SCVMM for '${currentServer.name}' (id:${currentServer.id}, externalId:${currentServer.externalId}) - skipping sync")
+                            }
+                            boolean agentless = currentServer.agentInstalled == false ||
+                                    currentServer.powerState in [ComputeServer.PowerState.off, ComputeServer.PowerState.paused]
+                            if (agentless && updateVirtualMachineStats(currentServer, masterItem)) {
+                                save = true
                             }
                             log.debug ("updateMatchedVirtualMachines: save: ${save}")
                             if (save) {
@@ -427,18 +455,119 @@ class VirtualMachineSync {
         }
     }
 
+    /**
+     * Pushes a plan/cores/memory/storage change of a discovered VM onto its workloads, and onto each instance whose
+     * other workloads already carry the same sizing.
+     */
+    protected void updateWorkloadAndInstanceSizing(ComputeServer server) {
+        try {
+            def workloads = context.services.workload.list(new DataQuery().withFilter('server.id', server.id)) ?: []
+            workloads.each { Workload workload ->
+                workload.plan = server.plan
+                workload.maxCores = server.maxCores
+                workload.maxMemory = server.maxMemory
+                workload.coresPerSocket = server.coresPerSocket
+                workload.maxStorage = server.maxStorage
+                context.services.workload.save(workload)
+            }
+            def instanceIds = workloads.collect { it.instance?.id }.findAll { it != null }.unique()
+            if (!instanceIds) {
+                return
+            }
+            def instanceWorkloads = context.services.workload.list(new DataQuery().withFilter('instance.id', 'in', instanceIds)) ?: []
+            context.services.instance.list(new DataQuery().withFilter('id', 'in', instanceIds))?.each { Instance instance ->
+                def sameSizing = instanceWorkloads.findAll { it.instance?.id == instance.id }.every { Workload w ->
+                    w.server?.id == server.id || (w.plan?.id == server.plan?.id && w.maxMemory == server.maxMemory &&
+                            w.maxCores == server.maxCores && w.coresPerSocket == server.coresPerSocket)
+                }
+                if (sameSizing) {
+                    instance.plan = server.plan
+                    instance.maxCores = server.maxCores
+                    instance.maxMemory = server.maxMemory
+                    instance.maxStorage = server.maxStorage
+                    context.services.instance.save(instance)
+                }
+            }
+        } catch (e) {
+            log.error("updateWorkloadAndInstanceSizing error for server ${server?.id}: ${e}", e)
+        }
+    }
+
+    /**
+     * Records memory/storage/cpu stats for a VM without an agent (or not running), from the SCVMM listing.
+     * Grows maxMemory/maxStorage/usedStorage on the server when SCVMM reports more.
+     * @return true when the server itself was modified and needs saving
+     */
+    protected boolean updateVirtualMachineStats(ComputeServer server, Map vmMap) {
+        try {
+            Long maxStorage = (vmMap.TotalSize?.toDouble() ?: 0d) as Long
+            Long usedStorage = (vmMap.UsedSize?.toDouble() ?: 0d) as Long
+            Float cpuPercent = (vmMap.CPUUtilization?.toDouble() ?: 0d) as Float
+            Long maxMemory = (vmMap.Memory?.toLong() ?: 0L) * 1024L * 1024L
+            Double availablePercent = vmMap.MemoryAvailablePercentage ? vmMap.MemoryAvailablePercentage.toDouble() : 100d
+            Long usedMemory = (((100d - availablePercent) / 100d) * maxMemory) as Long
+            boolean running = vmMap.VirtualMachineState == 'Running'
+
+            boolean serverChanged = false
+            boolean updates = running
+            if (maxMemory > (server.maxMemory ?: 0L)) {
+                server.maxMemory = maxMemory
+                if (server.capacityInfo) {
+                    server.capacityInfo.maxMemory = maxMemory
+                }
+                serverChanged = true
+            }
+            if (usedMemory != server.capacityInfo?.usedMemory) {
+                updates = true
+            }
+            if (maxStorage > (server.maxStorage ?: 0L)) {
+                server.maxStorage = maxStorage
+                serverChanged = true
+            }
+            if (usedStorage > (server.usedStorage ?: 0L)) {
+                server.usedStorage = usedStorage
+                serverChanged = true
+            }
+            if (cpuPercent || serverChanged) {
+                updates = true
+            }
+            if (updates) {
+                context.async.stats.updateServerStats(server, maxMemory, usedMemory, maxStorage, usedStorage, cpuPercent, running).blockingGet()
+                def workload = context.services.workload.find(new DataQuery().withFilter('server.id', server.id))
+                if (workload) {
+                    context.async.stats.updateWorkloadStats(workload, maxMemory, usedMemory, maxStorage, usedStorage, cpuPercent, running).blockingGet()
+                }
+            }
+            return serverChanged
+        } catch (e) {
+            log.warn("error updating vm stats for ${server?.id}: ${e}", e)
+            return false
+        }
+    }
+
+    /**
+     * Unmanaged discovered VMs are deleted; managed VMs are handed to core as well, which marks them removed from
+     * inventory (disableRemovedManagedServer) instead of deleting them. A server of the unmanaged type that has been
+     * converted to managed is left alone.
+     */
     def removeMissingVirtualMachines(List<ComputeServerIdentityProjection> removeList) {
         log.debug("removeMissingVirtualMachines: ${cloud} ${removeList.size()}")
-        def removeItems = context.services.computeServer.listIdentityProjections(
-                new DataQuery().withFilter("id", "in", removeList.collect { it.id })
-                        .withFilter("computeServerType.code", 'scvmmUnmanaged')
-        )
-        context.async.computeServer.remove(removeItems).blockingGet()
+        if (!removeList) {
+            return
+        }
+        def removeItems = context.services.computeServer.list(new DataQuery()
+                .withFilter('id', 'in', removeList.collect { it.id })
+                .withJoins(['computeServerType']))?.findAll { ComputeServer server ->
+            (server.computeServerType?.code == 'scvmmUnmanaged' && server.managed != true) || server.computeServerType?.managed == true
+        } ?: []
+        if (removeItems) {
+            context.async.computeServer.remove(removeItems).blockingGet()
+        }
     }
 
     private buildVmConfig(Map cloudItem, ComputeServerType defaultServerType) {
         def isGen2 = cloudItem.Generation?.toString() == '2'
-        def hasDynamicMemory = MorpheusUtils.parseBooleanConfig(cloudItem.DynamicMemoryEnabled)
+        def hasDynamicMemory = isTrue(cloudItem.DynamicMemoryEnabled)
         def vmConfig = [
                 name             : cloudItem.Name,
                 cloud            : cloud,
@@ -474,9 +603,10 @@ class VirtualMachineSync {
                     "maxStorage=${it.maxStorage}"
         }
 
-        def changes = false
+        def changes = new AtomicBoolean(false)
         try {
-            def maxStorage = 0
+            // SyncTask callbacks run on its scheduler threads, so the running totals are shared atomics.
+            def maxStorage = new AtomicLong(0L)
 
             def existingVolumes = server.volumes
             def masterItems = externalVolumes?.findAll{it != null}
@@ -491,27 +621,37 @@ class VirtualMachineSync {
             }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<StorageVolumeIdentityProjection, StorageVolume>> updateItems ->
                 context.async.storageVolume.listById(updateItems.collect { it.existingItem.id } as List<Long>)
             }.onAdd { itemsToAdd ->
-                addMissingStorageVolumes(itemsToAdd, server, diskNumber, maxStorage, changes)
+                maxStorage.addAndGet(addMissingStorageVolumes(itemsToAdd, server, diskNumber))
+                if (itemsToAdd) {
+                    changes.set(true)
+                }
             }.onUpdate { List<SyncTask.UpdateItem<StorageVolume, Map>> updateItems ->
-                updateMatchedStorageVolumes(updateItems, server, maxStorage, changes)
+                def result = updateMatchedStorageVolumes(updateItems, server)
+                maxStorage.addAndGet(result.maxStorage as Long)
+                if (result.changed) {
+                    changes.set(true)
+                }
             }.onDelete { removeItems ->
-                removeMissingStorageVolumes(removeItems, server, changes)
+                if (removeMissingStorageVolumes(removeItems, server)) {
+                    changes.set(true)
+                }
             }.start()
 
-            if (server instanceof ComputeServer && server.maxStorage != maxStorage) {
-                log.debug "max storage changed for ${server} from ${server.maxStorage} to ${maxStorage}"
-                server.maxStorage = maxStorage
+            if (server instanceof ComputeServer && server.maxStorage != maxStorage.get()) {
+                log.debug "max storage changed for ${server} from ${server.maxStorage} to ${maxStorage.get()}"
+                server.maxStorage = maxStorage.get()
                 context.async.computeServer.save(server).blockingGet()
-                changes = true
+                changes.set(true)
             }
         } catch (e) {
             log.error("syncVolumes error: ${e}", e)
         }
-        return changes
+        return changes.get()
     }
 
-    def addMissingStorageVolumes(itemsToAdd, ComputeServer server, int diskNumber, maxStorage, changes) {
-        def provisionProvider = cloudProvider.getProvisionProvider('morpheus-scvmm-plugin.provision')
+    /** @return the total size of the volumes created */
+    Long addMissingStorageVolumes(itemsToAdd, ComputeServer server, int diskNumber) {
+        Long addedStorage = 0L
         def serverVolumeNames = server.volumes.collect{ it.name }
         itemsToAdd?.eachWithIndex { diskData, index ->
             log.debug("adding new volume: ${diskData?.name} (${diskData?.id})")
@@ -533,15 +673,18 @@ class VirtualMachineSync {
             def storageVolume = buildStorageVolume(server.account ?: cloud.account, server, volumeConfig)
             context.services.storageVolume.create(storageVolume)
             server.volumes.add(storageVolume)
-            maxStorage += storageVolume.maxStorage ?: 0l
+            addedStorage += storageVolume.maxStorage ?: 0L
             diskNumber++
             log.debug("added volume: ${storageVolume?.dump()}")
         }
         context.async.computeServer.bulkSave([server]).blockingGet()
+        return addedStorage
     }
 
-    def updateMatchedStorageVolumes(updateItems, server, maxStorage, changes) {
+    /** @return [maxStorage: total size of the matched disks, changed: whether any volume was saved] */
+    Map updateMatchedStorageVolumes(updateItems, server) {
         def savedVolumes = []
+        Long matchedStorage = 0L
         updateItems?.eachWithIndex { updateMap, index ->
             log.debug("updating volume: ${updateMap.masterItem}")
             StorageVolume volume = updateMap.existingItem
@@ -575,25 +718,28 @@ class VirtualMachineSync {
             }
             if (save) {
                 savedVolumes << volume
-                changes = true
             }
-            maxStorage += masterDiskSize
+            matchedStorage += masterDiskSize
         }
         if (savedVolumes.size() > 0) {
             context.async.storageVolume.bulkSave(savedVolumes).blockingGet()
         }
+        return [maxStorage: matchedStorage, changed: savedVolumes.size() > 0]
     }
 
-    def removeMissingStorageVolumes(removeItems, ComputeServer server, Boolean changes) {
+    /** @return true when any volume was removed */
+    boolean removeMissingStorageVolumes(removeItems, ComputeServer server) {
+        boolean removed = false
         removeItems?.each { currentVolume ->
             log.debug "removing volume: ${currentVolume?.name} (${currentVolume?.id})"
-            changes = true
+            removed = true
             currentVolume.controller = null
             currentVolume.datastore = null
             server.volumes.remove(currentVolume)
             context.async.computeServer.save(server).blockingGet()
             context.async.storageVolume.remove(currentVolume).blockingGet()
         }
+        return removed
     }
 
     def buildStorageVolume(account, server, volume) {
@@ -883,6 +1029,14 @@ class VirtualMachineSync {
 
     private boolean getIsPrimary(ComputeServerInterface iface, Map masterItem, boolean isPrimaryAssigned) {
         return (iface?.primaryInterface == true) || (masterItem.SlotId == 0 && !isPrimaryAssigned)
+    }
+
+    /**
+     * SCVMM reports flags as JSON booleans or 'True'/'False' strings. MorpheusUtils.parseBooleanConfig is not used
+     * because it returns true for any Boolean, including false.
+     */
+    private static boolean isTrue(value) {
+        return value == true || value?.toString()?.equalsIgnoreCase('true')
     }
 
 }

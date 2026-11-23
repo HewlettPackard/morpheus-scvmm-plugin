@@ -17,6 +17,8 @@ import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import groovy.util.logging.Slf4j
 import io.reactivex.rxjava3.core.Observable
 
+import java.util.concurrent.atomic.AtomicBoolean
+
 /**
  * @author rahul.ray
  */
@@ -83,10 +85,39 @@ class TemplatesSync {
         }
     }
 
+    /**
+     * Removes the locations of templates gone from SCVMM. When those were the image's only locations (all in this
+     * cloud), the remaining locations in this cloud go too and a synced image is marked deleted; system,
+     * user-uploaded and user-defined images are kept.
+     */
     protected removeMissingVirtualImages(List<VirtualImageLocationIdentityProjection> removeList) {
         try {
             log.debug("removeMissingVirtualImageLocations: ${cloud} ${removeList.size()}")
-            context.async.virtualImage.location.remove(removeList).blockingGet()
+            def removeIds = removeList.collect { it.id } as Set
+            def locations = (removeIds ? context.services.virtualImage.location.list(new DataQuery()
+                    .withFilter('id', 'in', removeIds as List)
+                    .withFilter('refType', 'ComputeZone')
+                    .withFilter('refId', cloud.id)) : null) ?: []
+            def imageIds = locations.collect { it.virtualImage?.id }.findAll { it != null }.unique()
+            List<VirtualImage> images = (imageIds ? context.async.virtualImage.listById(imageIds).toList().blockingGet() : null) ?: []
+
+            List<VirtualImageLocationIdentityProjection> locationsToRemove = new ArrayList<>(removeList)
+            List<VirtualImage> imagesToDelete = []
+            images.each { VirtualImage image ->
+                def imageLocations = image.imageLocations ?: []
+                boolean onlyInThisCloud = imageLocations && imageLocations.every { it.refType == 'ComputeZone' && it.refId == cloud.id }
+                if (onlyInThisCloud) {
+                    imageLocations.findAll { !removeIds.contains(it.id) }.each { locationsToRemove << it }
+                    if (!image.systemImage && !image.userUploaded && !image.userDefined) {
+                        image.deleted = true
+                        imagesToDelete << image
+                    }
+                }
+            }
+            if (imagesToDelete) {
+                context.async.virtualImage.save(imagesToDelete, cloud).blockingGet()
+            }
+            context.async.virtualImage.location.remove(locationsToRemove).blockingGet()
         } catch (e) {
             log.error("error deleting synced virtual image: ${e}", e)
         }
@@ -385,7 +416,7 @@ class TemplatesSync {
                     imageConfig.minRam = it.Memory.toLong() * ComputeUtility.ONE_MEGABYTE
                 if (it.Location)
                     imageConfig.remotePath = it.Location
-                def osTypeCode = apiService.getMapScvmmOsType(it.OperatingSystem, true, "Other Linux (64 bit)")
+                def osTypeCode = apiService.getMapScvmmOsType(it.OperatingSystem)
                 log.info "cacheTemplates osTypeCode: ${osTypeCode}"
                 def osType = context.services.osType.find(new DataQuery().withFilter('code', osTypeCode ?: 'other'))
                 log.info "osType: ${osType}"
@@ -417,9 +448,10 @@ class TemplatesSync {
                         .withFilter('code', addLocation.code)
                         .withFilter('refType', locationConfig.refType)
                         .withFilter('refId', locationConfig.refId)).blockingGet()
-                def saved = syncVolumes(savedLocation, it.Disks)
+                def saved = savedLocation ? syncVolumes(savedLocation, it.Disks) : false
                 if (saved) {
-                    context.async.virtualImage.save([add], cloud).blockingGet()
+                    // Re-save the location so core refreshes the image price plan for the new disks.
+                    context.async.virtualImage.location.save([savedLocation], cloud).blockingGet()
                 }
             }
         } catch (e) {
@@ -429,10 +461,9 @@ class TemplatesSync {
 
     def syncVolumes(addLocation, externalVolumes) {
         log.debug "syncVolumes: ${addLocation}, ${groovy.json.JsonOutput.prettyPrint(externalVolumes?.encodeAsJSON()?.toString())}"
-        def changes = false //returns if there are changes to be saved
+        // SyncTask callbacks run on its scheduler threads, so the result flag is a shared atomic.
+        def changes = new AtomicBoolean(false) //returns if there are changes to be saved
         try {
-            def maxStorage = 0
-
             def existingVolumes = addLocation.volumes
             def masterItems = externalVolumes?.findAll { it != null }
 
@@ -446,21 +477,27 @@ class TemplatesSync {
             }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<StorageVolumeIdentityProjection, StorageVolume>> updateItems ->
                 context.async.storageVolume.listById(updateItems.collect { it.existingItem.id } as List<Long>)
             }.onAdd { itemsToAdd ->
-                addMissingStorageVolumes(itemsToAdd, addLocation, diskNumber, maxStorage, changes)
+                if (addMissingStorageVolumes(itemsToAdd, addLocation, diskNumber)) {
+                    changes.set(true)
+                }
             }.onUpdate { List<SyncTask.UpdateItem<StorageVolume, Map>> updateItems ->
-                updateMatchedStorageVolumes(updateItems, addLocation, maxStorage, changes)
+                if (updateMatchedStorageVolumes(updateItems, addLocation)) {
+                    changes.set(true)
+                }
             }.onDelete { removeItems ->
-                removeMissingStorageVolumes(removeItems, addLocation, changes)
+                if (removeMissingStorageVolumes(removeItems, addLocation)) {
+                    changes.set(true)
+                }
             }.start()
         } catch (e) {
             log.error("syncVolumes error: ${e}", e)
         }
-        return changes
+        return changes.get()
     }
 
 
-    def addMissingStorageVolumes(itemsToAdd, VirtualImageLocation addLocation, int diskNumber, maxStorage, changes) {
-        def provisionProvider = cloudProvider.getProvisionProvider('morpheus-scvmm-plugin.provision')
+    /** @return true when any volume was created */
+    boolean addMissingStorageVolumes(itemsToAdd, VirtualImageLocation addLocation, int diskNumber) {
         List<StorageVolume> volumes = []
         itemsToAdd?.each { diskData ->
             log.debug("adding new volume: ${diskData}")
@@ -483,15 +520,17 @@ class TemplatesSync {
                 volumeConfig.datastoreId = "${datastore.id}"
             def storageVolume = buildStorageVolume(cloud.account, addLocation, volumeConfig)
             // def createdStorageVolume = context.async.storageVolume.create([storageVolume], addLocation).blockingGet()
-            maxStorage += storageVolume.maxStorage ?: 0l
             diskNumber++
             volumes << storageVolume
             log.debug("added volume: ${storageVolume?.dump()}")
         }
         context.async.storageVolume.create(volumes, addLocation).blockingGet()
+        return !volumes.isEmpty()
     }
 
-    def updateMatchedStorageVolumes(updateItems, addLocation, maxStorage, changes) {
+    /** @return true when any volume was saved */
+    boolean updateMatchedStorageVolumes(updateItems, addLocation) {
+        boolean changed = false
         updateItems?.each { updateMap ->
             log.debug("updating volume: ${updateMap.masterItem}")
             StorageVolume volume = updateMap.existingItem
@@ -532,10 +571,10 @@ class TemplatesSync {
             }
             if (save) {
                 context.async.storageVolume.save(volume).blockingGet()
-                changes = true
+                changed = true
             }
-            maxStorage += masterDiskSize
         }
+        return changed
     }
 
     // todo Move to ScvmmComputeService?
@@ -547,10 +586,12 @@ class TemplatesSync {
                 new DataQuery().withFilter('code', code)).blockingGet()
     }
 
-    def removeMissingStorageVolumes(removeItems, addLocation, changes) {
+    /** @return true when any volume was removed */
+    boolean removeMissingStorageVolumes(removeItems, addLocation) {
+        boolean removed = false
         removeItems?.each { currentVolume ->
             log.debug "removing volume: ${currentVolume}"
-            changes = true
+            removed = true
             currentVolume.controller = null
             currentVolume.datastore = null
 
@@ -558,6 +599,7 @@ class TemplatesSync {
             context.async.storageVolume.remove([currentVolume], addLocation).blockingGet()
             context.async.storageVolume.remove(currentVolume).blockingGet()
         }
+        return removed
     }
 
     def buildStorageVolume(account, addLocation, volume) {
