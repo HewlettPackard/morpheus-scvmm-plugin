@@ -247,9 +247,10 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 					.withFilter('resourcePool.id', resourcePoolId)
 		}
 
-		def results = morpheusContext.services.computeServer.listIdentityProjections(query.withSort('name', DataQuery.SortOrder.asc))
+		// Full models are needed to read maintenanceMode; a null flag (host not re-synced yet) counts as available
+		def results = morpheusContext.services.computeServer.list(query.withSort('name', DataQuery.SortOrder.asc))
 
-		return results.collect { host -> [name: host.name, value: host.id] }
+		return results.findAll { host -> !host.maintenanceMode }.collect { host -> [name: host.name, value: host.id] }
 	}
 
 	/**
