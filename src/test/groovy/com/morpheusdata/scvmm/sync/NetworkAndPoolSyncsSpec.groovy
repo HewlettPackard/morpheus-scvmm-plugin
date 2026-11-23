@@ -3,6 +3,7 @@
 package com.morpheusdata.scvmm.sync
 
 import com.morpheusdata.core.BulkCreateResult
+import com.morpheusdata.core.BulkRemoveResult
 import com.morpheusdata.core.MorpheusResourcePermissionService
 import com.morpheusdata.core.cloud.MorpheusCloudPoolService
 import com.morpheusdata.core.cloud.MorpheusDatastoreService
@@ -91,46 +92,66 @@ class NetworkAndPoolSyncsSpec extends ScvmmSpec {
 
     // ================================================================ NetworkSync
 
-    def "NetworkSync adds a network per VM network with a subnet built from its first site"() {
+    def "NetworkSync adds a network per VM network with a subnet per VLAN site, keyed by the subnet ID"() {
         given:
-        def item = VmmPayloads.network(ID: 'vmnet-1', Name: 'vmnet-1', Subnets: [VmmPayloads.vlan(Subnet: '10.0.100.0/24', VLanID: 100)])
+        def item = VmmPayloads.network(ID: 'vmnet-1', Name: 'vmnet-1', Subnets: [
+                VmmPayloads.vlan(ID: 'subnet-1-100', Name: 'subnet-1', Subnet: '10.0.100.0/24', VLanID: 100),
+                VmmPayloads.vlan(ID: 'subnet-1-200', Name: 'subnet-1', Subnet: '10.0.200.0/24', VLanID: 200)])
         apiService.listNetworks(_) >> [success: true, networks: [item]]
         asyncNetworkService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
         List<Network> created
-        NetworkSubnet subnet
+        List<NetworkSubnet> subnets
 
         when:
         networkSync().execute()
 
         then:
         1 * asyncNetworkService.bulkCreate(_ as List) >> { args -> List l = args[0]; created = l; Single.just(new BulkCreateResult(null, null, l, [])) }
-        1 * asyncSubnetService.create(_ as List, { it.is(created[0]) }) >> { List l, Network n -> subnet = l[0]; Single.just(true) }
+        1 * asyncSubnetService.create(_ as List, { it.is(created[0]) }) >> { List l, Network n -> subnets = l; Single.just(true) }
         created[0].code == 'scvmm.network.1.2.vmnet-1'
         created[0].category == 'scvmm.network.1.2'
         created[0].externalId == 'vmnet-1'
         created[0].owner.is(owner)
         created[0].cidr == null
-        subnet.cidr == '10.0.100.0/24'
-        subnet.netmask == '255.255.255.0'
-        subnet.dhcpStart == '10.0.100.1'
-        subnet.dhcpEnd == '10.0.100.254'
-        subnet.externalId == 'vmnet-1'
+        subnets*.externalId == ['subnet-1-100', 'subnet-1-200']
+        subnets*.vlanId == [100, 200]
+        subnets*.name == ['subnet-1', 'subnet-1']
+        subnets[0].cidr == '10.0.100.0/24'
+        subnets[0].netmask == '255.255.255.0'
+        subnets[0].dhcpStart == '10.0.100.1'
+        subnets[0].dhcpEnd == '10.0.100.254'
+        subnets[0].getConfigProperty('subnetName') == 'subnet-1'
+        subnets[0].getConfigProperty('subnetCidr') == '10.0.100.0/24'
     }
 
-    def "NetworkSync takes the new subnet's VLAN from the network item, not from its site"() {
-        // Pinned: subnetConfig.vlanId = cloudItem.VLanID (the VM network map has no VLanID), so it is always null.
+    def "NetworkSync matches created networks to VM networks by ID, not by name"() {
         given:
-        apiService.listNetworks(_) >> [success: true, networks: [VmmPayloads.network(Subnets: [VmmPayloads.vlan(VLanID: 100)])]]
+        def first = VmmPayloads.network(ID: 'vmnet-a', Name: 'same-name', Subnets: [VmmPayloads.vlan(ID: 'subnet-a-10', Subnet: '10.0.10.0/24', VLanID: 10)])
+        def second = VmmPayloads.network(ID: 'vmnet-b', Name: 'same-name', Subnets: [VmmPayloads.vlan(ID: 'subnet-b-20', Subnet: '10.0.20.0/24', VLanID: 20)])
+        apiService.listNetworks(_) >> [success: true, networks: [first, second]]
         asyncNetworkService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
         asyncNetworkService.bulkCreate(_ as List) >> { args -> List l = args[0]; Single.just(new BulkCreateResult(null, null, l, [])) }
-        NetworkSubnet subnet
+        Map<String, List<String>> subnetIdsByNetwork = [:]
 
         when:
         networkSync().execute()
 
         then:
-        1 * asyncSubnetService.create(_ as List, _ as Network) >> { List l, Network n -> subnet = l[0]; Single.just(true) }
-        subnet.vlanId == null
+        2 * asyncSubnetService.create(_ as List, _ as Network) >> { List l, Network n -> subnetIdsByNetwork[n.externalId] = l*.externalId; Single.just(true) }
+        subnetIdsByNetwork == ['vmnet-a': ['subnet-a-10'], 'vmnet-b': ['subnet-b-20']]
+    }
+
+    def "NetworkSync creates no subnet for a VM network without VLAN-enabled sites"() {
+        given:
+        apiService.listNetworks(_) >> [success: true, networks: [VmmPayloads.network(Subnets: [])]]
+        asyncNetworkService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
+
+        when:
+        networkSync().execute()
+
+        then:
+        1 * asyncNetworkService.bulkCreate(_ as List) >> { args -> List l = args[0]; Single.just(new BulkCreateResult(null, null, l, [])) }
+        0 * asyncSubnetService.create(*_)
     }
 
     def "NetworkSync removes networks that VMM no longer reports"() {
@@ -252,6 +273,25 @@ class NetworkAndPoolSyncsSpec extends ScvmmSpec {
         created[0].cidr == '10.0.100.0/24'
         created[0].vlanId == 100
         created[0].type.code == 'scvmmVLANNetwork'
+    }
+
+    def "IsolationNetworkSync adds an untagged No-isolation VM network with no CIDR or VLAN"() {
+        given: 'a VM network whose only site is untagged (VLAN 0, IsVlanEnabled = False)'
+        apiService.listNoIsolationVLans(_) >> [success: true, networks: [
+                VmmPayloads.vlan(ID: 'vmnet-untagged', Name: 'untagged-net', NetworkName: 'untagged-net', Subnet: null, VLanID: null)]]
+        asyncNetworkService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
+        List<Network> created
+
+        when:
+        isolationSync().execute()
+
+        then:
+        1 * asyncNetworkService.create(_ as List) >> { args -> List l = args[0]; created = l; Single.just(true) }
+        created*.externalId == ['vmnet-untagged']
+        created[0].name == 'untagged-net'
+        created[0].code.toString() == 'scvmm.vlan.network.1.2.vmnet-untagged'
+        created[0].cidr == null
+        created[0].vlanId == null
     }
 
     def "IsolationNetworkSync updates a changed CIDR/VLAN, skips unchanged networks and removes vanished ones"() {
@@ -539,7 +579,7 @@ class NetworkAndPoolSyncsSpec extends ScvmmSpec {
         def subnet = new NetworkSubnet(id: 7L, externalId: 'subnet-1')
         def network = new Network(id: 5L, externalId: 'vmnet-1', name: 'vmnet-1', subnets: [subnet])
         networkService.list(_ as DataQuery) >> [network]
-        apiService.listNetworkIPPools(_) >> [success: true, ipPools: [VmmPayloads.ipPool(DNSServers: ['10.0.0.53', '10.0.0.54'])],
+        apiService.listNetworkIPPools(_) >> [success: true, ipPools: [VmmPayloads.ipPool(DNSServers: ['10.0.0.53', '10.0.0.54'], DNSSearchSuffixes: ['corp.local'])],
                                              networkMapping: [[ID: 'vmnet-1']]]
         asyncNetworkPoolService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
         subnetService.get(7L) >> subnet
@@ -563,6 +603,7 @@ class NetworkAndPoolSyncsSpec extends ScvmmSpec {
             netmask == '255.255.255.0'
             subnetAddress == '10.0.100.0'
             dnsServers == ['10.0.0.53', '10.0.0.54']
+            dnsSuffixList == ['corp.local']
             ipCount == 100
             ipFreeCount == 90
         }
@@ -596,12 +637,17 @@ class NetworkAndPoolSyncsSpec extends ScvmmSpec {
         apiService.listNetworkIPPools(_) >> [success: true, ipPools: [], networkMapping: []]
         def gone = new NetworkPoolIdentityProjection(id: 9L, externalId: 'pool-gone')
         asyncNetworkPoolService.listIdentityProjections(_ as DataQuery) >> Observable.just(gone)
+        def perm = new ResourcePermission(id: 70L, morpheusResourceType: 'NetworkPool', morpheusResourceId: 9L)
 
         when:
         ipPoolsSync().execute()
 
         then: 'an empty pool list removes every pool (no mass-delete guard)'
         1 * asyncNetworkPoolService.remove([gone]) >> Single.just(true)
+
+        and: 'their resource permissions are removed too'
+        1 * permissionService.list(_ as DataQuery) >> [perm]
+        1 * asyncPermissionService.bulkRemove([perm]) >> Single.just(new BulkRemoveResult(null, null, []))
     }
 
     def "IpPoolsSync updates a pool whose subnet, counts and DNS changed and creates its missing range"() {
@@ -610,7 +656,7 @@ class NetworkAndPoolSyncsSpec extends ScvmmSpec {
                 ipFreeCount: 90, gateway: '10.0.100.1', netmask: '255.255.255.0', subnetAddress: '10.0.50.0', dnsServers: ['10.0.0.53'],
                 poolServer: poolServer, ipRanges: [])
         networkService.list(_ as DataQuery) >> []
-        apiService.listNetworkIPPools(_) >> [success: true, ipPools: [VmmPayloads.ipPool(Subnet: '10.0.100.0/23', AvailableAddresses: 80, DNSServers: '10.0.0.99')],
+        apiService.listNetworkIPPools(_) >> [success: true, ipPools: [VmmPayloads.ipPool(Subnet: '10.0.100.0/23', AvailableAddresses: 80, DNSServers: '10.0.0.99', DNSSearchSuffixes: 'lab.local')],
                                              networkMapping: []]
         asyncNetworkPoolService.listIdentityProjections(_ as DataQuery) >> Observable.just(new NetworkPoolIdentityProjection(id: 9L, externalId: 'pool-1'))
         asyncNetworkPoolService.listById([9L]) >> Observable.just(existing)
@@ -627,6 +673,7 @@ class NetworkAndPoolSyncsSpec extends ScvmmSpec {
         existing.subnetAddress == '10.0.100.0'
         existing.ipFreeCount == 80
         existing.dnsServers == ['10.0.0.99']
+        existing.dnsSuffixList == ['lab.local']
         0 * asyncPermissionService.create(_)
     }
 

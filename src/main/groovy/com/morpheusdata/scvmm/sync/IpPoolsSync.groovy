@@ -80,6 +80,7 @@ class IpPoolsSync {
                     networkPool?.externalId == poolItem?.ID
                 }.onDelete { removeItems ->
                     morpheusContext.async.cloud.network.pool.remove(removeItems).blockingGet()
+                    removePoolPermissions(removeItems)
                 }.onUpdate { List<SyncTask.UpdateItem<NetworkPool, Map>> updateItems ->
                     updateMatchedIpPools(updateItems, networks, networkMapping)
                 }.onAdd { itemsToAdd ->
@@ -114,6 +115,7 @@ class IpPoolsSync {
                         externalId   : it.ID,
                         ipCount      : it.TotalAddresses ?: 0,
                         ipFreeCount  : it.AvailableAddresses ?: 0,
+                        dnsSuffixList: normalizeStringList(it.DNSSearchSuffixes),
                         dhcpServer   : true,
                         gateway      : gateway,
                         poolEnabled  : true,
@@ -178,6 +180,24 @@ class IpPoolsSync {
         }
     }
 
+    /** Drops the ResourcePermission rows of pools removed because SCVMM no longer reports them. */
+    protected void removePoolPermissions(List<NetworkPoolIdentityProjection> removedPools) {
+        try {
+            def poolIds = removedPools?.collect { it?.id }?.findAll { it != null }
+            if (!poolIds) {
+                return
+            }
+            List<ResourcePermission> permissions = morpheusContext.services.resourcePermission.list(new DataQuery()
+                    .withFilter('morpheusResourceType', 'NetworkPool')
+                    .withFilter('morpheusResourceId', 'in', poolIds))
+            if (permissions) {
+                morpheusContext.async.resourcePermission.bulkRemove(permissions).blockingGet()
+            }
+        } catch (e) {
+            log.error("Error removing permissions of deleted SCVMM pools: ${e}", e)
+        }
+    }
+
     /**
      * Links the Morpheus network served by an SCVMM static IP pool to that pool (parity with embedded: only pools
      * that report a VM network, i.e. pools on VM subnets, are linked; pools on "No isolation" VM networks report no
@@ -200,10 +220,15 @@ class IpPoolsSync {
 
     /** SCVMM returns DNSServers as a single string, a list, or nothing depending on the pool. */
     protected static List<String> normalizeDnsServers(dnsServers) {
-        if (!dnsServers) {
+        return normalizeStringList(dnsServers)
+    }
+
+    /** SCVMM list properties (DNSServers, DNSSearchSuffixes) arrive as a single string, a list, or nothing. */
+    protected static List<String> normalizeStringList(values) {
+        if (!values) {
             return []
         }
-        def list = dnsServers instanceof Collection ? dnsServers : [dnsServers]
+        def list = values instanceof Collection ? values : [values]
         return list.collect { it?.toString()?.trim() }.findAll { it } as List<String>
     }
 
@@ -340,6 +365,12 @@ class IpPoolsSync {
 
                     if(existingItem.ipFreeCount != (masterItem.AvailableAddresses ?: 0).toInteger()) {
                         existingItem.ipFreeCount = (masterItem.AvailableAddresses ?: 0).toInteger()
+                        doSave = true
+                    }
+
+                    List<String> dnsSuffixList = normalizeStringList(masterItem.DNSSearchSuffixes)
+                    if((existingItem.dnsSuffixList ?: []) != dnsSuffixList) {
+                        existingItem.dnsSuffixList = dnsSuffixList
                         doSave = true
                     }
 

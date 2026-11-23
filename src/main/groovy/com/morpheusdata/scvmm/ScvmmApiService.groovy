@@ -1308,26 +1308,64 @@ Get-SCLogicalNetwork -VMMServer localhost -Cloud \$cloud | Select ID,Name"""
                 log.debug("listNetworks: ${out}")
                 if (out.success && out.exitCode == '0' && out.data?.size() > 0) {
                     def logicalNetworks = out.data
+                    // One entry per VLAN of every "No isolation" VM network, falling back to the VM network itself
+                    // (no subnet/VLAN) for untagged (VLAN 0) or site-less networks.
                     command = generateCommandString("""\$report = @()
-\$logicalNetworks = Get-SCLogicalNetworkDefinition -VMMServer localhost | where {\$_.IsolationType -eq "None"} | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
-foreach (\$logicalNetwork in \$logicalNetworks) {
-    if (-not \$logicalNetwork -or -not \$logicalNetwork.LogicalNetwork) { continue }
-    \$network = Get-SCVMNetwork -VMMServer localhost -LogicalNetwork \$logicalNetwork.LogicalNetwork
-    if (-not \$network) { continue }
-    \$subnets = \$logicalNetwork.SubnetVLans | where { \$_.IsVlanEnabled -eq \$true }
-    if (-not \$subnets) { continue }
-    foreach (\$vlan in \$subnets) {
-        if (-not \$vlan.Subnet -or -not \$vlan.VLanId) { continue }
+\$vmnetworks = Get-SCVMNetwork -VMMServer localhost | where { \$_.IsolationType -eq "NoIsolation" } | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
 
-        \$data = New-Object PSObject -Property @{
-            ID               = "\$(\$network.ID)-\$(\$vlan.VLanId)"
-            Name             = "\$(\$vlan.VLanId)-\$(\$logicalNetwork.LogicalNetwork.Name)"
-            NetworkName      = \$logicalNetwork.Name
-            LogicalNetworkID = \$logicalNetwork.LogicalNetwork.ID
-            Subnet           = \$vlan.Subnet
-            VLanID           = \$vlan.VLanId
+foreach (\$vmnetwork in \$vmnetworks) {
+    \$logicalNetwork = \$vmnetwork.LogicalNetwork
+    \$added = \$false
+
+    # Case 1: VMSubnet and VLANs exist
+    if (\$vmnetwork.VMSubnet -and \$vmnetwork.VMSubnet.SubnetVLans) {
+        \$subnets = \$vmnetwork.VMSubnet.SubnetVLans | where { \$_.IsVlanEnabled -eq \$true }
+        foreach (\$vlan in \$subnets) {
+            \$data = New-Object PSObject -property @{
+                ID = \$vmnetwork.ID.ToString() + "-" + \$vlan.VLanId
+                Name = \$vlan.VLanId.ToString() + "-" + \$logicalNetwork.Name
+                NetworkName = \$logicalNetwork.Name
+                LogicalNetworkID = \$logicalNetwork.ID
+                Subnet = \$vlan.Subnet
+                VLanID = \$vlan.VLanId
+            }
+            \$report += \$data
+            \$added = \$true
         }
-        \$report += \$data
+    }
+
+    # Case 2: No VMSubnet, but VLAN-enabled logical network definitions exist
+    if (-not \$added -and \$logicalNetwork) {
+        \$logicalNetworkDefs = Get-SCLogicalNetworkDefinition -VMMServer localhost -LogicalNetwork \$logicalNetwork | where { \$_.IsolationType -eq "None" }
+        \$defAdded = \$false
+        foreach (\$logicalNetworkDef in \$logicalNetworkDefs) {
+            \$subnets = \$logicalNetworkDef.SubnetVLans | where { \$_.IsVlanEnabled -eq \$true }
+            foreach (\$vlan in \$subnets) {
+                \$data = New-Object PSObject -property @{
+                    ID = \$vmnetwork.ID.ToString() + "-" + \$vlan.VLanId
+                    Name = \$vlan.VLanId.ToString() + "-" + \$logicalNetwork.Name
+                    NetworkName = \$logicalNetworkDef.Name
+                    LogicalNetworkID = \$logicalNetwork.ID
+                    Subnet = \$vlan.Subnet
+                    VLanID = \$vlan.VLanId
+                }
+                \$report += \$data
+                \$defAdded = \$true
+            }
+        }
+
+        # Case 3: No VLAN-enabled subnets or sites (e.g. untagged VLAN 0): the VM network itself
+        if (-not \$defAdded) {
+            \$data = New-Object PSObject -property @{
+                ID = \$vmnetwork.ID.ToString()
+                Name = \$logicalNetwork.Name
+                NetworkName = \$logicalNetwork.Name
+                LogicalNetworkID = \$logicalNetwork.ID
+                Subnet = \$null
+                VLanID = \$null
+            }
+            \$report += \$data
+        }
     }
 }
 \$report""")
@@ -1360,6 +1398,8 @@ foreach (\$logicalNetwork in \$logicalNetworks) {
                 fetch(currentOffset)
                 currentOffset += pageSize
             }
+            // Several sites of one logical network can carry the same VLAN; keep one network per ID.
+            rtn.networks = rtn.networks.unique(false) { it.ID }
         } catch (ex) {
             rtn.success = false
             rtn.msg = "Error syncing isolation networks list from SCVMM Host"
