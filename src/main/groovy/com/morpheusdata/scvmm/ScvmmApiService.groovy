@@ -6,6 +6,8 @@ import com.bertramlabs.plugins.karman.CloudFile
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.util.ComputeUtility
+import com.morpheusdata.scvmm.clone.CloneNicPlanner
+import com.morpheusdata.scvmm.clone.CloneWizardReconciler
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.scvmm.logging.LogInterface
@@ -1306,26 +1308,64 @@ Get-SCLogicalNetwork -VMMServer localhost -Cloud \$cloud | Select ID,Name"""
                 log.debug("listNetworks: ${out}")
                 if (out.success && out.exitCode == '0' && out.data?.size() > 0) {
                     def logicalNetworks = out.data
+                    // One entry per VLAN of every "No isolation" VM network, falling back to the VM network itself
+                    // (no subnet/VLAN) for untagged (VLAN 0) or site-less networks.
                     command = generateCommandString("""\$report = @()
-\$logicalNetworks = Get-SCLogicalNetworkDefinition -VMMServer localhost | where {\$_.IsolationType -eq "None"} | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
-foreach (\$logicalNetwork in \$logicalNetworks) {
-    if (-not \$logicalNetwork -or -not \$logicalNetwork.LogicalNetwork) { continue }
-    \$network = Get-SCVMNetwork -VMMServer localhost -LogicalNetwork \$logicalNetwork.LogicalNetwork
-    if (-not \$network) { continue }
-    \$subnets = \$logicalNetwork.SubnetVLans | where { \$_.IsVlanEnabled -eq \$true }
-    if (-not \$subnets) { continue }
-    foreach (\$vlan in \$subnets) {
-        if (-not \$vlan.Subnet -or -not \$vlan.VLanId) { continue }
+\$vmnetworks = Get-SCVMNetwork -VMMServer localhost | where { \$_.IsolationType -eq "NoIsolation" } | Sort-Object -Property ID | Select-Object -Skip $offset -First $pageSize
 
-        \$data = New-Object PSObject -Property @{
-            ID               = "\$(\$network.ID)-\$(\$vlan.VLanId)"
-            Name             = "\$(\$vlan.VLanId)-\$(\$logicalNetwork.LogicalNetwork.Name)"
-            NetworkName      = \$logicalNetwork.Name
-            LogicalNetworkID = \$logicalNetwork.LogicalNetwork.ID
-            Subnet           = \$vlan.Subnet
-            VLanID           = \$vlan.VLanId
+foreach (\$vmnetwork in \$vmnetworks) {
+    \$logicalNetwork = \$vmnetwork.LogicalNetwork
+    \$added = \$false
+
+    # Case 1: VMSubnet and VLANs exist
+    if (\$vmnetwork.VMSubnet -and \$vmnetwork.VMSubnet.SubnetVLans) {
+        \$subnets = \$vmnetwork.VMSubnet.SubnetVLans | where { \$_.IsVlanEnabled -eq \$true }
+        foreach (\$vlan in \$subnets) {
+            \$data = New-Object PSObject -property @{
+                ID = \$vmnetwork.ID.ToString() + "-" + \$vlan.VLanId
+                Name = \$vlan.VLanId.ToString() + "-" + \$logicalNetwork.Name
+                NetworkName = \$logicalNetwork.Name
+                LogicalNetworkID = \$logicalNetwork.ID
+                Subnet = \$vlan.Subnet
+                VLanID = \$vlan.VLanId
+            }
+            \$report += \$data
+            \$added = \$true
         }
-        \$report += \$data
+    }
+
+    # Case 2: No VMSubnet, but VLAN-enabled logical network definitions exist
+    if (-not \$added -and \$logicalNetwork) {
+        \$logicalNetworkDefs = Get-SCLogicalNetworkDefinition -VMMServer localhost -LogicalNetwork \$logicalNetwork | where { \$_.IsolationType -eq "None" }
+        \$defAdded = \$false
+        foreach (\$logicalNetworkDef in \$logicalNetworkDefs) {
+            \$subnets = \$logicalNetworkDef.SubnetVLans | where { \$_.IsVlanEnabled -eq \$true }
+            foreach (\$vlan in \$subnets) {
+                \$data = New-Object PSObject -property @{
+                    ID = \$vmnetwork.ID.ToString() + "-" + \$vlan.VLanId
+                    Name = \$vlan.VLanId.ToString() + "-" + \$logicalNetwork.Name
+                    NetworkName = \$logicalNetworkDef.Name
+                    LogicalNetworkID = \$logicalNetwork.ID
+                    Subnet = \$vlan.Subnet
+                    VLanID = \$vlan.VLanId
+                }
+                \$report += \$data
+                \$defAdded = \$true
+            }
+        }
+
+        # Case 3: No VLAN-enabled subnets or sites (e.g. untagged VLAN 0): the VM network itself
+        if (-not \$defAdded) {
+            \$data = New-Object PSObject -property @{
+                ID = \$vmnetwork.ID.ToString()
+                Name = \$logicalNetwork.Name
+                NetworkName = \$logicalNetwork.Name
+                LogicalNetworkID = \$logicalNetwork.ID
+                Subnet = \$null
+                VLanID = \$null
+            }
+            \$report += \$data
+        }
     }
 }
 \$report""")
@@ -1358,6 +1398,8 @@ foreach (\$logicalNetwork in \$logicalNetworks) {
                 fetch(currentOffset)
                 currentOffset += pageSize
             }
+            // Several sites of one logical network can carry the same VLAN; keep one network per ID.
+            rtn.networks = rtn.networks.unique(false) { it.ID }
         } catch (ex) {
             rtn.success = false
             rtn.msg = "Error syncing isolation networks list from SCVMM Host"
@@ -2612,6 +2654,86 @@ For (\$i=0; \$i -le 10; \$i++) {
         return rtn
     }
 
+    /**
+     * MORPH-20363: applies a {@link CloneNicPlanner} plan to a clone that exists and is
+     * still powered off: removes the copies the clone request dropped (located by slot on the clone) and creates
+     * the NICs it added, binding an SCVMM pool NIC to the address core leased for it. A NIC SCVMM refuses is
+     * reported in failedAdds rather than failing the clone; a copy that can't be removed is a warning.
+     * @return [success, bound: [request index: clone adapter ID], adapters (the clone's adapters in slot order),
+     *         failedAdds: [[index, error]], warnings, error]
+     */
+    Map applyCloneNicPlan(Map opts, String cloneVmId, Map plan) {
+        Map rtn = [success: false, bound: [:], adapters: [], failedAdds: [], warnings: [], error: null]
+        def current = getServerDetails(opts, cloneVmId)
+        if (current?.success != true) {
+            rtn.error = "Unable to read the clone's network adapters${current?.error ? ': ' + current.error : ''}".toString()
+            log.error("applyCloneNicPlan: ${rtn.error}")
+            return rtn
+        }
+        def removes = plan?.removes ?: []
+        def adds = plan?.adds ?: []
+        // The clone's copies keep the source's slots, so a copied adapter is found by the slot it was planned on
+        Map bySlot = cloneAdapters(current).collectEntries { [(CloneNicPlanner.slotNumber(it.SlotId)): it] }
+        for (Map update in (plan?.updates ?: [])) {
+            def adapter = bySlot[update.slotId as Integer]
+            if (adapter?.ID) {
+                rtn.bound[update.index as Integer] = adapter.ID.toString()
+            }
+        }
+        if (removes) {
+            for (Map remove in removes) {
+                def adapter = bySlot[remove.slotId as Integer]
+                def result = adapter ? removeNetworkInterface(opts, cloneVmId, [adapterId: adapter.ID]) : [success: false, error: "no adapter in slot ${remove.slotId}"]
+                log.info("applyCloneNicPlan: removed clone copy of source adapter ${remove.adapterId} (slot ${remove.slotId}): ${result?.success}")
+                if (result?.success != true) {
+                    rtn.warnings << "A network adapter removed from the clone request (slot ${remove.slotId}) is still attached to the VM, disconnected: ${result?.error ?: 'SCVMM did not confirm the removal'}. Remove it from the VM in SCVMM.".toString()
+                }
+            }
+        }
+        for (Map add in adds) {
+            Map nic = add.nic as Map
+            def added = addNetworkInterface(opts, cloneVmId, [networkExternalId: nic.networkExternalId, subnetExternalId: nic.subnetExternalId,
+                                                               vlanEnabled: nic.vlanEnabled, vlanId: nic.vlanId])
+            if (added?.success != true) {
+                log.warn("applyCloneNicPlan: unable to add network interface ${add.index} on ${nic.networkExternalId}: ${added?.error}")
+                rtn.failedAdds << [index: add.index, error: added?.error ?: 'SCVMM did not create the network adapter']
+                continue
+            }
+            if (nic.poolBound) {
+                def bound = updateNetworkInterface(opts, cloneVmId, [adapterId: added.adapterId, macAddress: added.macAddress, networkExternalId: nic.networkExternalId,
+                                                                     subnetExternalId: nic.subnetExternalId, vlanEnabled: nic.vlanEnabled, vlanId: nic.vlanId,
+                                                                     ipv4AddressType: 'Static', ipAddress: nic.ipAddress, poolExternalId: nic.poolExternalId])
+                if (bound?.success != true) {
+                    log.warn("applyCloneNicPlan: unable to bind ${nic.ipAddress} to added adapter ${added.adapterId}: ${bound?.error}; removing it")
+                    def rollback = removeNetworkInterface(opts, cloneVmId, [adapterId: added.adapterId, macAddress: added.macAddress])
+                    if (rollback?.success != true) {
+                        rtn.warnings << "A network adapter that could not get its address ${nic.ipAddress} is still attached to the VM: ${rollback?.error ?: 'SCVMM did not confirm the removal'}. Remove it from the VM in SCVMM.".toString()
+                    }
+                    rtn.failedAdds << [index: add.index, error: "unable to assign ${nic.ipAddress}: ${bound?.error ?: 'unknown error'}".toString()]
+                    continue
+                }
+            }
+            rtn.bound[add.index as Integer] = added.adapterId?.toString()
+        }
+        if (removes || adds) {
+            current = getServerDetails(opts, cloneVmId)
+            if (current?.success != true) {
+                rtn.error = "Unable to read the clone's network adapters${current?.error ? ': ' + current.error : ''}".toString()
+                log.error("applyCloneNicPlan: ${rtn.error}")
+                return rtn
+            }
+        }
+        rtn.adapters = cloneAdapters(current)
+        rtn.success = true
+        return rtn
+    }
+
+    private static List<Map> cloneAdapters(Map serverDetails) {
+        def adapters = serverDetails?.server?.NetworkAdapters
+        List<Map> list = adapters == null ? [] : (adapters instanceof Map ? [adapters] : adapters as List) as List<Map>
+        return list.sort(false) { a, b -> CloneNicPlanner.slotNumber(a.SlotId) <=> CloneNicPlanner.slotNumber(b.SlotId) }
+    }
+
     def cleanData(data, ignoreString = null) {
         def rtn = ''
         if(data){
@@ -3206,21 +3328,13 @@ For (\$i=0; \$i -le 10; \$i++) {
         } else {
             //Clone request
             def virtualNetworkGuid = UUID.randomUUID().toString()
-            commands << "\$VM = Get-SCVirtualMachine -VMMServer localhost -ID \"${cloneVMId}\""
-            commands << "if (\$VMNetwork.VMSubnet) { if (\$VMNetwork.VMSubnet -is [Array] -or \$VMNetwork.VMSubnet -is [System.Collections.Generic.List[Microsoft.SystemCenter.VirtualMachineManager.VMSubnet]]) { \$VMSubnet = \$VMNetwork.VMSubnet[0]; } else { \$VMSubnet = \$VMNetwork.VMSubnet } }"
-            commands << "\$VirtualNetworkAdapter = Get-SCVirtualNetworkAdapter -VMMServer localhost -VM \$VM"
-            commands << "\$VirtualNetwork = Get-SCVirtualNetwork -VMMServer localhost -Name \$VirtualNetworkAdapter.VirtualNetwork | Select-Object -first 1"
-            def ipConfig = ""
-            if (doStatic) {
-                ipConfig = "-IPv4AddressType Static -IPv4Address \"${ipAddress}\""
-            } else {
-                ipConfig = "-IPv4AddressType Dynamic"
+            // MORPH-20363: the clone copies every source adapter; each one is set to its own request entry (or
+            // disconnected when the wizard dropped it) in the clone's job, per the plan built from the source.
+            if (!opts.clonePlans?.network) {
+                throw new IllegalArgumentException("Clone of ${cloneVMId} has no network adapter plan")
             }
-            commands << "if (\$VMSubnet) {"
-            commands << "Set-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter -VMNetwork \$VMNetwork -VMSubnet \$VMSubnet ${vlanEnabled ? "-VLanEnabled \$true" : ""} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -VirtualNetwork \$VirtualNetwork -MACAddressType Dynamic ${ipConfig} -IPv6AddressType Dynamic -NoPortClassification -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -JobGroup $virtualNetworkGuid"
-            commands << "} else {"
-            commands << "Set-SCVirtualNetworkAdapter -VirtualNetworkAdapter \$VirtualNetworkAdapter -VMNetwork \$VMNetwork ${vlanEnabled ? "-VLanEnabled \$true" : ""} ${vlanEnabled ? "-VLanID ${vlanId}" : ''} -VirtualNetwork \$VirtualNetwork -MACAddressType Dynamic ${ipConfig} -IPv6AddressType Dynamic -NoPortClassification -EnableVMNetworkOptimization \$false -EnableMACAddressSpoofing \$false -JobGroup $virtualNetworkGuid"
-            commands << "}"
+            commands << "\$VM = Get-SCVirtualMachine -VMMServer localhost -ID \"${cloneVMId}\""
+            commands.addAll(CloneWizardReconciler.forScvmm().cloneJobCommands(opts.clonePlans as Map, virtualNetworkGuid))
             if (hostExternalId) {
                 commands << "\$vmHost = Get-SCVMHost -ID \"$hostExternalId\""
                 def newVMString

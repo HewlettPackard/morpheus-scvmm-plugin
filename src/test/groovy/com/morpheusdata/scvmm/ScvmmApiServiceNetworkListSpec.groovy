@@ -24,7 +24,6 @@ class ScvmmApiServiceNetworkListSpec extends Specification {
 
     static final String LOGICAL = 'Get-SCLogicalNetwork'
     static final String VMNETS = 'Get-SCVMNetwork'
-    static final String DEFINITIONS = 'Get-SCLogicalNetworkDefinition'
 
     List<String> scripts = []
 
@@ -180,18 +179,70 @@ class ScvmmApiServiceNetworkListSpec extends Specification {
 
     // ---------------------------------------------------------------- listNoIsolationVLans
 
-    def "listNoIsolationVLans pages non-isolated logical network definitions 50 at a time"() {
+    def "listNoIsolationVLans pages No-isolation VM networks 50 at a time"() {
         given:
-        respond([(DEFINITIONS): empty(), (LOGICAL): TaskResults.json(logicals('logical-1'))])
+        respond([(VMNETS): empty(), (LOGICAL): TaskResults.json(logicals('logical-1'))])
 
         when:
         svc.listNoIsolationVLans(regionOpts)
 
         then:
         scripts[0].contains("where { \$_.ID -eq 'cloud-region-1' }")
-        scripts[1].contains('Get-SCLogicalNetworkDefinition -VMMServer localhost | where {$_.IsolationType -eq "None"}')
+        scripts[1].contains('Get-SCVMNetwork -VMMServer localhost | where { $_.IsolationType -eq "NoIsolation" }')
         scripts[1].contains('Select-Object -Skip 0 -First 50')
-        scripts[1].contains('where { $_.IsVlanEnabled -eq $true }')
+    }
+
+    def "listNoIsolationVLans reports VM subnet VLANs, then site VLANs, then the bare VM network"() {
+        given:
+        respond([(VMNETS): empty(), (LOGICAL): TaskResults.json(logicals('logical-1'))])
+
+        when:
+        svc.listNoIsolationVLans(opts)
+
+        then: 'VLAN-enabled VLANs of the VM subnet'
+        scripts[1].contains('$subnets = $vmnetwork.VMSubnet.SubnetVLans | where { $_.IsVlanEnabled -eq $true }')
+
+        and: 'otherwise VLAN-enabled sites of the logical network'
+        scripts[1].contains('Get-SCLogicalNetworkDefinition -VMMServer localhost -LogicalNetwork $logicalNetwork | where { $_.IsolationType -eq "None" }')
+        scripts[1].contains('$subnets = $logicalNetworkDef.SubnetVLans | where { $_.IsVlanEnabled -eq $true }')
+
+        and: 'otherwise (untagged / VLAN 0 / no sites) the VM network itself, keyed by its own ID'
+        scripts[1].contains('ID = $vmnetwork.ID.ToString()\n')
+        scripts[1].contains('Subnet = $null')
+
+        and: 'VLAN 0 is no longer skipped'
+        !scripts[1].contains('-not $vlan.VLanId')
+    }
+
+    def "listNoIsolationVLans returns an untagged VM network with no subnet or VLAN"() {
+        given:
+        def untagged = VmmPayloads.vlan(ID: 'vmnet-untagged', Name: 'untagged-net', NetworkName: 'untagged-net', LogicalNetworkID: 'ln-1', Subnet: null, VLanID: null)
+        respond([(VMNETS): [TaskResults.json([untagged]), empty()], (LOGICAL): TaskResults.json(logicals('logical-1'))])
+
+        when:
+        def rtn = svc.listNoIsolationVLans(opts)
+
+        then:
+        rtn.success
+        rtn.networks*.ID == ['vmnet-untagged']
+        rtn.networks[0].Subnet == null
+        rtn.networks[0].VLanID == null
+    }
+
+    def "listNoIsolationVLans keeps one entry per ID when several sites report the same VLAN"() {
+        given:
+        def vlans = [
+            VmmPayloads.vlan(ID: 'net-1-100', LogicalNetworkID: 'ln-1', Subnet: '10.0.100.0/24', VLanID: 100),
+            VmmPayloads.vlan(ID: 'net-1-100', LogicalNetworkID: 'ln-1', Subnet: '10.1.100.0/24', VLanID: 100)
+        ]
+        respond([(VMNETS): [TaskResults.json(vlans), empty()], (LOGICAL): TaskResults.json(logicals('logical-1'))])
+
+        when:
+        def rtn = svc.listNoIsolationVLans(opts)
+
+        then:
+        rtn.networks*.ID == ['net-1-100']
+        rtn.networks[0].Subnet == '10.0.100.0/24'
     }
 
     def "listNoIsolationVLans keeps VLANs whose LogicalNetworkID belongs to a known logical network"() {
@@ -201,7 +252,7 @@ class ScvmmApiServiceNetworkListSpec extends Specification {
             VmmPayloads.vlan(ID: 'net-2-200', LogicalNetworkID: 'ln-2', VLanID: 200),
             VmmPayloads.vlan(ID: 'net-9-900', LogicalNetworkID: 'ln-9', VLanID: 900)
         ]
-        respond([(DEFINITIONS): [TaskResults.json(vlans), empty()], (LOGICAL): TaskResults.json(logicals('logical-1', 'logical-2'))])
+        respond([(VMNETS): [TaskResults.json(vlans), empty()], (LOGICAL): TaskResults.json(logicals('logical-1', 'logical-2'))])
 
         when:
         def rtn = svc.listNoIsolationVLans(opts)
@@ -223,7 +274,7 @@ class ScvmmApiServiceNetworkListSpec extends Specification {
 
     def "listNoIsolationVLans returns success with no networks when the first page is empty"() {
         given:
-        respond([(DEFINITIONS): empty(), (LOGICAL): TaskResults.json(logicals('logical-1'))])
+        respond([(VMNETS): empty(), (LOGICAL): TaskResults.json(logicals('logical-1'))])
 
         expect:
         svc.listNoIsolationVLans(opts) == [success: true, networks: []]
@@ -231,7 +282,7 @@ class ScvmmApiServiceNetworkListSpec extends Specification {
 
     def "listNoIsolationVLans returns success with what it has when a page fails"() {
         given:
-        respond([(DEFINITIONS): TaskResults.fail('timeout'), (LOGICAL): TaskResults.json(logicals('logical-1'))])
+        respond([(VMNETS): TaskResults.fail('timeout'), (LOGICAL): TaskResults.json(logicals('logical-1'))])
 
         expect:
         svc.listNoIsolationVLans(opts) == [success: true, networks: []]
