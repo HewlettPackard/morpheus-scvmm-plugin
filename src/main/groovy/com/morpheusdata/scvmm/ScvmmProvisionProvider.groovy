@@ -1815,7 +1815,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 			fetchedServer.powerState = ComputeServer.PowerState.on
 			def newIpAddress = serverDetails.server?.ipAddress
 			def networkAdapter = findPrimaryNetworkAdapter(serverDetails.server as Map, newIpAddress)
-			fetchedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, networkAdapter)
+			fetchedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, networkAdapter, listNetworkAdapters(serverDetails.server as Map))
             def hostOpts = fetchScvmmConnectionDetails(fetchedServer)
             try {
                 refreshServerPlacement(fetchedServer, hostOpts)
@@ -2735,7 +2735,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         }
     }
 
-    private saveAndGetNetworkInterface(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
+    private saveAndGetNetworkInterface(ComputeServer server, privateIp, publicIp, index, Map networkAdapter, List<Map> allAdapters = null) {
         log.debug("applyComputeServerNetworkIp: ${privateIp}, adapter: ${networkAdapter?.ID}")
 		def rtn = [:]
         ComputeServerInterface netInterface
@@ -2750,34 +2750,32 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                 server.macAddress = macAddress
             }
             log.debug("Setting private ip on server:${server.sshHost}")
-            netInterface = server.interfaces?.find { adapterExternalId && it.externalId == adapterExternalId }
-            if (netInterface == null)
-                netInterface = server.interfaces?.find { it.ipAddress == privateIp }
-
-            if (netInterface == null) {
-                if (index == 0)
-                    netInterface = server.interfaces?.find { it.primaryInterface == true }
-                if (netInterface == null)
-                    netInterface = server.interfaces?.find { it.displayOrder == index }
-                if (netInterface == null)
-                    netInterface = server.interfaces?.size() > index ? server.interfaces[index] : null
+            // the server IP may come from another adapter when slot 0 has no address yet; it must not be stamped on
+            // (or used to pick) the interface bound to this adapter
+            boolean ipOnOtherAdapter = (allAdapters ?: []).any { other ->
+                other && other.ID != adapterExternalId && adapterAddresses(other).contains(privateIp)
             }
+            netInterface = findInterfaceForAdapter(server.interfaces, networkAdapter, ipOnOtherAdapter ? null : privateIp, index as Integer, allAdapters)
             if (netInterface == null) {
                 def interfaceName = server.sourceImage?.interfaceName ?: 'eth0'
                 netInterface = new ComputeServerInterface(
                         name: interfaceName,
-                        ipAddress: privateIp,
                         primaryInterface: true,
                         displayOrder: (server.interfaces?.size() ?: 0) + 1
                 )
-                netInterface.addresses += new NetAddress(type: NetAddress.AddressType.IPV4, address: privateIp)
+                if (!ipOnOtherAdapter) {
+                    netInterface.ipAddress = privateIp
+                    netInterface.addresses += new NetAddress(type: NetAddress.AddressType.IPV4, address: privateIp)
+                }
                 newInterface = true
-            } else {
+            } else if (!ipOnOtherAdapter) {
                 netInterface.ipAddress = privateIp
             }
             if (publicIp) {
                 publicIp = publicIp?.toString().contains("\n") ? publicIp.toString().replace("\n", "") : publicIp.toString()
-                netInterface.publicIpAddress = publicIp
+                if (!ipOnOtherAdapter) {
+                    netInterface.publicIpAddress = publicIp
+                }
                 server.externalIp = publicIp
             }
             // Bind the interface to the SCVMM adapter so VirtualMachineSync matches it by externalId
@@ -2801,29 +2799,92 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         return rtn
     }
 
-	private applyComputeServerNetworkIp(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
-		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, networkAdapter).netInterface
+	/**
+	 * Picks the interface row an SCVMM adapter belongs to: the row already bound to the adapter ID, then a row
+	 * whose IP is one of the adapter's (or the given IP), then - for the slot 0 adapter only - the primary row,
+	 * otherwise the row at the adapter's slot position by displayOrder. Rows bound to another reported adapter
+	 * are never taken.
+	 */
+	protected static ComputeServerInterface findInterfaceForAdapter(List<ComputeServerInterface> interfaces, Map networkAdapter, String ip, Integer index, List<Map> allAdapters = null) {
+		List<ComputeServerInterface> rows = (interfaces ?: []).findAll { it } as List<ComputeServerInterface>
+		if (!rows) {
+			return null
+		}
+		def adapterId = networkAdapter?.ID
+		if (adapterId) {
+			def bound = rows.find { it.externalId == adapterId }
+			if (bound) {
+				return bound
+			}
+		}
+		Set<String> otherAdapterIds = (allAdapters ?: []).findAll { it?.ID && it.ID != adapterId }.collect { it.ID.toString() } as Set
+		List<ComputeServerInterface> free = rows.findAll { !(it.externalId && otherAdapterIds.contains(it.externalId)) }
+
+		Set<String> ips = (networkAdapter ? adapterAddresses(networkAdapter) : []) as Set
+		if (ip) {
+			ips << ip
+		}
+		if (ips) {
+			def byIp = free.find { row ->
+				([row.ipAddress] + (row.addresses?.collect { it.address } ?: [])).findAll { it }.any { ips.contains(it.toString()) }
+			}
+			if (byIp) {
+				return byIp
+			}
+		}
+
+		def slot = networkAdapter?.SlotId?.toString()
+		boolean primaryAdapter = networkAdapter == null || slot == null || slot == '0'
+		if (primaryAdapter) {
+			int position = index ?: 0
+			return (position == 0 ? free.find { it.primaryInterface == true } : null) ?:
+					free.find { it.displayOrder == position } ?:
+					(rows.size() > position && free.contains(rows[position]) ? rows[position] : null)
+		}
+		if (slot.isInteger()) {
+			int position = slot.toInteger()
+			List<ComputeServerInterface> ordered = rows.sort(false) { it.displayOrder ?: 0 }
+			def candidate = ordered.size() > position ? ordered[position] : null
+			return candidate && free.contains(candidate) ? candidate : null
+		}
+		return null
 	}
 
-	private applyNetworkIpAndGetServer(ComputeServer server, privateIp, publicIp, index, Map networkAdapter) {
-		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, networkAdapter).server
+	private static List<String> adapterAddresses(Map adapter) {
+		ScvmmApiService.normalizeAddresses(adapter?.IPv4Addresses) + ScvmmApiService.normalizeAddresses(adapter?.IPv6Addresses)
+	}
+
+	/** The adapters reported by getServerDetails, tolerating ConvertTo-Json collapsing a single adapter to a map. */
+	protected static List<Map> listNetworkAdapters(Map serverDetail) {
+		def raw = serverDetail?.NetworkAdapters
+		return (raw instanceof Map ? [raw] : (raw ?: [])).findAll { it instanceof Map } as List<Map>
+	}
+
+	private applyComputeServerNetworkIp(ComputeServer server, privateIp, publicIp, index, Map networkAdapter, List<Map> allAdapters = null) {
+		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, networkAdapter, allAdapters).netInterface
+	}
+
+	private applyNetworkIpAndGetServer(ComputeServer server, privateIp, publicIp, index, Map networkAdapter, List<Map> allAdapters = null) {
+		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, networkAdapter, allAdapters).server
 	}
 
 	/**
-	 * Picks the SCVMM network adapter that backs the primary interface: prefer the adapter holding the
-	 * detected IP, then SlotId 0, then the first enabled adapter.
+	 * Picks the SCVMM network adapter that backs the primary interface: the SlotId 0 adapter, then the adapter
+	 * holding the detected IP, then the first enabled adapter. A pool or static IP on a secondary NIC is often
+	 * reported before the DHCP lease on slot 0, so the IP alone must not decide which adapter is primary.
 	 */
 	protected static Map findPrimaryNetworkAdapter(Map serverDetail, ipAddress) {
-		List<Map> adapters = (serverDetail?.NetworkAdapters ?: []).findAll { it } as List<Map>
+		List<Map> adapters = listNetworkAdapters(serverDetail)
 		if (!adapters) {
 			return null
 		}
+		def slot0 = adapters.find { it.SlotId?.toString() == '0' }
+		if (slot0) {
+			return slot0
+		}
 		def ip = ipAddress?.toString()?.trim()
-		def byIp = ip ? adapters.find { adapter ->
-			def ips = ScvmmApiService.normalizeAddresses(adapter.IPv4Addresses) + ScvmmApiService.normalizeAddresses(adapter.IPv6Addresses)
-			ips.contains(ip)
-		} : null
-		return byIp ?: adapters.find { it.SlotId?.toString() == '0' } ?: adapters.first()
+		def byIp = ip ? adapters.find { adapter -> adapterAddresses(adapter).contains(ip) } : null
+		return byIp ?: adapters.first()
 	}
 
     @Override
@@ -2880,7 +2941,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 				}
 				def newIpAddress = serverDetail.server?.ipAddress
 				def networkAdapter = findPrimaryNetworkAdapter(serverDetail.server as Map, newIpAddress)
-				def savedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, networkAdapter)
+				def savedServer = applyNetworkIpAndGetServer(fetchedServer, newIpAddress, newIpAddress, 0, networkAdapter, listNetworkAdapters(serverDetail.server as Map))
                 context.async.computeServer.save(savedServer).blockingGet()
                 rtn.success = true
             }

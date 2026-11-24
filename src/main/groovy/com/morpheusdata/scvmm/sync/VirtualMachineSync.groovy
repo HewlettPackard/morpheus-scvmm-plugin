@@ -3,6 +3,7 @@ package com.morpheusdata.scvmm.sync
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.data.DataFilter
+import com.morpheusdata.core.data.DataOrFilter
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.providers.CloudProvider
 import com.morpheusdata.core.util.ComputeUtility
@@ -69,7 +70,12 @@ class VirtualMachineSync {
                 }
                 def serverType = context.async.cloud.findComputeServerTypeByCode("scvmmUnmanaged").blockingGet()
                 def systemNetworks = context.services.cloud.network.list(
-                    new DataQuery().withFilter('category', '=~', "scvmm.network.${cloud.id}.%")
+                    new DataQuery().withFilters(
+                        new DataOrFilter(
+                            new DataFilter('category', '=~', "scvmm.network.${cloud.id}.%"),
+                            new DataFilter('category', '=~', "scvmm.vlan.network.${cloud.id}.%")
+                        )
+                    )
                 )?.collectEntries { [(it.externalId): it] } ?: [:]
 
                 def existingVms = context.async.computeServer.listIdentityProjections(new DataQuery()
@@ -723,9 +729,10 @@ class VirtualMachineSync {
                 def existing = existingById[masterItem.ID]
                 def network = resolveNetworkForAdapter(masterItem, systemNetworks, existing?.network)
                 def isPrimary = getIsPrimary(existing, masterItem, isPrimaryAssigned)
-                def dhcp = (masterItem.IPv4AddressType == 'Dynamic' || masterItem.IPv6AddressType == 'Dynamic')
+                def dhcp = resolveDhcp(masterItem, existing)
                 List<NetAddress> adapterAddresses = buildNetAddresses(masterItem.IPv4Addresses, masterItem.IPv6Addresses)
                 Set<String> allIps = adapterAddresses.collect { it.address } as Set
+                Boolean active = parseAdapterEnabled(masterItem.Enabled)
 
                 if (existing) {
                     def save = false
@@ -735,6 +742,7 @@ class VirtualMachineSync {
                     if (existing.network?.id != network?.id) { existing.network = network; save = true }
                     if (existing.dhcp != dhcp) { existing.dhcp = dhcp; save = true }
                     if (existing.primaryInterface != isPrimary) { existing.primaryInterface = isPrimary; save = true }
+                    if (active != null && existing.active != active) { existing.active = active; save = true }
                     def existingIps = existing.addresses?.collect { it.address } as Set ?: [] as Set
                     if (existingIps != allIps) {
                         existing.addresses = adapterAddresses
@@ -756,6 +764,9 @@ class VirtualMachineSync {
                         primaryInterface: isPrimary,
                         dhcp: dhcp
                     )
+                    if (active != null) {
+                        iface.active = active
+                    }
                     iface.addresses = adapterAddresses
                     context.async.computeServer.computeServerInterface.create([iface], server).blockingGet()
                     if (isPrimary) isPrimaryAssigned = true
@@ -878,7 +889,32 @@ class VirtualMachineSync {
         if (network?.externalId != masterItemNetID && systemNetworks?.get(alternateId)) {
             network = systemNetworks[alternateId]
         }
+        // VLAN-tagged adapters on standard VLAN networks: the network is stored under the bare VM network ID
+        if (!network && masterItem.VirtualNetworkId) {
+            network = systemNetworks?.get(masterItem.VirtualNetworkId)
+        }
         return network
+    }
+
+    /**
+     * IPv6 is always created as Dynamic, so only the IPv4 address type decides DHCP. Static and pool addresses
+     * configured inside the guest are reported by SCVMM as Dynamic, so an interface the appliance set up as
+     * static or pool-assigned stays non-DHCP.
+     */
+    static boolean resolveDhcp(Map masterItem, ComputeServerInterface existing) {
+        def ipv4Type = masterItem?.IPv4AddressType?.toString()
+        boolean dhcp = ipv4Type ? ipv4Type.equalsIgnoreCase('Dynamic') : (masterItem?.IPv6AddressType?.toString()?.equalsIgnoreCase('Dynamic') ?: false)
+        if (dhcp && existing && (existing.poolAssigned || existing.ipMode?.toString()?.toLowerCase() in ['static', 'pool'])) {
+            dhcp = false
+        }
+        return dhcp
+    }
+
+    private static Boolean parseAdapterEnabled(Object enabled) {
+        if (enabled == null || enabled.toString().trim() == '') {
+            return null
+        }
+        return enabled instanceof Boolean ? enabled : enabled.toString().trim().equalsIgnoreCase('true')
     }
 
     private boolean getIsPrimary(ComputeServerInterface iface, Map masterItem, boolean isPrimaryAssigned) {

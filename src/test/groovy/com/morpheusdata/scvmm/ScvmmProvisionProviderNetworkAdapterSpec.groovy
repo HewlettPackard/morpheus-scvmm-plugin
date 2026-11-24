@@ -22,25 +22,41 @@ class ScvmmProvisionProviderNetworkAdapterSpec extends Specification {
         ScvmmProvisionProvider.findPrimaryNetworkAdapter([NetworkAdapters: [null]], '10.0.0.5') == null
     }
 
-    def "prefers the adapter that holds the detected ip address"() {
-        given:
+    def "prefers slot 0 even when the detected ip belongs to a secondary adapter"() {
+        given: 'slot 1 has its pool address before slot 0 has a DHCP lease'
         def detail = [NetworkAdapters: [
-            adapter('nic-0', 0, '00:15:5D:00:00:01', ['10.0.0.4']),
-            adapter('nic-1', 1, '00:15:5D:00:00:02', ['10.0.0.5'])
+            adapter('nic-1', 1, '00:15:5D:00:00:02', ['10.0.0.5']),
+            adapter('nic-0', 0, '00:15:5D:00:00:01')
         ]]
 
         when:
         def result = ScvmmProvisionProvider.findPrimaryNetworkAdapter(detail, '10.0.0.5')
 
         then:
-        result.ID == 'nic-1'
-        result.MacAddress == '00:15:5D:00:00:02'
+        result.ID == 'nic-0'
+        result.MacAddress == '00:15:5D:00:00:01'
+    }
+
+    def "prefers the adapter holding the detected ip when there is no slot 0"() {
+        given:
+        def detail = [NetworkAdapters: [
+            adapter('nic-1', 1, '00:15:5D:00:00:02', ['10.0.0.4']),
+            adapter('nic-2', 2, '00:15:5D:00:00:03', ['10.0.0.5'])
+        ]]
+
+        expect:
+        ScvmmProvisionProvider.findPrimaryNetworkAdapter(detail, '10.0.0.5').ID == 'nic-2'
+    }
+
+    def "accepts a ConvertTo-Json collapsed single adapter map"() {
+        expect:
+        ScvmmProvisionProvider.findPrimaryNetworkAdapter([NetworkAdapters: adapter('nic-0', 0, 'AA')], null).ID == 'nic-0'
     }
 
     def "matches ipv6 addresses and tolerates surrounding whitespace"() {
         given:
         def detail = [NetworkAdapters: [
-            adapter('nic-0', 0, '00:15:5D:00:00:01'),
+            adapter('nic-2', 2, '00:15:5D:00:00:01'),
             adapter('nic-1', 1, '00:15:5D:00:00:02', [], ['fe80::1'])
         ]]
 
@@ -51,7 +67,7 @@ class ScvmmProvisionProviderNetworkAdapterSpec extends Specification {
     def "matches when ConvertTo-Json collapsed the address arrays into strings"() {
         given:
         def detail = [NetworkAdapters: [
-            [ID: 'nic-0', SlotId: 0, MacAddress: '00:15:5D:00:00:01', IPv4Addresses: '10.0.0.4', IPv6Addresses: ''],
+            [ID: 'nic-2', SlotId: 2, MacAddress: '00:15:5D:00:00:01', IPv4Addresses: '10.0.0.4', IPv6Addresses: ''],
             [ID: 'nic-1', SlotId: 1, MacAddress: '00:15:5D:00:00:02', IPv4Addresses: '10.0.0.5 10.0.0.6', IPv6Addresses: 'fe80::2']
         ]]
 
@@ -59,7 +75,7 @@ class ScvmmProvisionProviderNetworkAdapterSpec extends Specification {
         ScvmmProvisionProvider.findPrimaryNetworkAdapter(detail, '10.0.0.6').ID == 'nic-1'
         ScvmmProvisionProvider.findPrimaryNetworkAdapter(detail, 'fe80::2').ID == 'nic-1'
         // a single character must never match as an address
-        ScvmmProvisionProvider.findPrimaryNetworkAdapter(detail, '5').ID == 'nic-0'
+        ScvmmProvisionProvider.findPrimaryNetworkAdapter(detail, '5').ID == 'nic-2'
     }
 
     def "falls back to slot 0 when no adapter reports the ip yet"() {

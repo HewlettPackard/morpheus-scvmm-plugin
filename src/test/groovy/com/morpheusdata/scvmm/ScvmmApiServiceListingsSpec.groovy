@@ -168,6 +168,43 @@ class ScvmmApiServiceListingsSpec extends Specification {
         rtn.server.NetworkAdapters instanceof Map
     }
 
+    def "getServerDetails takes the server ip from the slot 0 adapter, not the first adapter with an address"() {
+        given:
+        respondAll(TaskResults.json([VmmPayloads.serverDetail(ipAddress: '10.0.1.200', internalIp: '10.0.1.200', NetworkAdapters: [
+            VmmPayloads.vmAdapter(ID: 'nic-1', SlotId: 1, IPv4Addresses: ['10.0.1.200'], IPv4AddressType: 'Static'),
+            VmmPayloads.vmAdapter(ID: 'nic-0', SlotId: 0, IPv4Addresses: slot0Ips)
+        ])]))
+
+        when:
+        def rtn = svc.getServerDetails(opts, 'vm-1')
+
+        then:
+        rtn.server.ipAddress == expected
+        rtn.server.internalIp == expected
+        rtn.server.anyIpAddress == any
+        scripts[0].contains('Sort-Object SlotId')
+
+        where:
+        slot0Ips      || expected    | any
+        []            || ''          | '10.0.1.200'
+        ['10.0.0.52'] || '10.0.0.52' | '10.0.0.52'
+    }
+
+    def "getServerDetails uses the first adapter with an address when there is no slot 0"() {
+        given:
+        respondAll(TaskResults.json([VmmPayloads.serverDetail(NetworkAdapters: [
+            VmmPayloads.vmAdapter(ID: 'nic-2', SlotId: 2, IPv4Addresses: ['10.0.2.5']),
+            VmmPayloads.vmAdapter(ID: 'nic-1', SlotId: 1, IPv4Addresses: [])
+        ])]))
+
+        when:
+        def rtn = svc.getServerDetails(opts, 'vm-1')
+
+        then:
+        rtn.server.ipAddress == '10.0.2.5'
+        rtn.server.anyIpAddress == '10.0.2.5'
+    }
+
     def "getServerDetails reports success with a null server for an empty payload"() {
         given:
         respondAll(TaskResults.raw('[]'))
