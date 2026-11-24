@@ -314,8 +314,8 @@ class HostSyncSpec extends Specification {
 		''                      | true   || true     | 0
 	}
 
-	def "updateHostStats still saves stats for a maintenance status when the plugin API has no maintenanceMode field"() {
-		given: 'a plain ComputeServer: the field exists only on plugin-api 1.6+'
+	def "updateHostStats flags a plain ComputeServer in maintenance and still saves its stats"() {
+		given:
 		def server = serverWithCapacity([:])
 
 		when:
@@ -324,7 +324,8 @@ class HostSyncSpec extends Specification {
 		then:
 		1 * computeServerService.save(server) >> Single.just(server)
 		server.maxMemory == 999L
-		HostMaintenanceMode.isInMaintenance(server) == HostMaintenanceMode.isSupported(server)
+		server.maintenanceMode == true
+		HostMaintenanceMode.apiSupported
 	}
 
 	def "execute removes every host when none is left in the cloud's host group"() {

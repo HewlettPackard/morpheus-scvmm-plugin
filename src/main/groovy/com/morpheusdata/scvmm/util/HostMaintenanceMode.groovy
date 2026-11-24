@@ -6,8 +6,9 @@ import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.model.ComputeServer
 
 /**
- * ComputeServer.maintenanceMode only exists from morpheus-plugin-api 1.6. The plugin is built against 1.5.1 and also
- * runs on appliances that ship it, so every read, write and query filter goes through here and is a no-op there.
+ * ComputeServer.maintenanceMode only exists from morpheus-plugin-api 1.6 (appliance 9.2). The plugin requires 1.6, so
+ * the field is expected; every read, write and query filter still goes through here so a model without it is a no-op
+ * rather than a MissingPropertyException that would stop host stats sync and placement.
  */
 class HostMaintenanceMode {
 

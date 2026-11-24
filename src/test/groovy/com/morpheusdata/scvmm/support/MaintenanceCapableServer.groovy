@@ -3,8 +3,8 @@ package com.morpheusdata.scvmm.support
 import com.morpheusdata.model.ComputeServer
 
 /**
- * ComputeServer as shipped by morpheus-plugin-api 1.6+, which adds maintenanceMode. The build targets 1.5.1, where the
- * field is missing, so maintenance-mode specs use this to behave the same against either API.
+ * ComputeServer with an explicit maintenanceMode, so maintenance-mode specs do not depend on which plugin-api jar
+ * resolves (a stale local 1.5.1 build lacks the field).
  */
 class MaintenanceCapableServer extends ComputeServer {
     Boolean maintenanceMode
