@@ -12,6 +12,7 @@ import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
+import com.morpheusdata.scvmm.util.HostMaintenanceMode
 
 class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 
@@ -241,8 +242,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 				.withFilter('enabled', true)
 				.withFilter('powerState', 'on')
 				.withFilter('category', "scvmm.host.${tmpZone.id}")
-				// Hosts in SCVMM maintenance mode cannot take new VMs; NULL is a host not synced since the flag existed.
-				.withFilters(new DataOrFilter(new DataFilter('maintenanceMode', false), new DataFilter('maintenanceMode', null)))
+		HostMaintenanceMode.excludeHostsInMaintenance(query)
 
 		if(resourcePoolId) {
 			query.withJoin('resourcePool')

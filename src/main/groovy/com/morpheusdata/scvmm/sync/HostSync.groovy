@@ -12,6 +12,7 @@ import com.morpheusdata.model.projection.ComputeServerIdentityProjection
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
+import com.morpheusdata.scvmm.util.HostMaintenanceMode
 import groovy.util.logging.Slf4j
 
 /**
@@ -252,15 +253,8 @@ class HostSync {
                 server.powerState = powerState
                 updates = true
             }
-            // SCVMM reports maintenance through OverallStateString ("In Maintenance Mode"). A payload without a
-            // status keeps the previous value so a sparse response cannot take a drained host out of maintenance.
-            String rawStatus = hostMap.status?.toString()?.trim()
-            if (rawStatus) {
-                boolean inMaintenance = rawStatus.equalsIgnoreCase('In Maintenance Mode')
-                if (server.maintenanceMode != inMaintenance) {
-                    server.maintenanceMode = inMaintenance
-                    updates = true
-                }
+            if (HostMaintenanceMode.applyScvmmStatus(server, hostMap.status)) {
+                updates = true
             }
             if (hostMap.name && hostMap.name != server.hostname) {
                 server.hostname = hostMap.name

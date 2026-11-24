@@ -19,6 +19,7 @@ import com.morpheusdata.core.data.DataOrFilter
 import com.morpheusdata.model.Account
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.CloudPool
+import com.morpheusdata.scvmm.util.HostMaintenanceMode
 import spock.lang.Specification
 import spock.lang.Subject
 import spock.lang.Unroll
@@ -49,6 +50,12 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
         cloudService.pool >> poolService
         services.computeServer >> computeServerService
         services.virtualImage >> virtualImageService
+    }
+
+    boolean apiSupportedBefore = HostMaintenanceMode.apiSupported
+
+    def cleanup() {
+        HostMaintenanceMode.apiSupported = apiSupportedBefore
     }
 
     @Unroll
@@ -119,6 +126,7 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
 
     def "scvmmHost lists enabled powered-on hosts of the cloud sorted by name"() {
         given:
+        HostMaintenanceMode.apiSupported = true
         cloudService.get(1L) >> zone()
         DataQuery captured
 

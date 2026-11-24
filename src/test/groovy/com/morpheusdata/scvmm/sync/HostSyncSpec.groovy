@@ -10,7 +10,9 @@ import com.morpheusdata.model.ComputeCapacityInfo
 import com.morpheusdata.model.ComputeServer
 import com.morpheusdata.model.ComputeServerType
 import com.morpheusdata.model.OsType
+import com.morpheusdata.scvmm.support.MaintenanceCapableServer
 import com.morpheusdata.scvmm.support.VmmPayloads
+import com.morpheusdata.scvmm.util.HostMaintenanceMode
 import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Single
 import spock.lang.Specification
@@ -119,7 +121,7 @@ class HostSyncSpec extends Specification {
 				usedStorage: 0L
 			)
 		] + overrides
-		new ComputeServer(values)
+		overrides.containsKey('maintenanceMode') ? new MaintenanceCapableServer(values) : new ComputeServer(values)
 	}
 
 	// ---------------------------------------------------------------- execute / remove / stats / JD-6
@@ -310,6 +312,19 @@ class HostSyncSpec extends Specification {
 		'In Maintenance Mode'   | true   || true     | 0
 		null                    | true   || true     | 0
 		''                      | true   || true     | 0
+	}
+
+	def "updateHostStats still saves stats for a maintenance status when the plugin API has no maintenanceMode field"() {
+		given: 'a plain ComputeServer: the field exists only on plugin-api 1.6+'
+		def server = serverWithCapacity([:])
+
+		when:
+		hostSync.updateHostStats(server, VmmPayloads.host(status: 'In Maintenance Mode', totalMemory: '999'))
+
+		then:
+		1 * computeServerService.save(server) >> Single.just(server)
+		server.maxMemory == 999L
+		HostMaintenanceMode.isInMaintenance(server) == HostMaintenanceMode.isSupported(server)
 	}
 
 	def "execute removes every host when none is left in the cloud's host group"() {

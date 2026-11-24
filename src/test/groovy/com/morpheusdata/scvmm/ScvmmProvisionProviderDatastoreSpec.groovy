@@ -21,6 +21,8 @@ import com.morpheusdata.model.Datastore
 import com.morpheusdata.model.StorageVolume
 import com.morpheusdata.scvmm.sync.DatastoresSync
 import com.morpheusdata.scvmm.sync.RegisteredStorageFileSharesSync
+import com.morpheusdata.scvmm.support.MaintenanceCapableServer
+import com.morpheusdata.scvmm.util.HostMaintenanceMode
 import spock.lang.Specification
 import spock.lang.Subject
 import spock.lang.Unroll
@@ -60,6 +62,12 @@ class ScvmmProvisionProviderDatastoreSpec extends Specification {
         services.storageVolume >> storageVolumeService
         permissionService.listAccessibleResources(*_) >> []
         storageVolumeService.find(_) >> null
+    }
+
+    boolean apiSupportedBefore = HostMaintenanceMode.apiSupported
+
+    def cleanup() {
+        HostMaintenanceMode.apiSupported = apiSupportedBefore
     }
 
     // ----------------------------------------------------------------------------------------------------------
@@ -435,9 +443,7 @@ class ScvmmProvisionProviderDatastoreSpec extends Specification {
 
     def "an explicitly selected host in maintenance mode is rejected before any datastore lookup"() {
         given:
-        def host = hostWithMemory('HYPERV-M', 64L)
-        host.id = 7L
-        host.maintenanceMode = true
+        def host = new MaintenanceCapableServer(id: 7L, name: 'HYPERV-M', maintenanceMode: true)
 
         when:
         provider.getHostAndDatastore(cloud, account, null, '7', null, 'auto', 10L, null, 8L)
@@ -450,8 +456,9 @@ class ScvmmProvisionProviderDatastoreSpec extends Specification {
         e.message.contains('maintenance mode')
     }
 
-    def "automatic host selection excludes hosts in maintenance mode"() {
+    def "automatic host selection excludes hosts in maintenance mode only when the plugin API has the field (#apiSupported)"() {
         given:
+        HostMaintenanceMode.apiSupported = apiSupported
         def ds = datastore(1L, 'D1', 500L, [])
         DataQuery hostQuery
 
@@ -461,8 +468,13 @@ class ScvmmProvisionProviderDatastoreSpec extends Specification {
         then:
         1 * computeServerService.list(_) >> { DataQuery q -> hostQuery = q; [hostWithMemory('HYPERV-A', 64L)] }
         def maintenance = hostQuery.filters.find { it instanceof DataOrFilter }
-        maintenance.value*.name == ['maintenanceMode', 'maintenanceMode']
-        maintenance.value*.value == [false, null]
+        maintenance?.value*.name == expectedNames
+        maintenance?.value*.value == expectedValues
+
+        where:
+        apiSupported || expectedNames                          | expectedValues
+        true         || ['maintenanceMode', 'maintenanceMode'] | [false, null]
+        false        || null                                   | null
     }
 
     def "an auto-selected datastore falls back to the next candidate when the first has no eligible host"() {
@@ -516,8 +528,8 @@ class ScvmmProvisionProviderDatastoreSpec extends Specification {
 
     def "a clone pinned to a maintenance host #why"() {
         given:
-        def pinned = new ComputeServer(id: 7L, name: 'HYPERV-M', maintenanceMode: true)
-        def current = new ComputeServer(id: currentId, name: 'HYPERV-NOW', maintenanceMode: currentInMaintenance)
+        def pinned = new MaintenanceCapableServer(id: 7L, name: 'HYPERV-M', maintenanceMode: true)
+        def current = new MaintenanceCapableServer(id: currentId, name: 'HYPERV-NOW', maintenanceMode: currentInMaintenance)
         computeServerService.get(7L) >> pinned
         computeServerService.get(8L) >> current
         def source = new ComputeServer(id: 50L, parentServer: new ComputeServer(id: currentId))

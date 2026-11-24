@@ -31,6 +31,7 @@ import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import com.morpheusdata.scvmm.sync.DatastoresSync
 import com.morpheusdata.scvmm.sync.RegisteredStorageFileSharesSync
+import com.morpheusdata.scvmm.util.HostMaintenanceMode
 import com.morpheusdata.scvmm.util.MorpheusUtil
 import groovy.json.JsonSlurper
 
@@ -2252,11 +2253,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
     protected void assertCloneHostEligible(ComputeServer sourceServer, hostId) {
         hostId = hostId && hostId.toString().trim() != '' && hostId.toString() != 'null' ? hostId : null
         ComputeServer pinnedHost = hostId ? context.services.computeServer.get(hostId.toLong()) : null
-        if (!pinnedHost?.maintenanceMode) {
+        if (!HostMaintenanceMode.isInMaintenance(pinnedHost)) {
             return
         }
         ComputeServer sourceHost = sourceServer?.parentServer?.id ? context.services.computeServer.get(sourceServer.parentServer.id) : null
-        if (sourceHost && sourceHost.id != pinnedHost.id && !sourceHost.maintenanceMode) {
+        if (sourceHost && sourceHost.id != pinnedHost.id && !HostMaintenanceMode.isInMaintenance(sourceHost)) {
             throw new Exception("Cannot clone to host ${pinnedHost.name}: it is in maintenance mode. The source VM now runs on " +
                     "${sourceHost.name}; select that host or another host that is not in maintenance mode.")
         }
@@ -2284,7 +2285,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
         // If host specified by the user, then use it
         node = hostId ? context.services.computeServer.get(hostId.toLong()) : null
         // SCVMM rejects a build on a host in maintenance mode, so fail with a clear message instead.
-        if (node?.maintenanceMode) {
+        if (HostMaintenanceMode.isInMaintenance(node)) {
             throw new Exception("Host ${node.name} is not eligible for placement: it is in maintenance mode")
         }
         if (!datastore) {
@@ -2352,13 +2353,12 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             // Pick the host with the most free memory that has the datastore, never one in maintenance mode.
             def candidates = datastoreAutoSelected && datastoreCandidates ? datastoreCandidates : [datastore]
             for (candidate in candidates) {
-                def nodes = context.services.computeServer.list(new DataQuery()
+                def nodes = context.services.computeServer.list(HostMaintenanceMode.excludeHostsInMaintenance(new DataQuery()
                         .withFilter('cloud.id', cloud.id)
                         .withFilter('enabled', true)
                         .withFilter('computeServerType.code', 'scvmmHypervisor')
                         .withFilter('volumes.datastore.id', candidate.id)
-                        .withFilter('powerState', ComputeServer.PowerState.on)
-                        .withFilters(new DataOrFilter(new DataFilter('maintenanceMode', false), new DataFilter('maintenanceMode', null))))
+                        .withFilter('powerState', ComputeServer.PowerState.on)))
                 nodes = nodes.findAll { it.capacityInfo?.maxMemory - it.capacityInfo?.usedMemory > maxMemory }?.sort { -(it.capacityInfo?.maxMemory - it.capacityInfo?.usedMemory) }
                 if (nodes) {
                     node = nodes.first()

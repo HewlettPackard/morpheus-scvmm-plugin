@@ -25,6 +25,7 @@ import com.morpheusdata.request.ResizeRequest
 import com.morpheusdata.response.ServiceResponse
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
 import com.morpheusdata.scvmm.support.Domain
+import com.morpheusdata.scvmm.support.MaintenanceCapableServer
 import com.morpheusdata.scvmm.support.ScvmmSpec
 import io.reactivex.rxjava3.core.Single
 
@@ -314,7 +315,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
     def "runWorkload clone fails before placement when the pinned host is in maintenance mode"() {
         given:
         cloneParent(false)
-        node.maintenanceMode = true
+        node = new MaintenanceCapableServer(id: 5L, name: 'hyperv-1', externalId: 'host-1', maintenanceMode: true)
         workload.setConfigProperty('hostId', 5L)
 
         when:
