@@ -65,8 +65,13 @@ java {
 
 repositories {
     mavenLocal()
-    mavenCentral()
-    maven { url "https://plugins.gradle.org/m2/" }
+    // Central and the Gradle Plugin Portal (which redirects misses to Central) never host snapshots. Skipping them for
+    // snapshot lookups keeps Central's rate limiting (HTTP 429 on CI runners) from failing snapshot resolution.
+    mavenCentral { mavenContent { releasesOnly() } }
+    maven {
+        url "https://plugins.gradle.org/m2/"
+        mavenContent { releasesOnly() }
+    }
     maven { url "https://nexus.morpheusdata.com/content/repositories/snapshots" }
     maven { url "https://nexus.morpheusdata.com/content/repositories/releases" }
     maven { url "https://nexus.morpheusdata.com/content/repositories/publicReleases" }
