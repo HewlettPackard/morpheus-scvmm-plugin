@@ -19,6 +19,7 @@ import com.morpheusdata.core.data.DataOrFilter
 import com.morpheusdata.model.Account
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.model.CloudPool
+import com.morpheusdata.scvmm.util.HostMaintenanceMode
 import spock.lang.Specification
 import spock.lang.Subject
 import spock.lang.Unroll
@@ -49,6 +50,12 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
         cloudService.pool >> poolService
         services.computeServer >> computeServerService
         services.virtualImage >> virtualImageService
+    }
+
+    boolean apiSupportedBefore = HostMaintenanceMode.apiSupported
+
+    def cleanup() {
+        HostMaintenanceMode.apiSupported = apiSupportedBefore
     }
 
     @Unroll
@@ -119,6 +126,7 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
 
     def "scvmmHost lists enabled powered-on hosts of the cloud sorted by name"() {
         given:
+        HostMaintenanceMode.apiSupported = true
         cloudService.get(1L) >> zone()
         DataQuery captured
 
@@ -135,8 +143,10 @@ class ScvmmOptionSourceProviderResourcePoolSpec extends Specification {
         captured.sort == 'name'
         captured.order == DataQuery.SortOrder.asc
         !captured.joins.contains('resourcePool')
-        // plan said "maintenance-mode hosts excluded": there is no maintenance filter, only enabled + powerState
-        !captured.filters*.name.any { it?.toString()?.toLowerCase()?.contains('maintenance') }
+        // MORPH-18569 parity: hosts in maintenance mode are excluded, hosts never flagged (NULL) are kept
+        def maintenance = captured.filters.find { it instanceof DataOrFilter }
+        maintenance.value*.name == ['maintenanceMode', 'maintenanceMode']
+        maintenance.value*.value == [false, null]
     }
 
     def "scvmmHost narrows the list to the selected resource pool (#source)"() {

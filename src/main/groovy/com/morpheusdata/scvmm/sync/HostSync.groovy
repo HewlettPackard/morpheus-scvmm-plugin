@@ -12,6 +12,7 @@ import com.morpheusdata.model.projection.ComputeServerIdentityProjection
 import com.morpheusdata.scvmm.ScvmmApiService
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
+import com.morpheusdata.scvmm.util.HostMaintenanceMode
 import groovy.util.logging.Slf4j
 
 /**
@@ -61,26 +62,25 @@ class HostSync {
                     }
                 }
                 log.debug("HostSync: objList?.size(): ${objList?.size()}")
-                if (objList?.size() > 0) {
-                    def existingItems = context.async.computeServer.listIdentityProjections(
-                            new DataQuery().withFilter("zone.id", cloud.id).withFilter("computeServerType.code", 'scvmmHypervisor')
-                    )
-                    SyncTask<ComputeServerIdentityProjection, Map, ComputeServer> syncTask = new SyncTask<>(existingItems, objList as Collection<Map>)
-                    syncTask.addMatchFunction { ComputeServerIdentityProjection domainObject, Map cloudItem ->
-                        domainObject.externalId == cloudItem?.id
-                    }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<ComputeServerIdentityProjection, Map>> updateItems ->
-                        context.async.computeServer.listById(updateItems.collect { it.existingItem.id } as List<Long>)
-                    }.onAdd { itemsToAdd ->
-                        log.debug("HostSync, onAdd: ${itemsToAdd}")
-                        addMissingHosts(itemsToAdd, clusters)
-                    }.onUpdate { List<SyncTask.UpdateItem<ComputeServer, Map>> updateItems ->
-                        log.debug("HostSync, onUpdate: ${updateItems}")
-                        updateMatchedHosts(updateItems, clusters)
-                    }.onDelete { List<ComputeServerIdentityProjection> removeItems ->
-                        log.debug("HostSync, onDelete: ${removeItems}")
-                        removeMissingHosts(removeItems)
-                    }.start()
-                }
+                // Sync even when no host is in scope, so hosts that left the cloud's host group/cluster are removed.
+                def existingItems = context.async.computeServer.listIdentityProjections(
+                        new DataQuery().withFilter("zone.id", cloud.id).withFilter("computeServerType.code", 'scvmmHypervisor')
+                )
+                SyncTask<ComputeServerIdentityProjection, Map, ComputeServer> syncTask = new SyncTask<>(existingItems, objList as Collection<Map>)
+                syncTask.addMatchFunction { ComputeServerIdentityProjection domainObject, Map cloudItem ->
+                    domainObject.externalId == cloudItem?.id
+                }.withLoadObjectDetailsFromFinder { List<SyncTask.UpdateItemDto<ComputeServerIdentityProjection, Map>> updateItems ->
+                    context.async.computeServer.listById(updateItems.collect { it.existingItem.id } as List<Long>)
+                }.onAdd { itemsToAdd ->
+                    log.debug("HostSync, onAdd: ${itemsToAdd}")
+                    addMissingHosts(itemsToAdd, clusters)
+                }.onUpdate { List<SyncTask.UpdateItem<ComputeServer, Map>> updateItems ->
+                    log.debug("HostSync, onUpdate: ${updateItems}")
+                    updateMatchedHosts(updateItems, clusters)
+                }.onDelete { List<ComputeServerIdentityProjection> removeItems ->
+                    log.debug("HostSync, onDelete: ${removeItems}")
+                    removeMissingHosts(removeItems)
+                }.start()
             } else {
                 log.error "Error in getting hosts : ${listResults}"
             }
@@ -113,16 +113,9 @@ class HostSync {
                 if (maxSocketsChanged) {
                     existingItem.maxSockets = maxSockets
                 }
-                if (clusterChanged || osChanged) {
-                    def savedServer = context.async.computeServer.save(existingItem).blockingGet()
-                    log.debug("savedServer?.id: ${savedServer?.id}")
-                    if (savedServer) {
-                        updateHostStats(savedServer, masterItem)
-                    }
-                    log.debug("updated host")
-                } else if (maxSocketsChanged) {
-                    context.async.computeServer.save(existingItem).blockingGet()
-                }
+                // Stats, power state, hostname and maintenance mode are refreshed on every sync; the metadata
+                // changes above are persisted by the same save.
+                updateHostStats(existingItem, masterItem, clusterChanged || osChanged || maxSocketsChanged)
             }
         } catch (e) {
             log.error("HostSync: updateMatchedHosts error: ${e}", e)
@@ -207,7 +200,7 @@ class HostSync {
         return osType
     }
 
-    def updateHostStats(ComputeServer server, hostMap) {
+    def updateHostStats(ComputeServer server, hostMap, boolean pendingChanges = false) {
         log.debug("HostSync: updateHostStats: hostMap: ${hostMap}")
         try {
             //storage
@@ -223,7 +216,7 @@ class HostSync {
             //power state
             def powerState = hostMap.hyperVState == 'Running' ? 'on' : hostMap.hyperVState == 'Stopped' ? 'off' : 'unknown'
             //save it all
-            def updates = false
+            def updates = pendingChanges
             if (powerState == 'on') {
                 updates = true
             }
@@ -256,8 +249,11 @@ class HostSync {
                 capacityInfo.usedStorage = maxUsedStorage
                 updates = true
             }
-            if (server.powerState != powerState) {
+            if (server.powerState?.toString() != powerState) {
                 server.powerState = powerState
+                updates = true
+            }
+            if (HostMaintenanceMode.applyScvmmStatus(server, hostMap.status)) {
                 updates = true
             }
             if (hostMap.name && hostMap.name != server.hostname) {

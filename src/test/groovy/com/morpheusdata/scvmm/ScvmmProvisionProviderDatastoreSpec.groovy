@@ -4,6 +4,7 @@ package com.morpheusdata.scvmm
 
 import com.morpheusdata.core.MorpheusContext
 import com.morpheusdata.core.MorpheusServices
+import com.morpheusdata.core.data.DataOrFilter
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.synchronous.MorpheusSynchronousResourcePermissionService
 import com.morpheusdata.core.synchronous.MorpheusSynchronousStorageVolumeService
@@ -20,6 +21,8 @@ import com.morpheusdata.model.Datastore
 import com.morpheusdata.model.StorageVolume
 import com.morpheusdata.scvmm.sync.DatastoresSync
 import com.morpheusdata.scvmm.sync.RegisteredStorageFileSharesSync
+import com.morpheusdata.scvmm.support.MaintenanceCapableServer
+import com.morpheusdata.scvmm.util.HostMaintenanceMode
 import spock.lang.Specification
 import spock.lang.Subject
 import spock.lang.Unroll
@@ -59,6 +62,12 @@ class ScvmmProvisionProviderDatastoreSpec extends Specification {
         services.storageVolume >> storageVolumeService
         permissionService.listAccessibleResources(*_) >> []
         storageVolumeService.find(_) >> null
+    }
+
+    boolean apiSupportedBefore = HostMaintenanceMode.apiSupported
+
+    def cleanup() {
+        HostMaintenanceMode.apiSupported = apiSupportedBefore
     }
 
     // ----------------------------------------------------------------------------------------------------------
@@ -426,6 +435,118 @@ class ScvmmProvisionProviderDatastoreSpec extends Specification {
         then:
         1 * storageVolumeService.find({ filterValue(it, 'datastore.id') == 1L }) >> new StorageVolume(volumePath: 'C:\\ClusterStorage\\Volume1')
         volumePath == 'C:\\ClusterStorage\\Volume1'
+    }
+
+    // ----------------------------------------------------------------------------------------------------------
+    // getHostAndDatastore – SCVMM maintenance mode (MORPH-18569 parity)
+    // ----------------------------------------------------------------------------------------------------------
+
+    def "an explicitly selected host in maintenance mode is rejected before any datastore lookup"() {
+        given:
+        def host = new MaintenanceCapableServer(id: 7L, name: 'HYPERV-M', maintenanceMode: true)
+
+        when:
+        provider.getHostAndDatastore(cloud, account, null, '7', null, 'auto', 10L, null, 8L)
+
+        then:
+        1 * computeServerService.get(7L) >> host
+        0 * datastoreService.list(_)
+        def e = thrown(Exception)
+        e.message.contains('HYPERV-M')
+        e.message.contains('maintenance mode')
+    }
+
+    def "automatic host selection excludes hosts in maintenance mode only when the plugin API has the field (#apiSupported)"() {
+        given:
+        HostMaintenanceMode.apiSupported = apiSupported
+        def ds = datastore(1L, 'D1', 500L, [])
+        DataQuery hostQuery
+
+        when:
+        provider.getHostAndDatastore(cloud, account, null, null, ds, null, 10L, null, 8L)
+
+        then:
+        1 * computeServerService.list(_) >> { DataQuery q -> hostQuery = q; [hostWithMemory('HYPERV-A', 64L)] }
+        def maintenance = hostQuery.filters.find { it instanceof DataOrFilter }
+        maintenance?.value*.name == expectedNames
+        maintenance?.value*.value == expectedValues
+
+        where:
+        apiSupported || expectedNames                          | expectedValues
+        true         || ['maintenanceMode', 'maintenanceMode'] | [false, null]
+        false        || null                                   | null
+    }
+
+    def "an auto-selected datastore falls back to the next candidate when the first has no eligible host"() {
+        given: 'the largest datastore is only reachable from hosts that are in maintenance (filtered out)'
+        def biggest = datastore(1L, 'BIG', 500L, [])
+        def next = datastore(2L, 'NEXT', 300L, [])
+        def healthy = hostWithMemory('HYPERV-OK', 64L)
+        datastoreService.list(_) >> [biggest, next]
+        computeServerService.list({ filterValue(it, 'volumes.datastore.id') == 1L }) >> []
+        computeServerService.list({ filterValue(it, 'volumes.datastore.id') == 2L }) >> [healthy]
+
+        when:
+        def (node, picked, volumePath, highlyAvailable) = provider.getHostAndDatastore(cloud, account, null, null, null, 'auto', 10L, null, 8L)
+
+        then:
+        node.is(healthy)
+        picked.is(next)
+    }
+
+    def "an explicitly selected datastore is never replaced when it has no eligible host"() {
+        given:
+        def chosen = datastore(1L, 'CHOSEN', 500L, [])
+
+        when:
+        provider.getHostAndDatastore(cloud, account, null, null, chosen, null, 10L, null, 8L)
+
+        then:
+        1 * computeServerService.list({ filterValue(it, 'volumes.datastore.id') == 1L }) >> []
+        0 * datastoreService.list(_)
+        def e = thrown(Exception)
+        e.message == 'Unable to obtain datastore and host for options selected'
+    }
+
+    // ----------------------------------------------------------------------------------------------------------
+    // assertCloneHostEligible
+    // ----------------------------------------------------------------------------------------------------------
+
+    def "a clone pinned to a healthy host or to no host is allowed"() {
+        given:
+        computeServerService.get(7L) >> hostWithMemory('HYPERV-OK', 64L)
+
+        when:
+        provider.assertCloneHostEligible(new ComputeServer(id: 50L), hostId)
+
+        then:
+        noExceptionThrown()
+
+        where:
+        hostId << [null, '', 'null', '7', 7L]
+    }
+
+    def "a clone pinned to a maintenance host #why"() {
+        given:
+        def pinned = new MaintenanceCapableServer(id: 7L, name: 'HYPERV-M', maintenanceMode: true)
+        def current = new MaintenanceCapableServer(id: currentId, name: 'HYPERV-NOW', maintenanceMode: currentInMaintenance)
+        computeServerService.get(7L) >> pinned
+        computeServerService.get(8L) >> current
+        def source = new ComputeServer(id: 50L, parentServer: new ComputeServer(id: currentId))
+
+        when:
+        provider.assertCloneHostEligible(source, '7')
+
+        then:
+        def e = thrown(Exception)
+        e.message.contains('HYPERV-M')
+        e.message.contains('HYPERV-NOW') == mentionsCurrentHost
+
+        where:
+        why                                                   | currentId | currentInMaintenance || mentionsCurrentHost
+        'points at the healthy host the source migrated to'   | 8L        | false                || true
+        'reports the host as unavailable when source is there' | 7L        | true                 || false
+        'reports unavailable when the new host is also drained' | 8L      | true                 || false
     }
 
     // ----------------------------------------------------------------------------------------------------------

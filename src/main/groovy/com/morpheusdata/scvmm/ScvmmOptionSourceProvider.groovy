@@ -12,6 +12,7 @@ import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.model.Cloud
 import com.morpheusdata.scvmm.logging.LogInterface
 import com.morpheusdata.scvmm.logging.PrefixedLoggerFactory
+import com.morpheusdata.scvmm.util.HostMaintenanceMode
 
 class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 
@@ -241,6 +242,7 @@ class ScvmmOptionSourceProvider extends AbstractOptionSourceProvider {
 				.withFilter('enabled', true)
 				.withFilter('powerState', 'on')
 				.withFilter('category', "scvmm.host.${tmpZone.id}")
+		HostMaintenanceMode.excludeHostsInMaintenance(query)
 
 		if(resourcePoolId) {
 			query.withJoin('resourcePool')
