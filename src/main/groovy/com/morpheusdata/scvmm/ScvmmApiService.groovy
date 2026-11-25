@@ -23,7 +23,38 @@ class ScvmmApiService {
     }
     static defaultRoot = 'C:\\morpheus'
 
+    protected ComputeServer resolveControllerServer(opts) {
+        if (!(opts instanceof Map)) {
+            return null
+        }
+        if (opts.controllerServer instanceof ComputeServer) {
+            return (ComputeServer) opts.controllerServer
+        }
+        if (opts.controllerServer == null && opts.controllerServerId != null) {
+            loadControllerServer(opts)
+            if (opts.controllerServer instanceof ComputeServer) {
+                return (ComputeServer) opts.controllerServer
+            }
+        }
+        return null
+    }
+
     def executeCommand(command, opts) {
+        ComputeServer controllerServer = resolveControllerServer(opts)
+        if (controllerServer?.id && controllerServer.agentInstalled == true) {
+            return morpheusContext.executeCommandOnServer(
+                    controllerServer,
+                    command?.toString(),
+                    null,
+                    opts.sshUsername?.toString(),
+                    opts.sshPassword?.toString(),
+                    null,
+                    null,
+                    null,
+                    null,
+                    false
+            ).blockingGet()
+        }
         def winrmPort = opts.sshPort && opts.sshPort != 22 ? opts.sshPort : 5985
         def output = morpheusContext.executeWindowsCommand(opts.sshHost, winrmPort?.toInteger(), opts.sshUsername, opts.sshPassword, command, null, false).blockingGet()
         return output
@@ -3431,20 +3462,7 @@ For (\$i=0; \$i -le 10; \$i++) {
     }
 
     def getScvmmZoneOpts(MorpheusContext context, Cloud cloud) {
-        def cloudConfig = cloud.getConfigMap()
-        def keyPair = context.services.keyPair.find(new DataQuery().withFilter("accountId", cloud?.account?.id))
-        return [
-                account      : cloud.account,
-                zoneConfig   : cloudConfig,
-                zone         : cloud,
-                zoneId       : cloud?.id,
-                publicKey    : keyPair?.publicKey,
-                privateKey   : keyPair?.privateKey,
-                //controllerServer       : controllerServer,
-                rootSharePath: cloudConfig['libraryShare'],
-                regionCode   : cloud.regionCode
-        ]
-        //baseBoxProvisionService: scvmmProvisionService]
+        return getScvmmCloudOpts(context, cloud, null)
     }
 
     def getScvmmCloudOpts(MorpheusContext context, Cloud cloud, controllerServer) {
@@ -3485,24 +3503,25 @@ For (\$i=0; \$i -le 10; \$i++) {
         def out = executeCommand(command, opts)
 
         if (out.data) {
-            def payload = out.data
-            if (!out.data.startsWith('[')) {
-                payload = "[${out.data}]"
-            }
+            def payload = out.data.toString().trim()
+            if (payload) {
+                if (!payload.startsWith('[')) {
+                    payload = "[${payload}]"
+                }
 
-            log.debug "Received: ${JsonOutput.prettyPrint(payload)}"
-            
-            out.data = new groovy.json.JsonSlurper().parseText(payload)
+                log.debug "Received: ${JsonOutput.prettyPrint(payload)}"
+
+                out.data = new groovy.json.JsonSlurper().parseText(payload)
+            } else {
+                out.data = ''
+            }
         }
         out
     }
 
     def loadControllerServer(opts) {
-        /*if (opts.controllerServerId && opts.scvmmProvisionService) {
-            opts.controllerServer = opts.scvmmProvisionService.loadControllerServer(opts.controllerServerId)
-        }*/
-        if (opts.controllerServerId) {
-            opts.controllerServer = morpheusContext.services.computeServer.get(opts.controllerServerId)
+        if (opts?.controllerServerId) {
+            opts.controllerServer = morpheusContext?.services?.computeServer?.get(opts.controllerServerId)
         }
     }
 
