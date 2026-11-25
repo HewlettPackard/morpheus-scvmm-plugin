@@ -93,7 +93,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
                 serverFolder: 'morpheus\\morpheus_server_10', maxCores: 2L, maxMemory: 4294967296L, maxTotalStorage: 42949672960L,
                 containerConfig: [networkId: 'net-c']] }
         provider.getScvmmServerOpts(_) >> { args -> [vmId: args[0].externalId, externalId: args[0].externalId] }
-        apiService.getScvmmCloudOpts(*_) >> [zoneId: 1L]
+        apiService.getScvmmCloudOpts(*_) >> { args -> [zoneId: 1L, diskRoot: 'C:\\disks', controllerServer: args[2]] }
         apiService.getScvmmZoneOpts(*_) >> [zoneId: 1L, diskRoot: 'C:\\disks']
         apiService.getScvmmControllerOpts(*_) >> [sshHost: 'scvmm.local']
         apiService.createServer(_) >> { args -> createOpts = new LinkedHashMap(args[0]); createAnswer() }
@@ -117,6 +117,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         createOpts.volumePath == 'C:\\ClusterStorage\\Volume1'
         createOpts.volumePaths == ['C:\\ClusterStorage\\Volume1']
         createOpts.highlyAvailable == false
+        createOpts.controllerServer.is(controller)
         createOpts.controllerServerId == 2L
         createOpts.sshHost == 'scvmm.local'
         createOpts.networkId == 'net-c'
@@ -208,7 +209,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         def rtn = provider.runWorkload(workload, request, [:])
 
         then:
-        1 * apiService.insertContainerImage({ it.image.virtualImageId == 50L && it.image.containerType == 'vhd' }) >> [success: true, imageId: 'vhd-up']
+        1 * apiService.insertContainerImage({ it.image.virtualImageId == 50L && it.image.containerType == 'vhd' && it.controllerServer.is(controller) }) >> [success: true, imageId: 'vhd-up']
         1 * imageLocationService.create(_ as VirtualImageLocation)
         rtn.success
         createOpts.imageId == 'vhd-up'
@@ -349,6 +350,7 @@ class ScvmmProvisionProviderWorkloadSpec extends ScvmmSpec {
         createOpts.cloneBaseOpts.cloudInitIsoNeeded == true
         createOpts.cloneBaseOpts.cloudConfigBytes == iso
         createOpts.cloneBaseOpts.diskFolder == 'C:\\disks\\morpheus\\morpheus_server_10'
+        createOpts.cloneBaseOpts.clonedScvmmOpts.controllerServer.is(controller)
         workload.getConfigMap().cloneParentDvdCleanup == [externalId: 'src-vm', deleteIso: 'C:\\disks\\src\\config.iso']
     }
 

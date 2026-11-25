@@ -670,7 +670,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             opts.server = workload.server
 
             def controllerNode = pickScvmmController(cloud)
-            scvmmOpts = apiService.getScvmmZoneOpts(context, cloud)
+            scvmmOpts = apiService.getScvmmCloudOpts(context, cloud, controllerNode)
             scvmmOpts.name = server.name
             def imageId
             def virtualImage = server.sourceImage
@@ -941,7 +941,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
                         def initOptions = constructCloudInitOptions(parentContainer, workloadRequest, opts.installAgent, scvmmOpts.platform, virtualImage, scvmmOpts.networkConfig, scvmmOpts.licenses, scvmmOpts, parentCloudConfig)
                         // Cloud-init installs the clone's agent only if it will re-run (cache cleared); else Morpheus does over SSH
                         cloneAgentViaCloudInit = (cloudInitCacheReset && opts.installAgent == true && initOptions.installAgent == false)
-                        def clonedScvmmOpts = apiService.getScvmmZoneOpts(context, cloud)
+                        def clonedScvmmOpts = apiService.getScvmmCloudOpts(context, cloud, controllerNode)
                         clonedScvmmOpts += apiService.getScvmmControllerOpts(cloud, controllerNode)
                         clonedScvmmOpts += getScvmmContainerOpts(parentContainer)
                         cloneBaseOpts.imageFolderName = clonedScvmmOpts.serverFolder
