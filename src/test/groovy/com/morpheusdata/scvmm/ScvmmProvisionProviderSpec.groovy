@@ -154,6 +154,97 @@ class ScvmmProvisionProviderSpec extends Specification {
         response.success
     }
 
+    def "getServerDetails binds eth0 to slot 0 when a secondary pool NIC reported its IP first"() {
+        given: 'slot 0 is DHCP without a lease yet; slot 1 already has its pool address'
+        ComputeServer fresh = freshServer()
+        def eth0 = new ComputeServerInterface(id: 1L, name: 'eth0', primaryInterface: true, displayOrder: 0, ipMode: 'dhcp')
+        def eth1 = new ComputeServerInterface(id: 2L, name: 'eth1', primaryInterface: false, displayOrder: 1, ipMode: 'pool')
+        def eth2 = new ComputeServerInterface(id: 3L, name: 'eth2', primaryInterface: false, displayOrder: 2, ipMode: 'static')
+        fresh.interfaces = [eth0, eth1, eth2]
+        def adapters = [
+            [ID: 'slot0', SlotId: 0, MacAddress: '00:15:5D:E9:E0:08', IPv4Addresses: []],
+            [ID: 'slot1', SlotId: 1, MacAddress: '00:1D:D8:B7:1C:0C', IPv4Addresses: ['10.0.1.200']],
+            [ID: 'slot2', SlotId: 2, MacAddress: '00:1D:D8:B7:1C:0D', IPv4Addresses: ['10.0.1.205']]
+        ]
+        List<List> saved = []
+
+        when:
+        provider.getServerDetails(new ComputeServer(id: 25L))
+
+        then:
+        1 * asyncComputeServer.get(25L) >> Maybe.just(staleServer())
+        1 * apiService.checkServerReady(_, 'vm-25') >> [success: true, server: [ipAddress: '10.0.1.200', NetworkAdapters: adapters]]
+        2 * syncComputeServer.find(_ as DataQuery) >>> [fresh, freshServer()]
+        1 * interfaceService.save(_) >> { args -> saved << args[0]; Single.just(true) }
+        0 * interfaceService.create(*_)
+        1 * asyncComputeServer.bulkSave([fresh]) >> Single.just(successfulSave(fresh))
+        1 * apiService.getServerDetails(_, 'vm-25') >> [success: true, server: [:]]
+
+        and: 'eth0 stays primary and is bound to slot 0, without slot 1 IP'
+        saved == [[eth0]]
+        eth0.externalId == 'slot0'
+        eth0.macAddress == '00:15:5D:E9:E0:08'
+        eth0.primaryInterface
+        !eth0.addresses
+        eth1.externalId == null
+
+        and: 'the server keeps a reachable IP and the slot 0 MAC'
+        fresh.internalIp == '10.0.1.200'
+        fresh.macAddress == '00:15:5D:E9:E0:08'
+    }
+
+    def "getServerDetails stamps the slot 0 IP on eth0 when slot 0 has its lease"() {
+        given:
+        ComputeServer fresh = freshServer()
+        def eth0 = new ComputeServerInterface(id: 1L, name: 'eth0', primaryInterface: true, displayOrder: 0)
+        def eth1 = new ComputeServerInterface(id: 2L, name: 'eth1', primaryInterface: false, displayOrder: 1)
+        fresh.interfaces = [eth0, eth1]
+        def adapters = [
+            [ID: 'slot1', SlotId: 1, MacAddress: 'BB', IPv4Addresses: ['10.0.1.200']],
+            [ID: 'slot0', SlotId: 0, MacAddress: 'AA', IPv4Addresses: ['10.0.0.52']]
+        ]
+
+        when:
+        provider.getServerDetails(new ComputeServer(id: 25L))
+
+        then:
+        1 * asyncComputeServer.get(25L) >> Maybe.just(staleServer())
+        1 * apiService.checkServerReady(_, 'vm-25') >> [success: true, server: [ipAddress: '10.0.0.52', NetworkAdapters: adapters]]
+        2 * syncComputeServer.find(_ as DataQuery) >>> [fresh, freshServer()]
+        1 * interfaceService.save([eth0]) >> Single.just(true)
+        1 * asyncComputeServer.bulkSave([fresh]) >> Single.just(successfulSave(fresh))
+        1 * apiService.getServerDetails(_, 'vm-25') >> [success: true, server: [:]]
+        eth0.externalId == 'slot0'
+        eth0.addresses*.address == ['10.0.0.52']
+        fresh.internalIp == '10.0.0.52'
+    }
+
+    def "getServerDetails keeps the IP on eth0 when slot 0 and another adapter report the same address"() {
+        given: 'the same address on two separate networks'
+        ComputeServer fresh = freshServer()
+        def eth0 = new ComputeServerInterface(id: 1L, name: 'eth0', primaryInterface: true, displayOrder: 0)
+        def eth1 = new ComputeServerInterface(id: 2L, name: 'eth1', primaryInterface: false, displayOrder: 1)
+        fresh.interfaces = [eth0, eth1]
+        def adapters = [
+            [ID: 'slot0', SlotId: 0, MacAddress: 'AA', IPv4Addresses: ['192.168.0.10']],
+            [ID: 'slot1', SlotId: 1, MacAddress: 'BB', IPv4Addresses: ['192.168.0.10']]
+        ]
+
+        when:
+        provider.getServerDetails(new ComputeServer(id: 25L))
+
+        then:
+        1 * asyncComputeServer.get(25L) >> Maybe.just(staleServer())
+        1 * apiService.checkServerReady(_, 'vm-25') >> [success: true, server: [ipAddress: '192.168.0.10', NetworkAdapters: adapters]]
+        2 * syncComputeServer.find(_ as DataQuery) >>> [fresh, freshServer()]
+        1 * interfaceService.save([eth0]) >> Single.just(true)
+        1 * asyncComputeServer.bulkSave([fresh]) >> Single.just(successfulSave(fresh))
+        1 * apiService.getServerDetails(_, 'vm-25') >> [success: true, server: [:]]
+        eth0.externalId == 'slot0'
+        eth0.addresses*.address == ['192.168.0.10']
+        eth0.publicIpAddress == '192.168.0.10'
+    }
+
     def "getServerDetails does not save anything when checkServerReady fails"() {
         given:
         ComputeServer stale = staleServer()

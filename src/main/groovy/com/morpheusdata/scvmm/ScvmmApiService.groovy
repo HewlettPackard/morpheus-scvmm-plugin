@@ -380,7 +380,7 @@ class ScvmmApiService {
             def out = wrapExecuteCommand(generateCommandString("""\$vm = Get-SCVirtualMachine -VMMServer localhost -ID \"${externalId}\";
 \$report = @()
 if(\$vm) { 
-	\$networkAdapters = Get-SCVirtualNetworkAdapter -VMMServer localhost -VM \$vm | where { \$_.Enabled -eq \$true }; 
+	\$networkAdapters = Get-SCVirtualNetworkAdapter -VMMServer localhost -VM \$vm | where { \$_.Enabled -eq \$true } | Sort-Object SlotId; 
 	
 	\$data = New-Object PSObject -property @{
 		ID=\$vm.ID
@@ -396,12 +396,6 @@ if(\$vm) {
 		NetworkAdapters=@()
 	}
 	foreach (\$na in \$networkAdapters) {
-		foreach (\$ip in \$na.IPv4Addresses) {
-			if([string]::IsNullOrEmpty(\$data.ipAddress)) {
-				\$data.ipAddress = \$ip
-				\$data.internalIp = \$ip
-			}
-		}
 		\$nic = New-Object PSObject -property @{
 			ID               = \$na.ID
 			Name             = \$na.Name
@@ -429,6 +423,7 @@ if(\$vm) {
             if (out.success) {
                 def serverData = out.data?.size() > 0 ? out.data.first() : null
                 if (!serverData?.Error) {
+                    applyPrimaryAdapterIp(serverData as Map)
                     rtn.server = serverData
                     rtn.success = out.success
                 } else {
@@ -1996,6 +1991,36 @@ Status=\$job.Status.toString()
         return rtn
     }
 
+    /**
+     * The server IP must come from the slot 0 adapter: a pool or static address on a secondary NIC is reported
+     * by SCVMM straight away, long before the DHCP lease on slot 0, and would otherwise be taken as the primary
+     * IP. Sets {@code ipAddress}/{@code internalIp} from slot 0 (or the first adapter with an IPv4 when there is
+     * no slot 0) and {@code firstIpv4Address} to the first IPv4 on any adapter, in slot order.
+     */
+    static void applyPrimaryAdapterIp(Map serverData) {
+        List<Map> adapters = serverData?.NetworkAdapters ?: []
+        if (!adapters) {
+            return
+        }
+        adapters = adapters.sort(false) { it.SlotId != null ? it.SlotId as Integer : Integer.MAX_VALUE }
+        String firstIpv4Address = null
+        for (Map adapter in adapters) {
+            def ips = normalizeAddresses(adapter.IPv4Addresses)
+            if (ips) {
+                firstIpv4Address = ips.first()
+                break
+            }
+        }
+        Map slot0 = adapters.find { it.SlotId == 0 }
+        String primaryIp = slot0 ? normalizeAddresses(slot0.IPv4Addresses)?.find { it } : firstIpv4Address
+        serverData.ipAddress = primaryIp ?: ''
+        serverData.internalIp = primaryIp ?: ''
+        serverData.firstIpv4Address = firstIpv4Address ?: ''
+    }
+
+    /** Polls to wait for the slot 0 IP before accepting an IP from another adapter. */
+    static final int PRIMARY_IP_GRACE_ATTEMPTS = 60
+
     def checkServerReady(opts, vmId) {
         def rtn = [success: false]
         try {
@@ -2016,13 +2041,18 @@ Status=\$job.Status.toString()
                 if (serverDetail.success == true && serverDetail.server) {
                     def scvmmIp = serverDetail.server?.internalIp
                     def ipAddress = scvmmIp ?: server?.externalIp
+                    def firstIpv4Address = serverDetail.server?.firstIpv4Address
+                    if (!ipAddress && firstIpv4Address && (!waitForIp || attempts >= PRIMARY_IP_GRACE_ATTEMPTS)) {
+                        log.info("checkServerReady: ${vmId} slot 0 adapter has no IPv4 after ${attempts} attempts; using ${firstIpv4Address} from another adapter")
+                        ipAddress = firstIpv4Address
+                    }
                     def adapterSummary = describeAdapters(serverDetail.server?.NetworkAdapters)
                     if (ipAddress) {
-                        log.debug("checkServerReady: ${vmId} ip ${ipAddress} found via ${scvmmIp ? 'SCVMM adapter' : 'Morpheus externalIp'}; adapters=${adapterSummary}")
+                        log.debug("checkServerReady: ${vmId} ip ${ipAddress} found via ${scvmmIp ? 'SCVMM slot 0 adapter' : (ipAddress == firstIpv4Address ? 'another SCVMM adapter' : 'Morpheus externalIp')}; adapters=${adapterSummary}")
                         server.internalIp = ipAddress
                     } else {
-                        def waitMsg = "checkServerReady: ${vmId} (${server?.name}) attempt ${attempts + 1}/300 - waiting for SCVMM to report a guest IPv4 " +
-                                "on any enabled adapter (reported via Hyper-V integration services); state=${serverDetail.server?.VirtualMachineState}, " +
+                        def waitMsg = "checkServerReady: ${vmId} (${server?.name}) attempt ${attempts + 1}/300 - waiting for SCVMM to report a guest IPv4 on the slot 0 adapter " +
+                                "(reported via Hyper-V integration services); state=${serverDetail.server?.VirtualMachineState}, " +
                                 "status=${serverDetail.server?.Status}, morpheus externalIp=${server?.externalIp ?: 'none'}, adapters=${adapterSummary}"
                         // Surface progress at INFO roughly once a minute without flooding the log
                         if (attempts % 12 == 0) {

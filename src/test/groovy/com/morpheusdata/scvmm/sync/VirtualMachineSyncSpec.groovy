@@ -3,6 +3,7 @@
 package com.morpheusdata.scvmm.sync
 
 import com.morpheusdata.core.BulkSaveResult
+import com.morpheusdata.core.data.DataOrFilter
 import com.morpheusdata.core.data.DataQuery
 import com.morpheusdata.core.MorpheusStorageVolumeTypeService
 import com.morpheusdata.core.compute.MorpheusComputeServerInterfaceService
@@ -640,6 +641,29 @@ class VirtualMachineSyncSpec extends ScvmmSpec {
         removeQuery.filters.find { it.name == 'computeServerType.code' }.value == 'scvmmUnmanaged'
     }
 
+    def "execute resolves new adapters against standard and No-isolation networks of the cloud"() {
+        given:
+        def existing = matched()
+        def noIso = Domain.network(id: 8L, externalId: 'vmnet-noiso', category: "scvmm.vlan.network.${cloud.id}.1")
+        executeFixture(existing, matched(id: 11L, externalId: 'vm-gone'),
+            [vm(), vm(ID: 'vm-new', Name: 'brand-new', NetworkAdapters: [VmmPayloads.vmAdapter(VirtualNetworkId: 'vmnet-noiso')])])
+        asyncComputeServerService.remove(_) >> Single.just(true)
+        DataQuery networkQuery
+        List<ComputeServerInterface> created
+
+        when:
+        sync.execute(true)
+
+        then:
+        1 * networkService.list(_) >> { args -> networkQuery = args[0]; [noIso] }
+        1 * asyncComputeServerService.create(_) >> { args -> Single.just(args[0]) }
+        1 * interfaceService.create(_, { it.externalId == 'vm-new' }) >> { args -> created = args[0]; Single.just(true) }
+        created[0].network.is(noIso)
+        networkQuery.filters.size() == 1
+        networkQuery.filters[0] instanceof DataOrFilter
+        (networkQuery.filters[0] as DataOrFilter).value*.value as Set == ["scvmm.network.${cloud.id}.%", "scvmm.vlan.network.${cloud.id}.%"]*.toString() as Set
+    }
+
     def "execute with createNew=false does not import unknown VMs"() {
         given:
         def existing = matched()
@@ -843,5 +867,89 @@ class VirtualMachineSyncSpec extends ScvmmSpec {
         then:
         1 * interfaceService.create(_, _) >> { args -> created = args[0]; Single.just(true) }
         !created[0].primaryInterface
+    }
+
+    def "syncInterfaces resolves the network of a VLAN-tagged adapter stored under the bare VM network ID"() {
+        given:
+        List<ComputeServerInterface> created
+
+        when:
+        sync.syncInterfaces(matched(interfaces: []), [VmmPayloads.vmAdapter(VLanID: 251)], ['vmnet-1': vnet])
+
+        then:
+        1 * interfaceService.create(_, _) >> { args -> created = args[0]; Single.just(true) }
+        created[0].network.is(vnet)
+        created[0].vlanId == '251'
+    }
+
+    def "syncInterfaces fills in the missing network of an existing interface from the bare VM network ID"() {
+        given:
+        def nic = Domain.nic(externalId: 'nic-1', macAddress: '00:15:5D:00:00:01', vlanId: '251', network: null, dhcp: true, primaryInterface: true, active: true)
+
+        when:
+        def changed = sync.syncInterfaces(matched(interfaces: [nic]), [VmmPayloads.vmAdapter(VLanID: 251)], ['vmnet-1': vnet])
+
+        then:
+        1 * interfaceService.save([nic]) >> Single.just(true)
+        changed
+        nic.network.is(vnet)
+    }
+
+    def "syncInterfaces sets active from the adapter Enabled flag on #path"() {
+        given:
+        def nic = Domain.nic(externalId: 'nic-1', macAddress: '00:15:5D:00:00:01', vlanId: '0', network: vnet, dhcp: true, primaryInterface: true, active: true)
+        def server = matched(interfaces: path == 'update' ? [nic] : [])
+        List<ComputeServerInterface> created
+
+        when:
+        sync.syncInterfaces(server, [VmmPayloads.vmAdapter(Enabled: enabled)], ['vmnet-1': vnet])
+
+        then:
+        (path == 'update' ? saves : 0) * interfaceService.save([nic]) >> Single.just(true)
+        (path == 'create' ? 1 : 0) * interfaceService.create(_, _) >> { args -> created = args[0]; Single.just(true) }
+        (path == 'update' ? nic : created[0]).active == expected
+
+        where:
+        path     | enabled | saves || expected
+        'update' | false   | 1     || false
+        'update' | true    | 0     || true
+        'update' | null    | 0     || true
+        'create' | false   | 0     || false
+        'create' | true    | 0     || true
+        'create' | null    | 0     || true
+    }
+
+    def "resolveDhcp is #expected for IPv4 #v4 / IPv6 #v6 on an interface with ipMode #ipMode, poolAssigned #pool"() {
+        given:
+        def nic = ipMode == 'none' ? null : Domain.nic(ipMode: ipMode, poolAssigned: pool)
+
+        expect:
+        VirtualMachineSync.resolveDhcp([IPv4AddressType: v4, IPv6AddressType: v6], nic) == expected
+
+        where:
+        v4        | v6        | ipMode   | pool  || expected
+        'Static'  | 'Dynamic' | 'none'   | false || false
+        'Dynamic' | 'Dynamic' | 'none'   | false || true
+        null      | 'Dynamic' | 'none'   | false || true
+        'Dynamic' | 'Dynamic' | 'static' | false || false
+        'Dynamic' | 'Dynamic' | 'pool'   | false || false
+        'Dynamic' | 'Dynamic' | null     | true  || false
+        'Dynamic' | 'Dynamic' | 'dhcp'   | false || true
+        'Static'  | 'Dynamic' | 'dhcp'   | false || false
+    }
+
+    def "syncInterfaces clears the DHCP flag of a pool-assigned interface whose adapter is Static in SCVMM"() {
+        given:
+        def nic = Domain.nic(externalId: 'nic-1', macAddress: '00:15:5D:00:00:01', vlanId: '0', network: vnet, dhcp: true,
+                             primaryInterface: true, active: true, addresses: [], ipMode: 'pool', poolAssigned: true)
+
+        when:
+        def changed = sync.syncInterfaces(matched(interfaces: [nic]),
+            [VmmPayloads.vmAdapter(IPv4AddressType: 'Static', IPv6AddressType: 'Dynamic')], ['vmnet-1': vnet])
+
+        then:
+        1 * interfaceService.save([nic]) >> Single.just(true)
+        changed
+        !nic.dhcp
     }
 }
