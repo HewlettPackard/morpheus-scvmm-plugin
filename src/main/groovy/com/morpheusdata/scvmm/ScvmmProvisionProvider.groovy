@@ -2751,25 +2751,22 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
             }
             log.debug("Setting private ip on server:${server.sshHost}")
             // the server IP may come from another adapter when slot 0 has no address yet; it must not be stamped on
-            // (or used to pick) the interface bound to this adapter
-            boolean ipOnOtherAdapter = (allAdapters ?: []).any { other ->
-                other && other.ID != adapterExternalId && adapterAddresses(other).contains(privateIp)
-            }
+            // (or used to pick) the interface bound to this adapter. An IP the adapter itself reports always counts
+            // as its own, even when another adapter on a separate network reports the same address.
+            boolean ipOnOtherAdapter = networkAdapter != null && !adapterAddresses(networkAdapter).contains(privateIp) &&
+                    (allAdapters ?: []).any { other -> other && other.ID != adapterExternalId && adapterAddresses(other).contains(privateIp) }
             netInterface = findInterfaceForAdapter(server.interfaces, networkAdapter, ipOnOtherAdapter ? null : privateIp, index as Integer, allAdapters)
             if (netInterface == null) {
                 def interfaceName = server.sourceImage?.interfaceName ?: 'eth0'
                 netInterface = new ComputeServerInterface(
                         name: interfaceName,
-                        primaryInterface: true,
+                        primaryInterface: adapterRank(networkAdapter, allAdapters) == 0,
                         displayOrder: (server.interfaces?.size() ?: 0) + 1
                 )
-                if (!ipOnOtherAdapter) {
-                    netInterface.ipAddress = privateIp
-                    netInterface.addresses += new NetAddress(type: NetAddress.AddressType.IPV4, address: privateIp)
-                }
                 newInterface = true
-            } else if (!ipOnOtherAdapter) {
-                netInterface.ipAddress = privateIp
+            }
+            if (!ipOnOtherAdapter) {
+                setInterfaceIpv4(netInterface, privateIp)
             }
             if (publicIp) {
                 publicIp = publicIp?.toString().contains("\n") ? publicIp.toString().replace("\n", "") : publicIp.toString()
@@ -2801,9 +2798,11 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 
 	/**
 	 * Picks the interface row an SCVMM adapter belongs to: the row already bound to the adapter ID, then a row
-	 * whose IP is one of the adapter's (or the given IP), then - for the slot 0 adapter only - the primary row,
-	 * otherwise the row at the adapter's slot position by displayOrder. Rows bound to another reported adapter
-	 * are never taken.
+	 * whose address is one of the adapter's (or the given IP), then - for the primary adapter only - the primary
+	 * row, otherwise the row with the same rank by displayOrder as the adapter has by SlotId. Ranks are used
+	 * instead of raw slot numbers because both slot IDs and display orders can have gaps after a NIC is removed;
+	 * the positional match is only made when there are as many rows as adapters. Rows bound to another reported
+	 * adapter are never taken.
 	 */
 	protected static ComputeServerInterface findInterfaceForAdapter(List<ComputeServerInterface> interfaces, Map networkAdapter, String ip, Integer index, List<Map> allAdapters = null) {
 		List<ComputeServerInterface> rows = (interfaces ?: []).findAll { it } as List<ComputeServerInterface>
@@ -2826,42 +2825,60 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		}
 		if (ips) {
 			def byIp = free.find { row ->
-				([row.ipAddress] + (row.addresses?.collect { it.address } ?: [])).findAll { it }.any { ips.contains(it.toString()) }
+				(row.addresses?.collect { it.address } ?: []).findAll { it }.any { ips.contains(it) }
 			}
 			if (byIp) {
 				return byIp
 			}
 		}
 
-		def slot = networkAdapter?.SlotId?.toString()
-		boolean primaryAdapter = networkAdapter == null || slot == null || slot == '0'
-		if (primaryAdapter) {
+		int rank = adapterRank(networkAdapter, allAdapters)
+		if (rank == 0) {
 			int position = index ?: 0
 			return (position == 0 ? free.find { it.primaryInterface == true } : null) ?:
 					free.find { it.displayOrder == position } ?:
 					(rows.size() > position && free.contains(rows[position]) ? rows[position] : null)
 		}
-		if (slot.isInteger()) {
-			int position = slot.toInteger()
-			List<ComputeServerInterface> ordered = rows.sort(false) { it.displayOrder ?: 0 }
-			def candidate = ordered.size() > position ? ordered[position] : null
-			return candidate && free.contains(candidate) ? candidate : null
+		if (rank > 0 && rows.size() == allAdapters.size()) {
+			def candidate = rows.sort(false) { it.displayOrder ?: 0 }[rank]
+			return free.contains(candidate) ? candidate : null
 		}
 		return null
+	}
+
+	/**
+	 * Position of the adapter among the reported adapters ordered by SlotId; 0 means it backs the primary
+	 * interface. An adapter without a slot, or a call without the adapter list, is treated as primary.
+	 * Returns -1 when the adapter is not in the list.
+	 */
+	protected static int adapterRank(Map networkAdapter, List<Map> allAdapters) {
+		if (networkAdapter == null || networkAdapter.SlotId == null || !allAdapters) {
+			return 0
+		}
+		List<Map> ordered = allAdapters.findAll { it?.SlotId != null }.sort(false) { it.SlotId as Integer }
+		return ordered.findIndexOf { it.ID == networkAdapter.ID }
+	}
+
+	/** Records the IPv4 address on the interface's address list, replacing an existing IPv4 entry. */
+	private static void setInterfaceIpv4(ComputeServerInterface iface, String ip) {
+		List<NetAddress> addresses = (iface.addresses ?: []) as List<NetAddress>
+		NetAddress ipv4 = addresses.find { it.type == NetAddress.AddressType.IPV4 }
+		if (ipv4) {
+			ipv4.address = ip
+		} else {
+			addresses << new NetAddress(type: NetAddress.AddressType.IPV4, address: ip)
+		}
+		iface.addresses = addresses
 	}
 
 	private static List<String> adapterAddresses(Map adapter) {
 		ScvmmApiService.normalizeAddresses(adapter?.IPv4Addresses) + ScvmmApiService.normalizeAddresses(adapter?.IPv6Addresses)
 	}
 
-	/** The adapters reported by getServerDetails, tolerating ConvertTo-Json collapsing a single adapter to a map. */
+	/** The adapters reported by getServerDetails. */
 	protected static List<Map> listNetworkAdapters(Map serverDetail) {
-		def raw = serverDetail?.NetworkAdapters
-		return (raw instanceof Map ? [raw] : (raw ?: [])).findAll { it instanceof Map } as List<Map>
-	}
-
-	private applyComputeServerNetworkIp(ComputeServer server, privateIp, publicIp, index, Map networkAdapter, List<Map> allAdapters = null) {
-		return saveAndGetNetworkInterface(server, privateIp, publicIp, index, networkAdapter, allAdapters).netInterface
+		List<Map> adapters = serverDetail?.NetworkAdapters ?: []
+		return adapters.findAll { it }
 	}
 
 	private applyNetworkIpAndGetServer(ComputeServer server, privateIp, publicIp, index, Map networkAdapter, List<Map> allAdapters = null) {
@@ -2878,7 +2895,7 @@ class ScvmmProvisionProvider extends AbstractProvisionProvider implements Worklo
 		if (!adapters) {
 			return null
 		}
-		def slot0 = adapters.find { it.SlotId?.toString() == '0' }
+		def slot0 = adapters.find { it.SlotId == 0 }
 		if (slot0) {
 			return slot0
 		}

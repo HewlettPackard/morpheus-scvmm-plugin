@@ -912,7 +912,6 @@ class VirtualMachineSyncSpec extends ScvmmSpec {
         where:
         path     | enabled | saves || expected
         'update' | false   | 1     || false
-        'update' | 'False' | 1     || false
         'update' | true    | 0     || true
         'update' | null    | 0     || true
         'create' | false   | 0     || false

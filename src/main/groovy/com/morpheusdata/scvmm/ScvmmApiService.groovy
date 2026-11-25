@@ -1995,28 +1995,27 @@ Status=\$job.Status.toString()
      * The server IP must come from the slot 0 adapter: a pool or static address on a secondary NIC is reported
      * by SCVMM straight away, long before the DHCP lease on slot 0, and would otherwise be taken as the primary
      * IP. Sets {@code ipAddress}/{@code internalIp} from slot 0 (or the first adapter with an IPv4 when there is
-     * no slot 0) and {@code anyIpAddress} to the first IPv4 on any adapter.
+     * no slot 0) and {@code firstIpv4Address} to the first IPv4 on any adapter, in slot order.
      */
     static void applyPrimaryAdapterIp(Map serverData) {
-        def rawAdapters = serverData?.NetworkAdapters
-        List<Map> adapters = (rawAdapters instanceof Map ? [rawAdapters] : (rawAdapters ?: [])).findAll { it instanceof Map } as List<Map>
+        List<Map> adapters = serverData?.NetworkAdapters ?: []
         if (!adapters) {
             return
         }
-        adapters = adapters.sort(false) { a -> a.SlotId?.toString()?.isInteger() ? a.SlotId.toString().toInteger() : Integer.MAX_VALUE }
-        String anyIp = null
+        adapters = adapters.sort(false) { it.SlotId != null ? it.SlotId as Integer : Integer.MAX_VALUE }
+        String firstIpv4Address = null
         for (Map adapter in adapters) {
             def ips = normalizeAddresses(adapter.IPv4Addresses)
             if (ips) {
-                anyIp = ips.first()
+                firstIpv4Address = ips.first()
                 break
             }
         }
-        Map slot0 = adapters.find { it.SlotId?.toString() == '0' }
-        String primaryIp = slot0 ? normalizeAddresses(slot0.IPv4Addresses)?.find { it } : anyIp
+        Map slot0 = adapters.find { it.SlotId == 0 }
+        String primaryIp = slot0 ? normalizeAddresses(slot0.IPv4Addresses)?.find { it } : firstIpv4Address
         serverData.ipAddress = primaryIp ?: ''
         serverData.internalIp = primaryIp ?: ''
-        serverData.anyIpAddress = anyIp ?: ''
+        serverData.firstIpv4Address = firstIpv4Address ?: ''
     }
 
     /** Polls to wait for the slot 0 IP before accepting an IP from another adapter. */
@@ -2042,14 +2041,14 @@ Status=\$job.Status.toString()
                 if (serverDetail.success == true && serverDetail.server) {
                     def scvmmIp = serverDetail.server?.internalIp
                     def ipAddress = scvmmIp ?: server?.externalIp
-                    def otherAdapterIp = serverDetail.server?.anyIpAddress
-                    if (!ipAddress && otherAdapterIp && (!waitForIp || attempts >= PRIMARY_IP_GRACE_ATTEMPTS)) {
-                        log.info("checkServerReady: ${vmId} slot 0 adapter has no IPv4 after ${attempts} attempts; using ${otherAdapterIp} from another adapter")
-                        ipAddress = otherAdapterIp
+                    def firstIpv4Address = serverDetail.server?.firstIpv4Address
+                    if (!ipAddress && firstIpv4Address && (!waitForIp || attempts >= PRIMARY_IP_GRACE_ATTEMPTS)) {
+                        log.info("checkServerReady: ${vmId} slot 0 adapter has no IPv4 after ${attempts} attempts; using ${firstIpv4Address} from another adapter")
+                        ipAddress = firstIpv4Address
                     }
                     def adapterSummary = describeAdapters(serverDetail.server?.NetworkAdapters)
                     if (ipAddress) {
-                        log.debug("checkServerReady: ${vmId} ip ${ipAddress} found via ${scvmmIp ? 'SCVMM slot 0 adapter' : (ipAddress == otherAdapterIp ? 'another SCVMM adapter' : 'Morpheus externalIp')}; adapters=${adapterSummary}")
+                        log.debug("checkServerReady: ${vmId} ip ${ipAddress} found via ${scvmmIp ? 'SCVMM slot 0 adapter' : (ipAddress == firstIpv4Address ? 'another SCVMM adapter' : 'Morpheus externalIp')}; adapters=${adapterSummary}")
                         server.internalIp = ipAddress
                     } else {
                         def waitMsg = "checkServerReady: ${vmId} (${server?.name}) attempt ${attempts + 1}/300 - waiting for SCVMM to report a guest IPv4 on the slot 0 adapter " +

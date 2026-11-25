@@ -185,7 +185,7 @@ class ScvmmProvisionProviderSpec extends Specification {
         eth0.externalId == 'slot0'
         eth0.macAddress == '00:15:5D:E9:E0:08'
         eth0.primaryInterface
-        eth0.ipAddress == null
+        !eth0.addresses
         eth1.externalId == null
 
         and: 'the server keeps a reachable IP and the slot 0 MAC'
@@ -215,8 +215,34 @@ class ScvmmProvisionProviderSpec extends Specification {
         1 * asyncComputeServer.bulkSave([fresh]) >> Single.just(successfulSave(fresh))
         1 * apiService.getServerDetails(_, 'vm-25') >> [success: true, server: [:]]
         eth0.externalId == 'slot0'
-        eth0.ipAddress == '10.0.0.52'
+        eth0.addresses*.address == ['10.0.0.52']
         fresh.internalIp == '10.0.0.52'
+    }
+
+    def "getServerDetails keeps the IP on eth0 when slot 0 and another adapter report the same address"() {
+        given: 'the same address on two separate networks'
+        ComputeServer fresh = freshServer()
+        def eth0 = new ComputeServerInterface(id: 1L, name: 'eth0', primaryInterface: true, displayOrder: 0)
+        def eth1 = new ComputeServerInterface(id: 2L, name: 'eth1', primaryInterface: false, displayOrder: 1)
+        fresh.interfaces = [eth0, eth1]
+        def adapters = [
+            [ID: 'slot0', SlotId: 0, MacAddress: 'AA', IPv4Addresses: ['192.168.0.10']],
+            [ID: 'slot1', SlotId: 1, MacAddress: 'BB', IPv4Addresses: ['192.168.0.10']]
+        ]
+
+        when:
+        provider.getServerDetails(new ComputeServer(id: 25L))
+
+        then:
+        1 * asyncComputeServer.get(25L) >> Maybe.just(staleServer())
+        1 * apiService.checkServerReady(_, 'vm-25') >> [success: true, server: [ipAddress: '192.168.0.10', NetworkAdapters: adapters]]
+        2 * syncComputeServer.find(_ as DataQuery) >>> [fresh, freshServer()]
+        1 * interfaceService.save([eth0]) >> Single.just(true)
+        1 * asyncComputeServer.bulkSave([fresh]) >> Single.just(successfulSave(fresh))
+        1 * apiService.getServerDetails(_, 'vm-25') >> [success: true, server: [:]]
+        eth0.externalId == 'slot0'
+        eth0.addresses*.address == ['192.168.0.10']
+        eth0.publicIpAddress == '192.168.0.10'
     }
 
     def "getServerDetails does not save anything when checkServerReady fails"() {

@@ -192,8 +192,8 @@ class ScvmmApiServiceServerWaitSpec extends ScvmmSpec {
     def "checkServerReady waits for the slot 0 IP before taking another adapter's IP"() {
         given:
         computeServerService.get(10L) >> server
-        Map noSlot0Ip = detail(anyIpAddress: '10.0.1.200')
-        Map slot0Ip = detail(internalIp: '10.0.0.52', ipAddress: '10.0.0.52', anyIpAddress: '10.0.1.200')
+        Map noSlot0Ip = detail(firstIpv4Address: '10.0.1.200')
+        Map slot0Ip = detail(internalIp: '10.0.0.52', ipAddress: '10.0.0.52', firstIpv4Address: '10.0.1.200')
 
         when:
         def rtn = svc.checkServerReady([server: server, waitForIp: true], VM_ID)
@@ -213,7 +213,7 @@ class ScvmmApiServiceServerWaitSpec extends ScvmmSpec {
         def rtn = svc.checkServerReady([server: server, waitForIp: true], VM_ID)
 
         then:
-        (ScvmmApiService.PRIMARY_IP_GRACE_ATTEMPTS + 1) * svc.getServerDetails(_, _) >> detail(anyIpAddress: '10.0.1.200')
+        (ScvmmApiService.PRIMARY_IP_GRACE_ATTEMPTS + 1) * svc.getServerDetails(_, _) >> detail(firstIpv4Address: '10.0.1.200')
         rtn.success
         rtn.server.ipAddress == '10.0.1.200'
     }
@@ -226,7 +226,7 @@ class ScvmmApiServiceServerWaitSpec extends ScvmmSpec {
         def rtn = svc.checkServerReady([server: server, waitForIp: false], VM_ID)
 
         then:
-        1 * svc.getServerDetails(_, _) >> detail(anyIpAddress: '10.0.1.200')
+        1 * svc.getServerDetails(_, _) >> detail(firstIpv4Address: '10.0.1.200')
         rtn.server.ipAddress == '10.0.1.200'
     }
 

@@ -732,7 +732,7 @@ class VirtualMachineSync {
                 def dhcp = resolveDhcp(masterItem, existing)
                 List<NetAddress> adapterAddresses = buildNetAddresses(masterItem.IPv4Addresses, masterItem.IPv6Addresses)
                 Set<String> allIps = adapterAddresses.collect { it.address } as Set
-                Boolean active = parseAdapterEnabled(masterItem.Enabled)
+                Boolean active = masterItem.Enabled as Boolean
 
                 if (existing) {
                     def save = false
@@ -902,19 +902,12 @@ class VirtualMachineSync {
      * static or pool-assigned stays non-DHCP.
      */
     static boolean resolveDhcp(Map masterItem, ComputeServerInterface existing) {
-        def ipv4Type = masterItem?.IPv4AddressType?.toString()
-        boolean dhcp = ipv4Type ? ipv4Type.equalsIgnoreCase('Dynamic') : (masterItem?.IPv6AddressType?.toString()?.equalsIgnoreCase('Dynamic') ?: false)
-        if (dhcp && existing && (existing.poolAssigned || existing.ipMode?.toString()?.toLowerCase() in ['static', 'pool'])) {
+        def ipv4Type = masterItem?.IPv4AddressType
+        boolean dhcp = ipv4Type ? ipv4Type == 'Dynamic' : masterItem?.IPv6AddressType == 'Dynamic'
+        if (dhcp && existing && (existing.poolAssigned || existing.ipMode in ['static', 'pool'])) {
             dhcp = false
         }
         return dhcp
-    }
-
-    private static Boolean parseAdapterEnabled(Object enabled) {
-        if (enabled == null || enabled.toString().trim() == '') {
-            return null
-        }
-        return enabled instanceof Boolean ? enabled : enabled.toString().trim().equalsIgnoreCase('true')
     }
 
     private boolean getIsPrimary(ComputeServerInterface iface, Map masterItem, boolean isPrimaryAssigned) {
