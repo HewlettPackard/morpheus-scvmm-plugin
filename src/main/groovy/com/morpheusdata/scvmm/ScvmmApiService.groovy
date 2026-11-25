@@ -23,18 +23,22 @@ class ScvmmApiService {
     }
     static defaultRoot = 'C:\\morpheus'
 
+    /**
+     * Resolves the SCVMM controller {@link ComputeServer} from {@code opts}, lazily loading it by
+     * {@code opts.controllerServerId} when {@code opts.controllerServer} is not already populated.
+     *
+     * @param opts command options map (may contain {@code controllerServer} or {@code controllerServerId})
+     * @return the resolved controller {@link ComputeServer}, or {@code null} if unavailable
+     */
     protected ComputeServer resolveControllerServer(opts) {
         if (!(opts instanceof Map)) {
             return null
         }
-        if (opts.controllerServer instanceof ComputeServer) {
-            return (ComputeServer) opts.controllerServer
-        }
         if (opts.controllerServer == null && opts.controllerServerId != null) {
             loadControllerServer(opts)
-            if (opts.controllerServer instanceof ComputeServer) {
-                return (ComputeServer) opts.controllerServer
-            }
+        }
+        if (opts.controllerServer instanceof ComputeServer) {
+            return (ComputeServer) opts.controllerServer
         }
         return null
     }
