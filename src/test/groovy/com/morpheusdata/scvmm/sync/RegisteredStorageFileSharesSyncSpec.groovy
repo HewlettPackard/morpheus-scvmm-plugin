@@ -245,4 +245,116 @@ class RegisteredStorageFileSharesSyncSpec extends Specification {
         'fails'    | [success: false, datastores: []]
         'is empty' | [success: true, datastores: []]
     }
+
+    def "a second sync updates the host's existing share volume instead of creating a duplicate"() {
+        given: 'the volume type loaded on the host is a different instance from the one looked up by code'
+        def existing = new StorageVolume(id: 5L, externalId: 'share-1', name: 'old', maxStorage: 1L,
+                type: new StorageVolumeType(id: shareVolumeType.id, code: shareVolumeType.code))
+        def h = new ComputeServer(id: 30L, externalId: 'host-a-guid', volumes: [existing])
+        common([VmmPayloads.fileShare(HostAssociations: [[HostID: 'host-a-guid']])], [h])
+        computeServerService.get(30L) >> h
+        def ds = new Datastore(id: 60L, externalId: 'share-1', name: 'share-1', storageSize: 107374182400L, freeSpace: 53687091200L,
+                online: true, externalType: RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE, assignedZonePools: [])
+        asyncDatastoreService.listIdentityProjections(_ as DataQuery) >> Observable.just(new DatastoreIdentity(id: 60L, externalId: 'share-1'))
+        asyncDatastoreService.listById([60L]) >> Observable.just(ds)
+        datastoreService.list(_ as DataQuery) >> [ds]
+        asyncStorageVolumeService.listById([5L]) >> Observable.just(existing)
+
+        when:
+        sync.execute()
+
+        then:
+        0 * asyncStorageVolumeService.create(_, _)
+        0 * asyncStorageVolumeService.remove(*_)
+        1 * asyncStorageVolumeService.save(existing) >> Single.just(existing)
+        existing.name == 'share-1'
+        existing.maxStorage == 107374182400L
+        existing.usedStorage == 53687091200L
+        existing.volumePath == '\\\\fs\\share-1'
+        existing.datastore.is(ds)
+    }
+
+    def "a host without registered shares has its stale share volume removed and does not stop the other hosts"() {
+        given: 'host A is synced first and no longer has any share, host B gets a new one'
+        def stale = new StorageVolume(id: 6L, externalId: 'old-share', type: new StorageVolumeType(id: shareVolumeType.id))
+        def other = new StorageVolume(id: 7L, externalId: 'not-a-share', type: new StorageVolumeType(id: 99L))
+        def a = new ComputeServer(id: 30L, externalId: 'host-a-guid', volumes: [stale, other])
+        def b = new ComputeServer(id: 31L, externalId: 'host-b-guid', volumes: [])
+        common([VmmPayloads.fileShare(HostAssociations: [[HostID: 'host-b-guid']])], [a, b])
+        computeServerService.get(30L) >> a
+        computeServerService.get(31L) >> b
+        asyncDatastoreService.listIdentityProjections(_ as DataQuery) >> Observable.empty()
+        asyncDatastoreService.bulkCreate(_ as List) >> Single.just(true)
+        def persisted = new Datastore(id: 60L, externalId: 'share-1', name: 'share-1', storageSize: 100L, freeSpace: 40L)
+        datastoreService.list(_ as DataQuery) >> [persisted]
+        def asyncComputeServers = Mock(com.morpheusdata.core.MorpheusComputeServerService)
+        asyncServices.computeServer >> asyncComputeServers
+        StorageVolume created
+
+        when:
+        sync.execute()
+
+        then:
+        1 * asyncStorageVolumeService.save(stale) >> Single.just(stale)
+        1 * asyncStorageVolumeService.remove([stale], a, true) >> Single.just(true)
+        0 * asyncStorageVolumeService.remove([other], _, _)
+        1 * asyncStorageVolumeService.create(_ as List, b) >> { List l, ComputeServer s -> created = l[0]; Single.just(true) }
+        1 * asyncComputeServers.save(b) >> Single.just(b)
+        created.externalId == 'share-1'
+        created.usedStorage == 60L
+        created.datastore.is(persisted)
+    }
+
+    def "adding one share and updating another in the same sync keeps the volumes of both on the host"() {
+        given:
+        def existing = new StorageVolume(id: 5L, externalId: 'share-1', name: 'share-1', maxStorage: 100L, usedStorage: 60L,
+                volumePath: '\\\\fs\\share-1', type: new StorageVolumeType(id: shareVolumeType.id))
+        def h = new ComputeServer(id: 30L, externalId: 'host-a-guid', volumes: [existing])
+        common([
+                VmmPayloads.fileShare(ID: 'share-1', Name: 'share-1', Capacity: 100L, FreeSpace: 40L, HostAssociations: [[HostID: 'host-a-guid']]),
+                VmmPayloads.fileShare(ID: 'share-2', Name: 'share-2', Capacity: 200L, FreeSpace: 50L, MountPoints: ['\\\\fs\\share-2'],
+                        HostAssociations: [[HostID: 'host-a-guid']])], [h])
+        computeServerService.get(30L) >> h
+        def ds1 = new Datastore(id: 60L, externalId: 'share-1', name: 'share-1', storageSize: 100L, freeSpace: 40L, online: true,
+                externalType: RegisteredStorageFileSharesSync.EXTERNAL_TYPE_HOST_FILE_SHARE, assignedZonePools: [])
+        existing.datastore = ds1
+        def ds2 = new Datastore(id: 61L, externalId: 'share-2', name: 'share-2', storageSize: 200L, freeSpace: 50L)
+        asyncDatastoreService.listIdentityProjections(_ as DataQuery) >> Observable.just(new DatastoreIdentity(id: 60L, externalId: 'share-1'))
+        asyncDatastoreService.listById([60L]) >> Observable.just(ds1)
+        asyncDatastoreService.bulkCreate(_ as List) >> Single.just(true)
+        datastoreService.list(_ as DataQuery) >> [ds1, ds2]
+        asyncStorageVolumeService.listById([5L]) >> Observable.just(existing)
+        def asyncComputeServers = Mock(com.morpheusdata.core.MorpheusComputeServerService)
+        asyncServices.computeServer >> asyncComputeServers
+        StorageVolume created
+
+        when:
+        sync.execute()
+
+        then:
+        0 * asyncStorageVolumeService.remove(*_)
+        0 * asyncStorageVolumeService.save(_)
+        1 * asyncStorageVolumeService.create(_ as List, h) >> { List l, ComputeServer s -> created = l[0]; Single.just(true) }
+        1 * asyncComputeServers.save(h) >> Single.just(h)
+        created.externalId == 'share-2'
+        created.volumePath == '\\\\fs\\share-2'
+    }
+
+    def "isFileShareVolume matches the volume type by id or code, not by instance"() {
+        expect:
+        RegisteredStorageFileSharesSync.isFileShareVolume(new StorageVolume(type: new StorageVolumeType(id: 8L)), shareVolumeType)
+        RegisteredStorageFileSharesSync.isFileShareVolume(new StorageVolume(type: new StorageVolumeType(code: shareVolumeType.code)), new StorageVolumeType(code: shareVolumeType.code))
+        !RegisteredStorageFileSharesSync.isFileShareVolume(new StorageVolume(type: new StorageVolumeType(id: 7L, code: 'scvmm-datastore')), shareVolumeType)
+        !RegisteredStorageFileSharesSync.isFileShareVolume(new StorageVolume(), shareVolumeType)
+        !RegisteredStorageFileSharesSync.isFileShareVolume(new StorageVolume(type: new StorageVolumeType(id: 8L)), null)
+    }
+
+    def "buildHostToShareMap collects the shares reachable from each host through cluster or host associations"() {
+        expect:
+        RegisteredStorageFileSharesSync.buildHostToShareMap([
+                [ID: 's1', ClusterAssociations: [[ClusterID: 'c1', HostID: 'h1'], [ClusterID: 'c1', HostID: 'h2']]],
+                [ID: 's2', HostAssociations: [[HostID: 'h1'], [HostID: null]]],
+                [ID: null, HostAssociations: [[HostID: 'h3']]]
+        ]) == [h1: ['s1', 's2'] as Set, h2: ['s1'] as Set]
+    }
 }
